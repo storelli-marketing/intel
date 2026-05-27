@@ -75,25 +75,22 @@ class GeminiClient:
         return myfile
 
     # ---- analysis ------------------------------------------------------
-    def _build_prompt(self, layers_text: dict, product: str, icp: str, notes: str) -> str:
+    def _build_prompt(self, taxonomy_block: str, product: str, icp: str, notes: str) -> str:
         return (
             self.prompt_template
             .replace("{product}", product or "unknown")
             .replace("{icp}", icp or "unknown")
             .replace("{notes}", notes or "(none)")
-            .replace("{delivery}", layers_text["delivery"])
-            .replace("{hook}", layers_text["hook"])
-            .replace("{primitive}", layers_text["primitive"])
-            .replace("{context}", layers_text["context"])
+            .replace("{taxonomy}", taxonomy_block)
         )
 
-    def analyze(self, ig_link: str, layers_text: dict, product: str, icp: str,
+    def analyze(self, ig_link: str, taxonomy_block: str, product: str, icp: str,
                 notes: str) -> str:
         """Download -> upload -> generate. Returns raw model text (expected JSON)."""
         path = self._download(ig_link)
         try:
             uploaded = self._upload_and_wait(path)
-            prompt = self._build_prompt(layers_text, product, icp, notes)
+            prompt = self._build_prompt(taxonomy_block, product, icp, notes)
             resp = self.client.models.generate_content(
                 model=self.model,
                 contents=[uploaded, prompt],

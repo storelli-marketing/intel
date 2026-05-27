@@ -35,8 +35,8 @@ Return ONLY a JSON object in this shape (no markdown fences):
      "recommended_content_direction": "..."}
   ],
   "next_creative_tests": [
-    {"hypothesis": "...", "icp": "...", "product": "...", "delivery": "...",
-     "hook": "...", "primitive": "...", "suggested_video_idea": "..."}
+    {"hypothesis": "...", "icp": "...", "product": "...", "hook": "...",
+     "format": "...", "funnel_stage": "...", "suggested_video_idea": "..."}
   ]
 }
 ```
@@ -44,7 +44,7 @@ Return ONLY a JSON object in this shape (no markdown fences):
 Guidance:
 - Prefer signals with Medium/High confidence; flag Low-confidence ones as
   tentative in their `finding` text.
-- `recommended_action` should be a concrete content move (e.g. "Lead more reels
-  with diving-save B-roll").
-- Generate 3–5 `next_creative_tests` that combine a winning delivery + hook +
-  primitive for a specific ICP/product.
+- `recommended_action` should be a concrete content move (e.g. "Lead more
+  reels with a Do/Don't format and an Authority hook").
+- Generate 3–5 `next_creative_tests` that combine a winning hook + format +
+  funnel stage for a specific ICP/product.

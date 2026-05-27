@@ -9,7 +9,8 @@ computes signal↔performance **associations**, and publishes findings to Notion
 ```
 Google Sheet (IG links + metrics)
   -> Agent runner reads unprocessed rows
-  -> Gemini analyzes each video (delivery / hook / primitive / context)
+  -> Gemini analyzes each video (hook / format / visual style / problem /
+     solution / conversion / offer / product presence / funnel stage)
   -> Sheet updated with 1/0 signal columns + performance bucket
   -> Correlation engine (signal vs performance)
   -> Notion findings dashboard
@@ -75,11 +76,26 @@ whole sheet. Combine with `--reprocess` to re-run a small fixed batch.
 Per analyzed row (raw user columns are **never** overwritten):
 
 - `signal_<layer>_<slug>` = `1`/`0` for every taxonomy label
-  (e.g. `signal_delivery_ugc`, `signal_hook_curiosity_gap`,
-  `signal_primitive_confidence`, `signal_context_diving_save`)
-- `ai_summary`, `primary_delivery`, `primary_hook`, `primary_primitive`
+  (e.g. `signal_hook_curiosity_gap`, `signal_format_do_dont`,
+  `signal_visual_style_raw_ugc`, `signal_problem_type_acute_pain`,
+  `signal_funnel_stage_awareness`)
+- `ai_summary` plus a `primary_<layer>` for each of the 9 layers
+  (`primary_hook`, `primary_format`, `primary_visual_style`,
+  `primary_problem_type`, `primary_solution_type`, `primary_conversion`,
+  `primary_offer`, `primary_product_presence`, `primary_funnel_stage`)
 - `performance_bucket` (Bad / OK / Good / Great, relative to the dataset)
 - `processed_status = completed`, `processed_at`
+
+## Taxonomy (9 AI-tagged layers)
+
+Multi-label (tag all that apply): **Hook**, **Format**, **Visual Style**.
+Single-label (exactly one): **Problem Type**, **Solution Type**, **Conversion**,
+**Offer**, **Product Presence**, **Funnel Stage**.
+
+**ICP** and **Product** are not AI-tagged — they are the human-provided raw
+columns, used as grouping dimensions for ICP/Product learnings. Canonical
+vocabularies for all layers (and for ICP/Product) live in
+[src/taxonomy.py](src/taxonomy.py).
 
 ## Performance score
 

@@ -1,99 +1,124 @@
-"""Canonical signal taxonomy + column-name helpers.
+"""Canonical Storelli signal taxonomy + column-name helpers.
 
-Four layers. Delivery / Hook / Context are multi-label (0+ tags each).
-Primitive is single-label (exactly one primary value).
+Nine AI-tagged layers. Hook / Format / Visual Style are multi-label (0+ tags).
+The remaining six are single-label (exactly one value each).
+
+ICP and Product are NOT AI-tagged layers — they are human-provided raw columns
+used as grouping dimensions for ICP/Product learnings. Their canonical
+vocabularies live here (ICP / PRODUCT) for validation and reporting.
 
 Signal column convention:  signal_<layer>_<slug>
-e.g. "UGC" in delivery -> signal_delivery_ugc
+e.g. "Curiosity Gap" in hook -> signal_hook_curiosity_gap
 """
 import re
 
-DELIVERY = [
-    "UGC",
-    "Product Demo",
-    "Tutorial",
-    "Talking Head",
-    "POV",
-    "Storytelling",
-    "Before/After",
-    "Slow Motion",
-    "Fast Paced",
-    "Close-Up",
-    "Voiceover",
-    "Captions",
-    "Jump Cuts",
-]
-
 HOOK = [
     "Curiosity Gap",
-    "Fear Framing",
-    "Negative Framework",
-    "Positive Promise",
-    "Social Proof",
-    "Surprise",
-    "Pattern Interrupt",
-    "Problem/Solution",
-    "Performance Claim",
-    "Injury Risk",
-    "Relatable Pain",
-]
-
-PRIMITIVE = [
-    "Protection / Safety",
-    "Confidence",
-    "Performance Improvement",
-    "Fear Avoidance",
-    "Achievement / Mastery",
-    "Competitive Edge",
-    "Identity / Belonging",
-    "Status",
-    "Trust / Authority",
+    "Fear / Risk",
     "Aspiration",
-    "Relief / Security",
-    "Transformation",
-    "Discipline / Hard Work",
-    "Curiosity / Discovery",
-    "Entertainment / Dopamine",
-    "Validation / Recognition",
-    "Self-Expression",
-    "Excitement / Adventure",
-    "Parental Anxiety",
+    "Education",
+    "Humor",
+    "Social Proof",
+    "Authority",
 ]
 
-CONTEXT = [
-    "Diving Save",
-    "1v1",
-    "Shot Stopping",
-    "Turf Impact",
-    "Collision",
-    "Landing Impact",
-    "Training Session",
-    "Match Situation",
-    "GK Leggings",
-    "Gloves",
-    "Head Protection",
-    "Elbow Protection",
-    "Knee Protection",
-    "Hip Protection",
-    "Parent Buyer",
-    "Teen Goalkeeper",
-    "Competitive Goalkeeper",
-    "Coach Buyer",
+FORMAT = [
+    "POV",
+    "Tutorial",
+    "Do / Don't",
+    "Story",
+    "Demo",
+    "Comparison",
+    "Reaction",
+]
+
+VISUAL_STYLE = [
+    "Raw / UGC",
+    "Polished",
+    "Action",
+    "Talking Head",
+]
+
+PROBLEM_TYPE = [
+    "Acute Pain",
+    "Chronic Pain",
+    "Latent",
+]
+
+SOLUTION_TYPE = [
+    "Fix",
+    "Prevention",
+    "Enhancement",
+]
+
+CONVERSION = [
+    "Direct Purchase",
+    "Learn More",
+    "Soft / Follow",
+    "None",
+]
+
+OFFER = [
+    "Discount",
+    "Bundle",
+    "Free Shipping",
+    "No Offer",
+]
+
+PRODUCT_PRESENCE = [
+    "None",
+    "Soft",
+    "Hard Focus",
+]
+
+FUNNEL_STAGE = [
+    "Awareness",
+    "Consideration",
+    "Conversion",
+    "Retention",
+]
+
+# Grouping dimensions (human-provided raw columns, not AI signal layers).
+ICP = [
+    "Parents",
+    "Aspiring Pro",
+    "Adult Amateur",
+    "General",
+]
+
+PRODUCT = [
+    "CoolCore Leggings",
+    "BodyShield Leggings",
+    "ExoShield Head Guard",
+    "GK Gloves",
+    "Sliders",
 ]
 
 LAYERS = {
-    "delivery": DELIVERY,
     "hook": HOOK,
-    "primitive": PRIMITIVE,
-    "context": CONTEXT,
+    "format": FORMAT,
+    "visual_style": VISUAL_STYLE,
+    "problem_type": PROBLEM_TYPE,
+    "solution_type": SOLUTION_TYPE,
+    "conversion": CONVERSION,
+    "offer": OFFER,
+    "product_presence": PRODUCT_PRESENCE,
+    "funnel_stage": FUNNEL_STAGE,
 }
 
-MULTI_LABEL_LAYERS = ("delivery", "hook", "context")
-SINGLE_LABEL_LAYERS = ("primitive",)
+MULTI_LABEL_LAYERS = ("hook", "format", "visual_style")
+SINGLE_LABEL_LAYERS = (
+    "problem_type",
+    "solution_type",
+    "conversion",
+    "offer",
+    "product_presence",
+    "funnel_stage",
+)
 
 
 def slug(value: str) -> str:
-    """'Before/After' -> 'before_after', '1v1' -> '1v1'."""
+    """'Fear / Risk' -> 'fear_risk', 'Do / Don't' -> 'do_dont'."""
     s = value.lower()
     s = re.sub(r"[/\s\-]+", "_", s)
     s = re.sub(r"[^a-z0-9_]", "", s)
@@ -124,15 +149,11 @@ def signal_index() -> dict[str, dict[str, str]]:
 
 # Output (AI-written, non-signal) columns. Used as a guard so we never
 # clobber raw user metrics — see sheets_client.RAW_COLUMNS.
-OUTPUT_META_COLUMNS = [
-    "ai_summary",
-    "primary_delivery",
-    "primary_hook",
-    "primary_primitive",
-    "performance_bucket",
-    "processed_status",
-    "processed_at",
-]
+OUTPUT_META_COLUMNS = (
+    ["ai_summary"]
+    + [f"primary_{layer}" for layer in LAYERS]
+    + ["performance_bucket", "processed_status", "processed_at"]
+)
 
 
 def all_output_columns() -> list[str]:

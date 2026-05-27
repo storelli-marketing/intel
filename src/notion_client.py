@@ -134,9 +134,9 @@ class NotionDashboard:
 
         blocks.append(_heading("Next Creative Tests"))
         blocks.append(_table(
-            ["Hypothesis", "ICP", "Product", "Delivery", "Hook", "Primitive", "Suggested Video Idea"],
+            ["Hypothesis", "ICP", "Product", "Hook", "Format", "Funnel Stage", "Suggested Video Idea"],
             [[s.get("hypothesis", ""), s.get("icp", ""), s.get("product", ""),
-              s.get("delivery", ""), s.get("hook", ""), s.get("primitive", ""),
+              s.get("hook", ""), s.get("format", ""), s.get("funnel_stage", ""),
               s.get("suggested_video_idea", "")] for s in findings.get("next_creative_tests", [])],
         ))
 

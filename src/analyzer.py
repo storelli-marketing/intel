@@ -14,12 +14,18 @@ from logger import get_logger
 log = get_logger()
 
 
-def _layers_text() -> dict:
-    """Render the taxonomy as bullet lists for the prompt."""
-    out = {}
+def render_taxonomy() -> str:
+    """Render the taxonomy as an instruction block for the prompt."""
+    blocks = []
     for layer, values in taxonomy.LAYERS.items():
-        out[layer] = "\n".join(f"- {v}" for v in values)
-    return out
+        title = layer.replace("_", " ").upper()
+        if layer in taxonomy.MULTI_LABEL_LAYERS:
+            rule = "tag ALL that apply, list the most dominant first"
+        else:
+            rule = "choose EXACTLY ONE"
+        opts = "\n".join(f"- {v}" for v in values)
+        blocks.append(f"### {title} ({rule})\n{opts}")
+    return "\n\n".join(blocks)
 
 
 def parse_model_json(text: str) -> dict:
@@ -29,7 +35,6 @@ def parse_model_json(text: str) -> dict:
     if fence:
         text = fence.group(1)
     else:
-        # fall back to first {...} block
         brace = re.search(r"\{.*\}", text, re.DOTALL)
         if brace:
             text = brace.group(0)
@@ -47,33 +52,38 @@ def _match_label(layer: str, value: str) -> str | None:
     return None
 
 
+def _as_list(value) -> list:
+    """Normalize a layer value (string or list) into a list of strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, str) and v.strip()]
+    return []
+
+
 def to_signal_columns(parsed: dict) -> dict:
-    """Turn parsed JSON into {column: 0/1} + meta fields."""
+    """Turn parsed JSON into {column: 0/1} + primary_<layer> meta fields."""
     cols = {c: 0 for c in taxonomy.all_signal_columns()}
+    meta = {"ai_summary": (parsed.get("summary") or "").strip()}
 
-    # multi-label layers
-    for layer in taxonomy.MULTI_LABEL_LAYERS:
-        for raw in parsed.get(layer, []) or []:
+    for layer in taxonomy.LAYERS:
+        raw_values = _as_list(parsed.get(layer))
+        single = layer in taxonomy.SINGLE_LABEL_LAYERS
+        primary = ""
+        for raw in raw_values:
             canonical = _match_label(layer, raw)
-            if canonical:
-                cols[taxonomy.column_for(layer, canonical)] = 1
-            else:
+            if not canonical:
                 log.warning("Unknown %s label from model: %r", layer, raw)
+                continue
+            cols[taxonomy.column_for(layer, canonical)] = 1
+            if not primary:
+                primary = canonical
+            if single:
+                break  # single-label layers keep only the first valid value
+        meta[f"primary_{layer}"] = primary
 
-    # single-label primitive
-    prim_raw = parsed.get("primitive")
-    prim = _match_label("primitive", prim_raw) if prim_raw else None
-    if prim:
-        cols[taxonomy.column_for("primitive", prim)] = 1
-    elif prim_raw:
-        log.warning("Unknown primitive from model: %r", prim_raw)
-
-    meta = {
-        "ai_summary": (parsed.get("summary") or "").strip(),
-        "primary_delivery": _match_label("delivery", parsed.get("primary_delivery", "")) or "",
-        "primary_hook": _match_label("hook", parsed.get("primary_hook", "")) or "",
-        "primary_primitive": prim or "",
-    }
     return {**cols, **meta}
 
 
@@ -83,10 +93,10 @@ def analyze_video(gemini, ig_link: str, product: str, icp: str, notes: str) -> d
     Returns the signal/meta column dict. Raises on download or persistent
     failure so the caller can mark the row failed.
     """
-    layers = _layers_text()
+    taxonomy_block = render_taxonomy()
     last_err = None
     for attempt in (1, 2):
-        text = gemini.analyze(ig_link, layers, product, icp, notes)
+        text = gemini.analyze(ig_link, taxonomy_block, product, icp, notes)
         try:
             parsed = parse_model_json(text)
             return to_signal_columns(parsed)
