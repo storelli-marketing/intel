@@ -1,0 +1,14 @@
+# secrets / credentials
+.env
+*.json
+!data/*.json
+service-account*.json
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# logs / runtime
+data/run.log
