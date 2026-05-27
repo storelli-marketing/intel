@@ -62,7 +62,13 @@ python src/main.py correlations   # print signal/performance findings
 python src/main.py notion-sync    # push findings to Notion
 python src/main.py run-all        # analyze -> correlations -> notion
 python src/main.py run-all --reprocess   # also re-analyze completed rows
+python src/main.py analyze --limit 5     # test mode: analyze at most 5 rows
 ```
+
+`--limit N` caps how many candidate rows are analyzed in a single run (applies
+to `analyze` and `run-all`). Use it for cheap test runs — e.g. the first
+milestone's "analyze 3–5 links" — without downloading/calling Gemini on the
+whole sheet. Combine with `--reprocess` to re-run a small fixed batch.
 
 ## What gets written back
 

@@ -7,6 +7,8 @@ Commands:
   python src/main.py run-all                 analyze -> correlations -> notion
   python src/main.py run-all --reprocess     also re-analyze completed rows
 """
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -27,7 +29,7 @@ _FINDINGS_PROMPT = os.path.join(os.path.dirname(__file__), "..", "prompts", "fin
 # ---------------------------------------------------------------------------
 # analyze
 # ---------------------------------------------------------------------------
-def cmd_analyze(reprocess: bool) -> dict:
+def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
     from analyzer import analyze_video
     from gemini_client import GeminiClient, VideoDownloadError
 
@@ -40,6 +42,11 @@ def cmd_analyze(reprocess: bool) -> dict:
         targets = rows
     else:
         targets = [r for r in rows if SheetsClient.is_pending(r)]
+
+    if limit is not None and limit >= 0:
+        if len(targets) > limit:
+            log.info("Limiting this run to %d of %d candidate row(s)", limit, len(targets))
+        targets = targets[:limit]
 
     stats = {"scanned": len(rows), "analyzed": 0, "skipped": len(rows) - len(targets),
              "failed": 0}
@@ -261,11 +268,13 @@ def main() -> int:
                         choices=["analyze", "correlations", "notion-sync", "run-all"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
+    parser.add_argument("--limit", type=int, default=None, metavar="N",
+                        help="analyze at most N candidate rows this run (test mode)")
     args = parser.parse_args()
 
     try:
         if args.command == "analyze":
-            stats = cmd_analyze(args.reprocess)
+            stats = cmd_analyze(args.reprocess, args.limit)
             results = cmd_correlations(print_summary=False)
             print_run_summary(stats, results, notion_done=False)
 
@@ -277,7 +286,7 @@ def main() -> int:
             print_run_summary({}, results, notion_done=done)
 
         elif args.command == "run-all":
-            stats = cmd_analyze(args.reprocess)
+            stats = cmd_analyze(args.reprocess, args.limit)
             done, _findings, results = cmd_notion_sync()
             print_run_summary(stats, results, notion_done=done)
     except RuntimeError as e:
