@@ -134,6 +134,11 @@ causation.**
 
 ## Guardrails
 
+- **Confidence gate (quality over automation):** the QA pass returns confidence
+  for **Hook**, **Format**, and **Product**. If any is `low`, the uncertain
+  fields are **not** auto-written (Hook/Format signal columns are skipped;
+  `Product` is not filled) and the row's `Status` is set to **`needs_review`**
+  for a human, instead of `completed`.
 - Only ever writes taxonomy cells, `Status`, and blank `ICP`/`Product` — never
   other human columns.
 - Two Gemini passes (analysis + QA compiler); each retries invalid JSON once,

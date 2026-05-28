@@ -71,10 +71,16 @@ def to_signal_columns(parsed: dict) -> dict:
     QA pass and the fill-if-blank ICP/Product logic.
     """
     cols = {c: 0 for c in taxonomy.all_signal_columns()}
+    conf = parsed.get("confidence") or {}
     meta = {
         "ai_summary": (parsed.get("summary") or "").strip(),
         "icp_suggested": (parsed.get("icp_suggested") or "").strip(),
         "product_suggested": (parsed.get("product_suggested") or "").strip(),
+        # confidence for the gated layers; default medium so a missing value
+        # doesn't force every row into needs_review
+        "conf_hook": str(conf.get("hook", "medium")).strip().lower() or "medium",
+        "conf_format": str(conf.get("format", "medium")).strip().lower() or "medium",
+        "conf_product": str(conf.get("product", "medium")).strip().lower() or "medium",
     }
 
     for layer in taxonomy.LAYERS:

@@ -143,7 +143,7 @@ class SheetsClient:
     # ---- writing -------------------------------------------------------
     def plan_writes(self, row_index: int, existing_row: dict, signal_values: dict,
                     reprocess: bool = False, icp_fill: str = "",
-                    product_fill: str = "") -> list[dict]:
+                    product_fill: str = "", status_value: str = STATUS_DONE) -> list[dict]:
         """Pure: compute the batch_update payload without touching the network.
 
         Only ever targets taxonomy (1/0) cells, Status, and blank ICP/Product —
@@ -165,7 +165,7 @@ class SheetsClient:
             _cell(col, val)
 
         if "Status" in self.meta_col:
-            _cell(self.meta_col["Status"], STATUS_DONE)
+            _cell(self.meta_col["Status"], status_value)
 
         if icp_fill and "ICP" in self.meta_col and not str(existing_row.get("ICP", "")).strip():
             _cell(self.meta_col["ICP"], icp_fill)
@@ -176,9 +176,9 @@ class SheetsClient:
 
     def write_row(self, row_index: int, existing_row: dict, signal_values: dict,
                   reprocess: bool = False, icp_fill: str = "",
-                  product_fill: str = "") -> None:
+                  product_fill: str = "", status_value: str = STATUS_DONE) -> None:
         updates = self.plan_writes(row_index, existing_row, signal_values,
-                                   reprocess, icp_fill, product_fill)
+                                   reprocess, icp_fill, product_fill, status_value)
         if updates:
             self.ws.batch_update(updates)
 

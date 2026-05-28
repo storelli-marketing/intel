@@ -50,6 +50,12 @@ commentary):
   "problem_type": "...", "solution_type": "...", "conversion": "...",
   "offer": "...", "product_presence": "...", "funnel_stage": "...",
   "icp_suggested": "...", "product_suggested": "...",
+  "confidence": {"hook": "high|medium|low", "format": "high|medium|low", "product": "high|medium|low"},
   "summary": "..."
 }
 ```
+
+Always include the `confidence` object. Use **low** when the video is ambiguous
+or you are guessing, **medium** when reasonably sure, **high** when the tag is
+clearly supported. Be honest — low confidence is expected for unclear reels and
+triggers human review rather than a wrong auto-tag.

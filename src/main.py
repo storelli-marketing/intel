@@ -39,6 +39,17 @@ def _valid_icp(value: str) -> str:
     return ""
 
 
+# Layers gated by confidence (Product is a grouping field, handled separately).
+_GATED_LAYERS = ("hook", "format")
+
+
+def _drop_layers(cols: dict, layers) -> dict:
+    """Remove signal columns belonging to the given layers (so they are not
+    written) — used to suppress low-confidence taxonomy fields."""
+    prefixes = tuple(f"signal_{layer}_" for layer in layers)
+    return {k: v for k, v in cols.items() if not k.startswith(prefixes)}
+
+
 # ---------------------------------------------------------------------------
 # analyze
 # ---------------------------------------------------------------------------
@@ -58,7 +69,7 @@ def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
         targets = targets[:limit]
 
     stats = {"scanned": len(rows), "analyzed": 0, "skipped": len(rows) - len(targets),
-             "failed": 0}
+             "failed": 0, "needs_review": 0}
 
     gemini = GeminiClient()
 
@@ -73,13 +84,28 @@ def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
                 icp=str(r.get("ICP", "")),
                 notes=str(r.get("Storytelling structure", "")),
             )
-            r.update(cols)  # carry tags into in-memory row for correlations
+
+            # Confidence guardrail: suppress low-confidence taxonomy fields and
+            # flag the row for human review rather than auto-writing a guess.
+            skip_layers = [layer for layer in _GATED_LAYERS
+                           if cols.get(f"conf_{layer}") == "low"]
+            product_low = cols.get("conf_product") == "low"
+            needs_review = bool(skip_layers) or product_low
+
+            write_values = _drop_layers(cols, skip_layers)
+            r.update(write_values)  # carry written tags into row for correlations
             sheets.write_row(
-                row_idx, existing_row=r, signal_values=cols, reprocess=reprocess,
+                row_idx, existing_row=r, signal_values=write_values, reprocess=reprocess,
                 icp_fill=_valid_icp(cols.get("icp_suggested", "")),
-                product_fill=str(cols.get("product_suggested", "")).strip(),
+                product_fill="" if product_low else str(cols.get("product_suggested", "")).strip(),
+                status_value="needs_review" if needs_review else "completed",
             )
-            stats["analyzed"] += 1
+            if needs_review:
+                stats["needs_review"] += 1
+                log.info("Row %d flagged needs_review (low confidence: %s)",
+                         row_idx, ", ".join(skip_layers + (["product"] if product_low else [])))
+            else:
+                stats["analyzed"] += 1
         except VideoDownloadError as e:
             log.error("Download failed row %d: %s", row_idx, e)
             sheets.set_status(row_idx, "failed")
@@ -236,10 +262,11 @@ def print_run_summary(stats: dict, results: list[dict], notion_done: bool) -> No
     win = corr.winning(results)[:3] if results else []
     wk = corr.weak(results)[:3] if results else []
     print("\nRun completed.\n")
-    print(f"Rows scanned:  {stats.get('scanned', 0)}")
-    print(f"Rows analyzed: {stats.get('analyzed', 0)}")
-    print(f"Rows skipped:  {stats.get('skipped', 0)}")
-    print(f"Rows failed:   {stats.get('failed', 0)}\n")
+    print(f"Rows scanned:       {stats.get('scanned', 0)}")
+    print(f"Rows analyzed:      {stats.get('analyzed', 0)}")
+    print(f"Rows needs_review:  {stats.get('needs_review', 0)}")
+    print(f"Rows skipped:       {stats.get('skipped', 0)}")
+    print(f"Rows failed:        {stats.get('failed', 0)}\n")
     print("Top winning signals:")
     for i, r in enumerate(win, 1):
         print(f"{i}. {r['signal']} ({corr.fmt_lift(r['lift'])}, {r['confidence']})")
