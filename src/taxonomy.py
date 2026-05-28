@@ -10,6 +10,8 @@ vocabularies live here (ICP / PRODUCT) for validation and reporting.
 Signal column convention:  signal_<layer>_<slug>
 e.g. "Curiosity Gap" in hook -> signal_hook_curiosity_gap
 """
+from __future__ import annotations
+
 import re
 
 HOOK = [
@@ -158,3 +160,50 @@ OUTPUT_META_COLUMNS = (
 
 def all_output_columns() -> list[str]:
     return all_signal_columns() + OUTPUT_META_COLUMNS
+
+
+# --- POC sheet mapping -------------------------------------------------
+# The live sheet labels taxonomy columns by their category (row 1) + bare
+# option (row 2). Map category text -> internal layer. ICP and PRODUCT
+# categories are intentionally absent: they stay grouping-only and their
+# one-hot columns are left untouched.
+SHEET_CATEGORY_TO_LAYER = {
+    "HOOK": "hook",
+    "FORMAT": "format",
+    "VISUAL STYLE": "visual_style",
+    "PROBLEM TYPE": "problem_type",
+    "SOLUTION TYPE": "solution_type",
+    "CONVERSION": "conversion",
+    "OFFER": "offer",
+    "PRODUCT PRESENCE": "product_presence",
+    "FUNNEL STAGE": "funnel_stage",
+    "FUNNEL SGTAGE": "funnel_stage",  # sheet has this typo
+}
+
+
+def category_to_layer(category: str) -> str | None:
+    return SHEET_CATEGORY_TO_LAYER.get((category or "").strip().upper())
+
+
+# Storelli product context — grounds Product / Product Presence reasoning.
+# Source: https://www.storellisports.com/
+PRODUCT_CONTEXT = """\
+Storelli makes protective gear for soccer goalkeepers. Use this context when
+judging which product is shown and how prominently.
+
+Specific products:
+- BodyShield NoBurn GK Leggings, BodyShield GK Leggings, BodyShield GK 3/4
+  Undershirt, BodyShield GK Sliders, BodyShield Leg Guard
+- ExoShield Gladiator Jersey, Head Guards
+- Gladiator Pro 3 Glove, Silencer Menace Glove, Silencer Sly Glove
+- Goalkeeper Essentials 2-Pack / 3-Pack, Women's Goalkeeper Essentials 2-Pack,
+  Mix & Match: GK Gloves
+
+Broader product groups:
+- Gloves, Head Guards, Tops & Jerseys, Shorts & Sliders, Pants & Leggings,
+  Guards & Sleeves, Bundles, Youth Gear, Women's Gear
+
+Technologies / benefits to recognize:
+- impact protection, turf defense, protection that stays put, durability, grip,
+  confidence, injury prevention, comfort, no turf burn, play without limits
+"""

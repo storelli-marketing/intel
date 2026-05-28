@@ -1,9 +1,20 @@
-"""Google Sheets read/write via gspread service account.
+"""Google Sheets I/O for the Storelli POC sheet (two-row header).
+
+Sheet shape:
+  row 1 = category group headers (HOOK, FORMAT, ... forward-filled across cols)
+  row 2 = actual column names (metadata names + bare taxonomy option labels)
+  row 3+ = data
+
+A taxonomy column is identified by the (category, option) PAIR, because bare
+option labels collide across categories (e.g. "None" under both CONVERSION
+and PRODUCT PRESENCE). We map only the 9 AI-tagged layers; the sheet's ICP
+and PRODUCT one-hot groups are left untouched (ICP/Product stay grouping-only).
 
 Guardrails:
-- RAW columns (user-provided) are never written.
-- Only taxonomy signal columns + AI meta columns are ever written.
-- Missing required columns -> clear error.
+- Only taxonomy (1/0) cells, Status, and blank ICP/Product are ever written.
+- Raw human columns (ID, LINK, PERFORMANCE, Storytelling structure) are never
+  written.
+- Taxonomy cells are written only when currently empty, unless reprocess=True.
 """
 from __future__ import annotations
 
@@ -18,22 +29,9 @@ log = get_logger()
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-REQUIRED_COLUMNS = [
-    "ig_link",
-    "product",
-    "icp",
-    "views",
-    "reach",
-    "likes",
-    "comments",
-    "shares",
-    "saves",
-    "date_posted",
-    "processed_status",
-]
-
-# Raw, user-owned columns we must never overwrite.
-RAW_COLUMNS = set(REQUIRED_COLUMNS) - {"processed_status"}
+# Required metadata columns (row 2, no category in row 1).
+REQUIRED_META = ["LINK", "PERFORMANCE", "Status"]
+STATUS_DONE = "completed"
 
 
 class SheetsClient:
@@ -45,78 +43,148 @@ class SheetsClient:
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(config.GOOGLE_SHEET_ID)
         self.ws = sh.worksheet(config.GOOGLE_WORKSHEET_NAME)
-        self._header = None
+        self.values = self.ws.get_all_values()
+        self.meta_col: dict[str, int] = {}      # name -> 1-based col
+        self.signal_col: dict[str, int] = {}    # signal key -> 1-based col
+        self._build_model()
 
-    # ---- reading -------------------------------------------------------
-    def header(self) -> list[str]:
-        if self._header is None:
-            self._header = self.ws.row_values(1)
-        return self._header
+    # ---- header model --------------------------------------------------
+    def _build_model(self) -> None:
+        if len(self.values) < 2:
+            raise RuntimeError("Sheet has fewer than 2 header rows; expected the "
+                               "POC two-row header (categories + options).")
+        categories = list(self.values[0])
+        headers = list(self.values[1])
+        ffilled = self._ffill(categories)
+
+        for i, header in enumerate(headers):
+            name = header.strip()
+            if not name:
+                continue
+            category = ffilled[i]
+            col = i + 1  # 1-based
+            layer = taxonomy.category_to_layer(category) if category else None
+            if not category:
+                # metadata column
+                self.meta_col[name] = col
+            elif layer:
+                label = self._match_label(layer, name)
+                if label:
+                    self.signal_col[taxonomy.column_for(layer, label)] = col
+                else:
+                    log.warning("Unmapped option '%s' under category '%s'", name, category)
+            # else: ICP / PRODUCT taxonomy groups -> intentionally ignored
+
+    @staticmethod
+    def _ffill(categories: list[str]) -> list[str]:
+        out, last = [], ""
+        for c in categories:
+            cs = (c or "").strip()
+            if cs:
+                last = cs
+            out.append(last)
+        # leading columns before the first category must stay blank
+        first_idx = next((i for i, c in enumerate(categories) if (c or "").strip()), len(categories))
+        for i in range(first_idx):
+            out[i] = ""
+        return out
+
+    @staticmethod
+    def _match_label(layer: str, header: str) -> str | None:
+        target = taxonomy.slug(header)
+        for canonical in taxonomy.LAYERS[layer]:
+            if taxonomy.slug(canonical) == target:
+                return canonical
+        return None
 
     def validate_columns(self) -> None:
-        header = self.header()
-        missing = [c for c in REQUIRED_COLUMNS if c not in header]
+        missing = [c for c in REQUIRED_META if c not in self.meta_col]
         if missing:
-            raise RuntimeError(
-                "Google Sheet is missing required column(s): "
-                + ", ".join(missing)
-            )
+            raise RuntimeError("POC sheet is missing required column(s): "
+                               + ", ".join(missing))
+        expected = set(taxonomy.all_signal_columns())
+        found = set(self.signal_col)
+        gap = expected - found
+        if gap:
+            log.warning("%d taxonomy column(s) not found in sheet (will skip): %s",
+                        len(gap), sorted(gap))
 
+    # ---- reading -------------------------------------------------------
     def read_rows(self) -> list[dict]:
-        """Return list of row dicts, each augmented with a 1-based _row index."""
-        records = self.ws.get_all_records()
+        """Each row: metadata by name + signal keys (raw cell text) + _row."""
         rows = []
-        for i, rec in enumerate(records, start=2):  # row 1 is header
-            rec["_row"] = i
+        for offset, raw in enumerate(self.values[2:]):
+            sheet_row = offset + 3
+            rec: dict = {"_row": sheet_row}
+            for name, col in self.meta_col.items():
+                rec[name] = raw[col - 1] if col - 1 < len(raw) else ""
+            for key, col in self.signal_col.items():
+                rec[key] = raw[col - 1] if col - 1 < len(raw) else ""
             rows.append(rec)
         return rows
 
     @staticmethod
-    def is_pending(row: dict) -> bool:
-        status = str(row.get("processed_status", "")).strip().lower()
+    def should_process(row: dict, reprocess: bool = False) -> bool:
+        link = str(row.get("LINK", "")).strip()
+        perf = str(row.get("PERFORMANCE", "")).strip()
+        if not link or not perf or perf.lower() == "non classified":
+            return False
+        if reprocess:
+            return True
+        status = str(row.get("Status", "")).strip().lower()
         return status in ("", "pending")
 
+    @staticmethod
+    def is_analyzed(row: dict) -> bool:
+        """True if any taxonomy cell is already tagged 1."""
+        return any(str(row.get(c, "")).strip() == "1"
+                   for c in taxonomy.all_signal_columns())
+
     # ---- writing -------------------------------------------------------
-    def ensure_columns(self, columns: list[str]) -> None:
-        """Append any missing output columns to the header (never raw cols)."""
-        header = self.header()
-        to_add = [c for c in columns if c not in header]
-        # Never create a column that collides with a raw column name.
-        to_add = [c for c in to_add if c not in RAW_COLUMNS]
-        if not to_add:
-            return
-        new_header = header + to_add
-        self.ws.update(
-            range_name="A1",
-            values=[new_header],
-        )
-        self._header = new_header
-        log.info("Added %d output column(s) to sheet: %s", len(to_add), to_add)
+    def plan_writes(self, row_index: int, existing_row: dict, signal_values: dict,
+                    reprocess: bool = False, icp_fill: str = "",
+                    product_fill: str = "") -> list[dict]:
+        """Pure: compute the batch_update payload without touching the network.
 
-    def _col_letter(self, col_name: str) -> str | None:
-        header = self.header()
-        if col_name not in header:
-            return None
-        return gspread.utils.rowcol_to_a1(1, header.index(col_name) + 1).rstrip("1")
-
-    def write_row_outputs(self, row_index: int, values: dict) -> None:
-        """Write a dict of {column_name: value} into a single sheet row.
-
-        Refuses to write any raw user column. Builds a batch update so each
-        run touches the sheet minimally (idempotent per row).
+        Only ever targets taxonomy (1/0) cells, Status, and blank ICP/Product —
+        never other human columns. Taxonomy cells are skipped when already
+        filled unless reprocess=True.
         """
-        header = self.header()
         updates = []
-        for col_name, val in values.items():
-            if col_name in RAW_COLUMNS:
-                log.warning("Refusing to overwrite raw column '%s'", col_name)
-                continue
-            if col_name not in header:
-                log.warning("Column '%s' not in header, skipping", col_name)
-                continue
-            col_idx = header.index(col_name) + 1
-            a1 = gspread.utils.rowcol_to_a1(row_index, col_idx)
-            updates.append({"range": a1, "values": [[val]]})
 
+        def _cell(col, value):
+            updates.append({"range": gspread.utils.rowcol_to_a1(row_index, col),
+                            "values": [[value]]})
+
+        for key, val in signal_values.items():
+            col = self.signal_col.get(key)
+            if not col:
+                continue  # meta keys (primary_*, suggestions) are not signal cols
+            if not reprocess and str(existing_row.get(key, "")).strip() != "":
+                continue  # only fill empty taxonomy cells
+            _cell(col, val)
+
+        if "Status" in self.meta_col:
+            _cell(self.meta_col["Status"], STATUS_DONE)
+
+        if icp_fill and "ICP" in self.meta_col and not str(existing_row.get("ICP", "")).strip():
+            _cell(self.meta_col["ICP"], icp_fill)
+        if product_fill and "Product" in self.meta_col and not str(existing_row.get("Product", "")).strip():
+            _cell(self.meta_col["Product"], product_fill)
+
+        return updates
+
+    def write_row(self, row_index: int, existing_row: dict, signal_values: dict,
+                  reprocess: bool = False, icp_fill: str = "",
+                  product_fill: str = "") -> None:
+        updates = self.plan_writes(row_index, existing_row, signal_values,
+                                   reprocess, icp_fill, product_fill)
         if updates:
             self.ws.batch_update(updates)
+
+    def set_status(self, row_index: int, value: str) -> None:
+        if "Status" in self.meta_col:
+            self.ws.update(
+                range_name=gspread.utils.rowcol_to_a1(row_index, self.meta_col["Status"]),
+                values=[[value]],
+            )

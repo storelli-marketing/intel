@@ -10,10 +10,14 @@ the **solution** it shows, the **hook** that opens it, the **format** it uses,
 and where it sits in the funnel — then tag it against the fixed taxonomy below.
 Tag only what is actually present. Do not invent signals.
 
+## Storelli product context
+
+{product_context}
+
 ## Metadata for this video
-- Product (Storelli product featured): {product}
-- ICP (intended audience): {icp}
-- Caption / notes: {notes}
+- Product (if a human already labelled it; may be blank): {product}
+- ICP (if a human already labelled it; may be blank): {icp}
+- Storytelling structure / notes: {notes}
 
 ## Taxonomy
 
@@ -35,9 +39,14 @@ label strings from the taxonomy above (case and punctuation must match).
   "offer": "<single label>",
   "product_presence": "<single label>",
   "funnel_stage": "<single label>",
+  "icp_suggested": "<one of: Parents | Aspiring Pro | Adult Amateur | General>",
+  "product_suggested": "<the most likely Storelli product or product group shown>",
   "summary": "<one or two sentence plain-English read of the video and why it works>"
 }
 ```
+
+`icp_suggested` and `product_suggested` are best-effort classifications used only
+to fill blank human columns — give your most confident single value.
 
 Rules:
 - Multi-label layers (`hook`, `format`, `visual_style`) are arrays — list the

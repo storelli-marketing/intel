@@ -14,11 +14,14 @@ import time
 from google import genai
 
 import config
+import taxonomy
 from logger import get_logger
 
 log = get_logger()
 
-_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "..", "prompts", "video_analysis_prompt.md")
+_PROMPTS = os.path.join(os.path.dirname(__file__), "..", "prompts")
+_PROMPT_PATH = os.path.join(_PROMPTS, "video_analysis_prompt.md")
+_QA_PROMPT_PATH = os.path.join(_PROMPTS, "qa_compiler_prompt.md")
 
 
 class VideoDownloadError(RuntimeError):
@@ -32,6 +35,8 @@ class GeminiClient:
         self.model = config.GEMINI_MODEL
         with open(_PROMPT_PATH, encoding="utf-8") as f:
             self.prompt_template = f.read()
+        with open(_QA_PROMPT_PATH, encoding="utf-8") as f:
+            self.qa_template = f.read()
 
     # ---- video acquisition --------------------------------------------
     def _download(self, ig_link: str) -> str:
@@ -78,8 +83,9 @@ class GeminiClient:
     def _build_prompt(self, taxonomy_block: str, product: str, icp: str, notes: str) -> str:
         return (
             self.prompt_template
-            .replace("{product}", product or "unknown")
-            .replace("{icp}", icp or "unknown")
+            .replace("{product_context}", taxonomy.PRODUCT_CONTEXT)
+            .replace("{product}", product or "(blank)")
+            .replace("{icp}", icp or "(blank)")
             .replace("{notes}", notes or "(none)")
             .replace("{taxonomy}", taxonomy_block)
         )
@@ -101,6 +107,21 @@ class GeminiClient:
                 os.remove(path)
             except OSError:
                 pass
+
+    def qa_review(self, initial_json: str, taxonomy_block: str, product: str,
+                  icp: str, notes: str) -> str:
+        """Text-only QA/compiler pass over the first-pass tags. Returns JSON text."""
+        prompt = (
+            self.qa_template
+            .replace("{product_context}", taxonomy.PRODUCT_CONTEXT)
+            .replace("{initial_json}", initial_json)
+            .replace("{product}", product or "(blank)")
+            .replace("{icp}", icp or "(blank)")
+            .replace("{notes}", notes or "(none)")
+            .replace("{taxonomy}", taxonomy_block)
+        )
+        resp = self.client.models.generate_content(model=self.model, contents=[prompt])
+        return resp.text or ""
 
     def summarize_findings(self, prompt_text: str) -> str:
         resp = self.client.models.generate_content(

@@ -1,11 +1,16 @@
 """Storelli intelligence MVP — CLI entrypoint.
 
+Reads the POC sheet, analyzes each reel with Gemini + a QA compiler pass, writes
+1/0 taxonomy tags back (empty cells only), and correlates tags against the manual
+PERFORMANCE column. ICP/Product stay human grouping fields (filled only if blank).
+
 Commands:
-  python src/main.py analyze                 analyze pending rows, write tags
+  python src/main.py analyze                 analyze eligible rows, write tags
   python src/main.py correlations            print signal/performance findings
   python src/main.py notion-sync             push findings to Notion
   python src/main.py run-all                 analyze -> correlations -> notion
-  python src/main.py run-all --reprocess     also re-analyze completed rows
+  python src/main.py analyze --limit 5       test mode: at most 5 rows
+  python src/main.py run-all --reprocess     re-tag rows (overwrite existing)
 """
 from __future__ import annotations
 
@@ -13,7 +18,6 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
 
 import correlations as corr
 import performance
@@ -26,22 +30,27 @@ log = get_logger()
 _FINDINGS_PROMPT = os.path.join(os.path.dirname(__file__), "..", "prompts", "findings_summary_prompt.md")
 
 
+def _valid_icp(value: str) -> str:
+    """Return a canonical ICP label if the suggestion matches one, else ''."""
+    target = taxonomy.slug(value)
+    for canonical in taxonomy.ICP:
+        if taxonomy.slug(canonical) == target:
+            return canonical
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # analyze
 # ---------------------------------------------------------------------------
 def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
-    from analyzer import analyze_video
+    from analyzer import analyze_and_compile
     from gemini_client import GeminiClient, VideoDownloadError
 
     sheets = SheetsClient()
     sheets.validate_columns()
-    sheets.ensure_columns(taxonomy.all_output_columns())
 
     rows = sheets.read_rows()
-    if reprocess:
-        targets = rows
-    else:
-        targets = [r for r in rows if SheetsClient.is_pending(r)]
+    targets = [r for r in rows if SheetsClient.should_process(r, reprocess)]
 
     if limit is not None and limit >= 0:
         if len(targets) > limit:
@@ -54,45 +63,31 @@ def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
     gemini = GeminiClient()
 
     for r in targets:
-        link = str(r.get("ig_link", "")).strip()
+        link = str(r.get("LINK", "")).strip()
         row_idx = r["_row"]
-        if not link:
-            log.warning("Row %d has no ig_link, marking failed", row_idx)
-            sheets.write_row_outputs(row_idx, {"processed_status": "failed"})
-            stats["failed"] += 1
-            continue
-
         log.info("Analyzing row %d: %s", row_idx, link)
         try:
-            cols = analyze_video(
+            cols = analyze_and_compile(
                 gemini, link,
-                product=str(r.get("product", "")),
-                icp=str(r.get("icp", "")),
-                notes=str(r.get("caption", r.get("notes", ""))),
+                product=str(r.get("Product", "")),
+                icp=str(r.get("ICP", "")),
+                notes=str(r.get("Storytelling structure", "")),
             )
-            cols["processed_status"] = "completed"
-            cols["processed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            # carry the new signal values into the in-memory row for bucketing
-            r.update(cols)
-            sheets.write_row_outputs(row_idx, cols)
+            r.update(cols)  # carry tags into in-memory row for correlations
+            sheets.write_row(
+                row_idx, existing_row=r, signal_values=cols, reprocess=reprocess,
+                icp_fill=_valid_icp(cols.get("icp_suggested", "")),
+                product_fill=str(cols.get("product_suggested", "")).strip(),
+            )
             stats["analyzed"] += 1
         except VideoDownloadError as e:
             log.error("Download failed row %d: %s", row_idx, e)
-            sheets.write_row_outputs(row_idx, {"processed_status": "failed"})
+            sheets.set_status(row_idx, "failed")
             stats["failed"] += 1
         except Exception as e:  # noqa: BLE001
             log.error("Analysis failed row %d: %s", row_idx, e)
-            sheets.write_row_outputs(row_idx, {"processed_status": "failed"})
+            sheets.set_status(row_idx, "failed")
             stats["failed"] += 1
-
-    # relative performance buckets across the whole dataset, written for the
-    # rows we just completed
-    scores = performance.compute_scores(rows)
-    buckets = performance.assign_buckets(scores)
-    for r in targets:
-        b = buckets.get(r["_row"])
-        if b and str(r.get("processed_status", "")).lower() == "completed":
-            sheets.write_row_outputs(r["_row"], {"performance_bucket": b})
 
     return stats
 
@@ -100,40 +95,39 @@ def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
 # ---------------------------------------------------------------------------
 # correlations
 # ---------------------------------------------------------------------------
-def _completed_rows(sheets: SheetsClient) -> list[dict]:
-    rows = sheets.read_rows()
-    return [r for r in rows if str(r.get("processed_status", "")).lower() == "completed"]
-
-
 def compute_findings(sheets: SheetsClient) -> tuple[list[dict], dict, list[dict]]:
-    """Returns (completed_rows, buckets, correlation_results)."""
+    """Returns (analyzed_rows, buckets, correlation_results).
+
+    Buckets come from the manual PERFORMANCE column; correlations run over rows
+    that have been tagged AND carry a recognized performance value.
+    """
     all_rows = sheets.read_rows()
-    scores = performance.compute_scores(all_rows)
-    buckets = performance.assign_buckets(scores)
-    completed = [r for r in all_rows if str(r.get("processed_status", "")).lower() == "completed"]
-    results = corr.compute(completed, buckets)
-    return completed, buckets, results
+    buckets = performance.buckets_for_rows(all_rows)
+    analyzed = [r for r in all_rows
+                if SheetsClient.is_analyzed(r) and r["_row"] in buckets]
+    results = corr.compute(analyzed, buckets)
+    return analyzed, buckets, results
 
 
 def cmd_correlations(print_summary: bool = True) -> list[dict]:
     sheets = SheetsClient()
     sheets.validate_columns()
-    completed, buckets, results = compute_findings(sheets)
+    analyzed, buckets, results = compute_findings(sheets)
 
-    if not completed:
-        log.warning("No completed rows to correlate. Run `analyze` first.")
+    if not analyzed:
+        log.warning("No tagged rows with performance to correlate. Run `analyze` first.")
         return results
 
     win = corr.winning(results)
-    wk = corr.weak(results)
 
     print("\n=== Signal / performance associations (correlation, not causation) ===")
-    print(f"Completed videos analyzed: {len(completed)}\n")
+    print(f"Tagged videos with performance: {len(analyzed)} "
+          f"(positive class = '{performance.POSITIVE_BUCKET}')\n")
     for r in win[:15]:
         print(f"Signal: {r['signal']}")
         print(f"  Videos with signal: {r['videos_with_signal']}")
-        print(f"  Good/Great rate with signal:    {corr.fmt_pct(r['gg_rate_with'])}")
-        print(f"  Good/Great rate without signal: {corr.fmt_pct(r['gg_rate_without'])}")
+        print(f"  Great rate with signal:    {corr.fmt_pct(r['high_rate_with'])}")
+        print(f"  Great rate without signal: {corr.fmt_pct(r['high_rate_without'])}")
         print(f"  Lift: {corr.fmt_lift(r['lift'])}")
         print(f"  Confidence: {r['confidence']}\n")
     return results
@@ -145,9 +139,9 @@ def cmd_correlations(print_summary: bool = True) -> list[dict]:
 def _templated_finding(r: dict, positive: bool) -> str:
     verb = "associated with a higher" if positive else "associated with a lower"
     return (
-        f"'{r['label']}' ({r['layer']}) is {verb} Good/Great rate "
-        f"({corr.fmt_pct(r['gg_rate_with'])} with vs "
-        f"{corr.fmt_pct(r['gg_rate_without'])} without)."
+        f"'{r['label']}' ({r['layer']}) is {verb} '{performance.POSITIVE_BUCKET}' rate "
+        f"({corr.fmt_pct(r['high_rate_with'])} with vs "
+        f"{corr.fmt_pct(r['high_rate_without'])} without)."
     )
 
 
@@ -187,8 +181,8 @@ def build_findings(results: list[dict], completed: list[dict], buckets: dict) ->
             payload = {
                 "winning_signals": findings["winning_signals"],
                 "weak_signals": findings["weak_signals"],
-                "by_icp": _group_counts(completed, buckets, "icp"),
-                "by_product": _group_counts(completed, buckets, "product"),
+                "by_icp": _group_counts(completed, buckets, "ICP"),
+                "by_product": _group_counts(completed, buckets, "Product"),
             }
             prompt = tmpl.replace("{findings_json}", json.dumps(payload, indent=2))
             from analyzer import parse_model_json
@@ -208,12 +202,12 @@ def _group_counts(rows: list[dict], buckets: dict, key: str) -> list[dict]:
     groups: dict[str, dict] = {}
     for r in rows:
         g = str(r.get(key, "")).strip() or "(unspecified)"
-        d = groups.setdefault(g, {"n": 0, "gg": 0})
+        d = groups.setdefault(g, {"n": 0, "hi": 0})
         d["n"] += 1
-        if performance.is_good_or_great(buckets.get(r["_row"], "")):
-            d["gg"] += 1
-    return [{key: g, "videos": d["n"],
-             "good_great_rate": corr.fmt_pct(d["gg"] / d["n"] if d["n"] else 0)}
+        if performance.is_positive(buckets.get(r["_row"], "")):
+            d["hi"] += 1
+    return [{key.lower(): g, "videos": d["n"],
+             "great_rate": corr.fmt_pct(d["hi"] / d["n"] if d["n"] else 0)}
             for g, d in groups.items()]
 
 

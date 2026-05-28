@@ -1,7 +1,7 @@
 """Signal <-> performance association engine.
 
-For each signal column we compute the Good/Great rate when the signal is
-present vs absent, and the lift between them. This is correlation /
+For each signal column we compute the high-performer (Great) rate when the
+signal is present vs absent, and the lift between them. This is correlation /
 association, NOT causation.
 
 Confidence by sample size (videos WITH the signal):
@@ -10,7 +10,7 @@ Confidence by sample size (videos WITH the signal):
   Low    < 8
 """
 import taxonomy
-from performance import is_good_or_great
+from performance import is_positive
 
 
 def _confidence(sample_size: int) -> str:
@@ -36,15 +36,11 @@ def compute(rows: list[dict], buckets: dict[int, str]) -> list[dict]:
         n_with = len(with_rows)
         n_without = len(without_rows)
 
-        gg_with = sum(
-            1 for r in with_rows if is_good_or_great(buckets.get(r["_row"], ""))
-        )
-        gg_without = sum(
-            1 for r in without_rows if is_good_or_great(buckets.get(r["_row"], ""))
-        )
+        hi_with = sum(1 for r in with_rows if is_positive(buckets.get(r["_row"], "")))
+        hi_without = sum(1 for r in without_rows if is_positive(buckets.get(r["_row"], "")))
 
-        rate_with = (gg_with / n_with) if n_with else 0.0
-        rate_without = (gg_without / n_without) if n_without else 0.0
+        rate_with = (hi_with / n_with) if n_with else 0.0
+        rate_without = (hi_without / n_without) if n_without else 0.0
         lift = rate_with - rate_without
 
         results.append({
@@ -53,8 +49,8 @@ def compute(rows: list[dict], buckets: dict[int, str]) -> list[dict]:
             "label": meta["label"],
             "total_videos": total,
             "videos_with_signal": n_with,
-            "gg_rate_with": rate_with,
-            "gg_rate_without": rate_without,
+            "high_rate_with": rate_with,
+            "high_rate_without": rate_without,
             "lift": lift,
             "confidence": _confidence(n_with),
         })
