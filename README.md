@@ -150,3 +150,47 @@ causation.**
 
 `data/sample_input.csv` / `data/sample_output.csv` show the shape of the sheet
 before and after a run.
+
+## Internal web trigger (FastAPI)
+
+A tiny FastAPI app wraps the CLI so the analyze loop can be kicked off from a
+browser. It's not a SaaS, dashboard app, or login system — just three endpoints
+and a small HTML page. No database; run state is kept in memory and resets on
+restart.
+
+```
+GET  /            Dashboard: title, limit dropdown (5/25/50/150/all),
+                  run-secret input, status, last-run summary.
+POST /run/social  Queues analyze (with --limit) + correlations + (if Notion
+                  env vars are set) notion-sync, in a background thread.
+                  Requires X-Run-Secret header == RUN_SECRET env. Returns 409
+                  if a run is already in progress.
+GET  /status      JSON: status (idle|queued|running|completed|failed), counts
+                  (scanned / analyzed / needs_review / skipped / failed), top
+                  winning + weak signals, notion sync state.
+```
+
+Run locally:
+
+```bash
+PYTHONPATH=src uvicorn web:app --reload   # http://127.0.0.1:8000
+```
+
+### Deploy on Railway
+
+1. Push this repo to the GitHub remote Railway is connected to. The included
+   `Procfile` runs `uvicorn web:app` against `$PORT`.
+2. In Railway → Variables, set:
+   - `GEMINI_API_KEY`, `GEMINI_MODEL` (default `gemini-2.5-flash`)
+   - `GOOGLE_SHEET_ID`, `GOOGLE_WORKSHEET_NAME`
+   - `GOOGLE_SERVICE_ACCOUNT_JSON_B64` — base64 of your service-account JSON
+     (Railway can't read local files; on import, `config.py` decodes this to
+     `/tmp/service-account.json` and points the loader at it). To produce the
+     value locally: `base64 -i service-account.json | tr -d '\n'`.
+   - `NOTION_API_KEY` + `NOTION_PARENT_PAGE_ID` — optional; the web trigger
+     skips Notion sync if either is blank.
+   - `RUN_SECRET` — required; the `/run/social` endpoint returns 503 until
+     this is set. Generate one with `openssl rand -hex 24`.
+3. Make sure the Google Sheet is shared with the service-account `client_email`
+   as **Editor**.
+4. Open the Railway URL, paste the run secret, pick a limit, click run.

@@ -1,5 +1,7 @@
 """Central config loaded from environment (.env)."""
+import base64
 import os
+import pathlib
 
 from dotenv import load_dotenv
 
@@ -22,9 +24,22 @@ GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH", "").strip()
 GOOGLE_WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Sheet1").strip()
 
+# Optional Railway helper: if you can't mount the service-account JSON file,
+# base64-encode it and set GOOGLE_SERVICE_ACCOUNT_JSON_B64. We decode it to
+# disk on import so the existing path-based loader keeps working unchanged.
+_SA_B64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "").strip()
+if _SA_B64:
+    _out = pathlib.Path(GOOGLE_SERVICE_ACCOUNT_JSON_PATH or "/tmp/service-account.json")
+    _out.parent.mkdir(parents=True, exist_ok=True)
+    _out.write_bytes(base64.b64decode(_SA_B64))
+    GOOGLE_SERVICE_ACCOUNT_JSON_PATH = str(_out)
+
 # Notion
 NOTION_API_KEY = os.getenv("NOTION_API_KEY", "").strip()
 NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID", "").strip()
+
+# Web trigger
+RUN_SECRET = os.getenv("RUN_SECRET", "").strip()
 
 
 def require_sheets() -> None:
