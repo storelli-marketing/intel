@@ -126,9 +126,13 @@ class SheetsClient:
     @staticmethod
     def should_process(row: dict, reprocess: bool = False) -> bool:
         link = str(row.get("LINK", "")).strip()
-        perf = str(row.get("PERFORMANCE", "")).strip()
-        if not link or not perf or perf.lower() == "non classified":
+        if not link:
             return False
+        perf = str(row.get("PERFORMANCE", "")).strip().lower()
+        if perf == "non classified":
+            return False  # explicit human skip; never reprocess these
+        # Blank PERFORMANCE is now eligible — the runner will try to compute it
+        # from views/followers; if that fails the row is flagged needs_review.
         if reprocess:
             return True
         status = str(row.get("Status", "")).strip().lower()
@@ -143,12 +147,13 @@ class SheetsClient:
     # ---- writing -------------------------------------------------------
     def plan_writes(self, row_index: int, existing_row: dict, signal_values: dict,
                     reprocess: bool = False, icp_fill: str = "",
-                    product_fill: str = "", status_value: str = STATUS_DONE) -> list[dict]:
+                    product_fill: str = "", status_value: str = STATUS_DONE,
+                    performance_value: str = "") -> list[dict]:
         """Pure: compute the batch_update payload without touching the network.
 
-        Only ever targets taxonomy (1/0) cells, Status, and blank ICP/Product —
-        never other human columns. Taxonomy cells are skipped when already
-        filled unless reprocess=True.
+        Writes: taxonomy (1/0) cells (empty-only unless reprocess), Status,
+        ICP/Product only when blank, and PERFORMANCE only when blank or
+        reprocess. Never touches ID / LINK / Storytelling structure.
         """
         updates = []
 
@@ -172,13 +177,20 @@ class SheetsClient:
         if product_fill and "Product" in self.meta_col and not str(existing_row.get("Product", "")).strip():
             _cell(self.meta_col["Product"], product_fill)
 
+        if performance_value and "PERFORMANCE" in self.meta_col:
+            existing_perf = str(existing_row.get("PERFORMANCE", "")).strip()
+            if not existing_perf or reprocess:
+                _cell(self.meta_col["PERFORMANCE"], performance_value)
+
         return updates
 
     def write_row(self, row_index: int, existing_row: dict, signal_values: dict,
                   reprocess: bool = False, icp_fill: str = "",
-                  product_fill: str = "", status_value: str = STATUS_DONE) -> None:
+                  product_fill: str = "", status_value: str = STATUS_DONE,
+                  performance_value: str = "") -> None:
         updates = self.plan_writes(row_index, existing_row, signal_values,
-                                   reprocess, icp_fill, product_fill, status_value)
+                                   reprocess, icp_fill, product_fill,
+                                   status_value, performance_value)
         if updates:
             self.ws.batch_update(updates)
 

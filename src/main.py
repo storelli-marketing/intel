@@ -19,6 +19,7 @@ import json
 import os
 import sys
 
+import config
 import correlations as corr
 import performance
 import taxonomy
@@ -50,6 +51,57 @@ def _drop_layers(cols: dict, layers) -> dict:
     return {k: v for k, v in cols.items() if not k.startswith(prefixes)}
 
 
+# Existing PERFORMANCE values we recognize as a "valid" manual label and
+# their canonical display form (preserved when we don't overwrite).
+_PERF_DISPLAY = {"great": "Great", "good": "Good", "ok": "Ok", "underdog": "Underdog"}
+
+
+def _to_int(value) -> int | None:
+    try:
+        return int(str(value or "").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_value_ci(row: dict, *aliases) -> str:
+    """Case-insensitive lookup of a metadata column by alias."""
+    lower = {k.lower(): k for k in row}
+    for a in aliases:
+        actual = lower.get(a.lower())
+        if actual is not None:
+            return row[actual]
+    return ""
+
+
+def _determine_performance(row: dict, reprocess: bool) -> tuple[str | None, str]:
+    """Decide which PERFORMANCE label to use for this row.
+
+    Returns (label, write_value). `label` is the display value used for
+    correlations (or None to skip the row). `write_value` is non-empty only
+    when we should persist a freshly-computed PERFORMANCE to the sheet
+    (existing cell blank, or --reprocess).
+    """
+    existing = str(row.get("PERFORMANCE", "")).strip()
+    el = existing.lower()
+    if el == "non classified":
+        return None, ""  # explicit human skip
+    has_existing = el in _PERF_DISPLAY
+
+    views = _to_int(_row_value_ci(row, "views"))
+    followers = _to_int(_row_value_ci(row, "followers")) or config.STORELLI_IG_FOLLOWER_COUNT
+    computed = None
+    if views is not None and followers and followers > 0:
+        computed = performance.ratio_to_performance(views / followers)
+
+    if has_existing and not reprocess:
+        return _PERF_DISPLAY[el], ""
+    if computed:
+        return computed, computed   # write to sheet (blank existing or reprocess)
+    if has_existing:
+        return _PERF_DISPLAY[el], ""  # can't compute -> keep existing
+    return None, ""
+
+
 # ---------------------------------------------------------------------------
 # analyze
 # ---------------------------------------------------------------------------
@@ -76,7 +128,19 @@ def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
     for r in targets:
         link = str(r.get("LINK", "")).strip()
         row_idx = r["_row"]
-        log.info("Analyzing row %d: %s", row_idx, link)
+
+        # Determine PERFORMANCE first — either keep existing, auto-compute from
+        # views/followers, or mark needs_review and skip the Gemini call.
+        perf_label, perf_write = _determine_performance(r, reprocess)
+        if perf_label is None:
+            log.info("Row %d: PERFORMANCE undeterminable -> needs_review (no analysis)", row_idx)
+            sheets.write_row(row_idx, existing_row=r, signal_values={},
+                             reprocess=reprocess, status_value="needs_review")
+            stats["needs_review"] += 1
+            continue
+        r["PERFORMANCE"] = perf_label  # used by buckets_for_rows downstream
+
+        log.info("Analyzing row %d (PERFORMANCE=%s): %s", row_idx, perf_label, link)
         try:
             cols = analyze_and_compile(
                 gemini, link,
@@ -99,6 +163,7 @@ def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
                 icp_fill=_valid_icp(cols.get("icp_suggested", "")),
                 product_fill="" if product_low else str(cols.get("product_suggested", "")).strip(),
                 status_value="needs_review" if needs_review else "completed",
+                performance_value=perf_write,
             )
             if needs_review:
                 stats["needs_review"] += 1

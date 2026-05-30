@@ -114,14 +114,28 @@ Single-label (exactly one): **Problem Type**, **Solution Type**, **Conversion**,
 vocabularies for every layer, plus the Storelli product context used to ground
 Product reasoning, live in [src/taxonomy.py](src/taxonomy.py).
 
-## Performance (source of truth = manual `PERFORMANCE`)
+## Performance (manual or auto-computed)
 
-The sheet carries human-judged performance, mapped directly:
+The runner picks the row's `PERFORMANCE` in this order:
+
+1. **Existing manual value** (`Great` / `Good` / `Ok` / `Underdog`) — kept as-is
+   unless `--reprocess` is passed.
+2. **Auto-computed from views/followers ratio** when the sheet has a `Views`
+   column (and optionally a `Followers` column; otherwise the env var
+   `STORELLI_IG_FOLLOWER_COUNT`, default `170000`, is used):
+   - `r > 1.0` → `Great`
+   - `0.5 ≤ r ≤ 1.0` → `Good`
+   - `r < 0.5` → `Underdog`
+
+If neither is available, the row is set to `Status = needs_review` and skipped
+(no Gemini call). `Non classified` is always treated as a hard skip.
+
+Read-side mapping for correlations (positive class = `Great`):
 
 ```
-Great -> Great (high performer / positive class)
-Ok    -> OK    (average)
-Underdog -> Bad (low)
+Great                -> Great  (positive)
+Good / Ok            -> OK     (average)
+Underdog             -> Bad    (low)
 Non classified / blank -> skipped
 ```
 

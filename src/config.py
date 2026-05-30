@@ -41,6 +41,13 @@ NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID", "").strip()
 # Web trigger
 RUN_SECRET = os.getenv("RUN_SECRET", "").strip()
 
+# Default Storelli IG follower count, used to compute views/followers ratio
+# when the sheet has no per-row Followers column.
+try:
+    STORELLI_IG_FOLLOWER_COUNT = int(os.getenv("STORELLI_IG_FOLLOWER_COUNT", "170000") or 170000)
+except ValueError:
+    STORELLI_IG_FOLLOWER_COUNT = 170000
+
 
 def require_sheets() -> None:
     _require("GOOGLE_SHEET_ID")
