@@ -33,6 +33,12 @@ class VideoDownloadError(RuntimeError):
     pass
 
 
+class QuotaExhaustedError(RuntimeError):
+    """Gemini 429 RESOURCE_EXHAUSTED — quota/rate limit hit. Distinct from a
+    real per-video failure: the run should stop rather than burn through the
+    remaining rows marking them all failed."""
+
+
 def _is_unavailable(exc: Exception) -> bool:
     """True for a transient 503 / UNAVAILABLE error from the Gemini API."""
     code = getattr(exc, "code", None)
@@ -43,6 +49,18 @@ def _is_unavailable(exc: Exception) -> bool:
         return True
     text = str(exc).upper()
     return "503" in text or "UNAVAILABLE" in text
+
+
+def _is_quota(exc: Exception) -> bool:
+    """True for a 429 RESOURCE_EXHAUSTED quota error."""
+    code = getattr(exc, "code", None)
+    if code == 429:
+        return True
+    status = str(getattr(exc, "status", "") or "").upper()
+    if status == "RESOURCE_EXHAUSTED":
+        return True
+    text = str(exc).upper()
+    return "429" in text or "RESOURCE_EXHAUSTED" in text
 
 
 class GeminiClient:
@@ -107,6 +125,9 @@ class GeminiClient:
                     model=self.model, contents=contents)
                 return resp.text or ""
             except Exception as e:  # noqa: BLE001
+                if _is_quota(e):
+                    # Daily/rate quota — retrying within the run won't help.
+                    raise QuotaExhaustedError(str(e)) from e
                 if _is_unavailable(e) and attempt < len(RETRY_DELAYS):
                     delay = RETRY_DELAYS[attempt]
                     attempt += 1

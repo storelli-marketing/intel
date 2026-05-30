@@ -107,7 +107,7 @@ def _determine_performance(row: dict, reprocess: bool) -> tuple[str | None, str]
 # ---------------------------------------------------------------------------
 def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
     from analyzer import analyze_and_compile
-    from gemini_client import GeminiClient, VideoDownloadError
+    from gemini_client import GeminiClient, QuotaExhaustedError, VideoDownloadError
 
     sheets = SheetsClient()
     sheets.validate_columns()
@@ -139,6 +139,7 @@ def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
         "analyzed": 0,
         "needs_review": 0,
         "failed": 0,
+        "quota_stopped": False,
     }
 
     gemini = GeminiClient() if targets else None
@@ -155,7 +156,6 @@ def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
             log.info("Row %d: no determinable PERFORMANCE -> skipped", row_idx)
             stats["skipped_no_performance"] += 1
             continue
-        r["PERFORMANCE"] = perf_label  # used by buckets_for_rows downstream
 
         log.info("Analyzing row %d (PERFORMANCE=%s): %s", row_idx, perf_label, link)
         try:
@@ -174,7 +174,9 @@ def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
             needs_review = bool(skip_layers) or product_low
 
             write_values = _drop_layers(cols, skip_layers)
-            r.update(write_values)  # carry written tags into row for correlations
+            # IMPORTANT: pass the row's ORIGINAL state as existing_row so the
+            # empty-only guard fires correctly. Mutating r before the write
+            # makes every cell look pre-filled and silently skips all writes.
             sheets.write_row(
                 row_idx, existing_row=r, signal_values=write_values, reprocess=reprocess,
                 icp_fill=_valid_icp(cols.get("icp_suggested", "")),
@@ -182,12 +184,22 @@ def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
                 status_value="needs_review" if needs_review else "completed",
                 performance_value=perf_write,
             )
+            # Reflect the written values in-memory only AFTER the write.
+            r["PERFORMANCE"] = perf_label
+            r.update(write_values)
             if needs_review:
                 stats["needs_review"] += 1
                 log.info("Row %d flagged needs_review (low confidence: %s)",
                          row_idx, ", ".join(skip_layers + (["product"] if product_low else [])))
             else:
                 stats["analyzed"] += 1
+        except QuotaExhaustedError as e:
+            # Quota/rate limit — stop the run rather than marking every
+            # remaining row failed. The row is left unprocessed (no Status
+            # written) so it stays eligible for the next run.
+            log.error("Gemini quota exhausted at row %d — stopping run. %s", row_idx, e)
+            stats["quota_stopped"] = True
+            break
         except VideoDownloadError as e:
             log.error("Download failed row %d: %s", row_idx, e)
             sheets.set_status(row_idx, "failed")
@@ -350,6 +362,9 @@ def print_run_summary(stats: dict, results: list[dict], notion_done: bool) -> No
     print(f"Analyzed:                   {stats.get('analyzed', 0)}")
     print(f"Needs review:               {stats.get('needs_review', 0)}")
     print(f"Failed:                     {stats.get('failed', 0)}")
+    if stats.get("quota_stopped"):
+        print("** Run STOPPED early: Gemini quota exhausted (429). "
+              "Remaining rows left unprocessed. **")
     print(f"(rows scanned: {stats.get('scanned', 0)})\n")
     print("Top winning signals:")
     for i, r in enumerate(win, 1):

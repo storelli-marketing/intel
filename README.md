@@ -172,6 +172,11 @@ causation.**
 - Transient Gemini **503 UNAVAILABLE** errors are retried up to 3 times with
   10s / 30s / 60s backoff; if still failing, the row is marked `failed` and the
   run continues. Non-503 errors are not retried.
+- Gemini **429 RESOURCE_EXHAUSTED** (quota/rate limit) **stops the run** instead
+  of marking rows failed — the current row is left unprocessed (no Status) so it
+  stays eligible for the next run. Note: each row uses **2 Gemini calls**
+  (analysis + QA), so the free tier (~20 requests/day) only covers ~10 rows/day;
+  a paid tier is required for larger batches.
 - Idempotent: filled taxonomy cells are skipped unless `--reprocess`.
 - No frontend, no database, no Zapier/Make/n8n.
 
