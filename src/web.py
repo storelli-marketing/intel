@@ -91,7 +91,8 @@ def _do_run(limit: Optional[int]) -> None:
                          finished_at=None, stats={}, top_winning=[], top_weak=[],
                          notion="not_configured", notion_url="", error="")
 
-        stats = cmd_analyze(reprocess=False, limit=limit)
+        stats = cmd_analyze(reprocess=False, limit=limit,
+                            qa_enabled=config.QA_COMPILER_ENABLED)
 
         sheets = SheetsClient()
         sheets.validate_columns()

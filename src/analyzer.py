@@ -117,9 +117,11 @@ def _parse_with_retry(produce_text, label: str) -> dict:
 
 
 def analyze_and_compile(gemini, ig_link: str, product: str, icp: str,
-                        notes: str) -> dict:
-    """Pass 1 (video analysis) -> QA compiler pass -> final signal columns.
+                        notes: str, qa_enabled: bool = True) -> dict:
+    """Pass 1 (video analysis) -> optional QA compiler pass -> signal columns.
 
+    With qa_enabled=False the QA pass is skipped (1 Gemini call instead of 2);
+    pass-1 already emits confidence, so the needs_review guardrail still works.
     Each Gemini call retries once on invalid JSON. Raises on download or
     persistent failure so the caller can mark the row failed.
     """
@@ -129,6 +131,8 @@ def analyze_and_compile(gemini, ig_link: str, product: str, icp: str,
         lambda: gemini.analyze(ig_link, taxonomy_block, product, icp, notes),
         "Gemini analysis",
     )
+    if not qa_enabled:
+        return to_signal_columns(parsed1)
 
     initial_json = json.dumps(parsed1, ensure_ascii=False)
     parsed2 = _parse_with_retry(

@@ -105,7 +105,8 @@ def _determine_performance(row: dict, reprocess: bool) -> tuple[str | None, str]
 # ---------------------------------------------------------------------------
 # analyze
 # ---------------------------------------------------------------------------
-def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
+def cmd_analyze(reprocess: bool, limit: int | None = None,
+                qa_enabled: bool = True) -> dict:
     from analyzer import analyze_and_compile
     from gemini_client import GeminiClient, QuotaExhaustedError, VideoDownloadError
 
@@ -164,6 +165,7 @@ def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
                 product=str(r.get("Product", "")),
                 icp=str(r.get("ICP", "")),
                 notes=str(r.get("Storytelling structure", "")),
+                qa_enabled=qa_enabled,
             )
 
             # Confidence guardrail: suppress low-confidence taxonomy fields and
@@ -390,11 +392,16 @@ def main() -> int:
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
                         help="analyze at most N candidate rows this run (test mode)")
+    parser.add_argument("--no-qa", action="store_true",
+                        help="skip the QA compiler pass (1 Gemini call/row instead "
+                             "of 2; stretches a limited free-tier quota)")
     args = parser.parse_args()
+
+    qa_enabled = config.QA_COMPILER_ENABLED and not args.no_qa
 
     try:
         if args.command == "analyze":
-            stats = cmd_analyze(args.reprocess, args.limit)
+            stats = cmd_analyze(args.reprocess, args.limit, qa_enabled)
             results = cmd_correlations(print_summary=False)
             print_run_summary(stats, results, notion_done=False)
 
@@ -406,7 +413,7 @@ def main() -> int:
             print_run_summary({}, results, notion_done=done)
 
         elif args.command == "run-all":
-            stats = cmd_analyze(args.reprocess, args.limit)
+            stats = cmd_analyze(args.reprocess, args.limit, qa_enabled)
             done, _findings, results = cmd_notion_sync()
             print_run_summary(stats, results, notion_done=done)
     except RuntimeError as e:

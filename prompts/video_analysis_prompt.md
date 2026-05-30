@@ -41,9 +41,14 @@ label strings from the taxonomy above (case and punctuation must match).
   "funnel_stage": "<single label>",
   "icp_suggested": "<one of: Parents | Aspiring Pro | Adult Amateur | General>",
   "product_suggested": "<the most likely Storelli product or product group shown>",
+  "confidence": {"hook": "high|medium|low", "format": "high|medium|low", "product": "high|medium|low"},
   "summary": "<one or two sentence plain-English read of the video and why it works>"
 }
 ```
+
+Always include the `confidence` object. Use **low** when the video is ambiguous
+or you are guessing, **medium** when reasonably sure, **high** when clearly
+supported — low confidence triggers human review instead of a wrong auto-tag.
 
 `icp_suggested` and `product_suggested` are best-effort classifications used only
 to fill blank human columns — give your most confident single value.

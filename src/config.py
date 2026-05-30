@@ -41,6 +41,11 @@ NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID", "").strip()
 # Web trigger
 RUN_SECRET = os.getenv("RUN_SECRET", "").strip()
 
+# QA compiler pass. On by default (2 Gemini calls/row). Set false to skip it
+# (1 call/row) — useful to stretch a limited free-tier quota.
+QA_COMPILER_ENABLED = os.getenv("QA_COMPILER_ENABLED", "true").strip().lower() \
+    not in ("false", "0", "no", "off")
+
 # Default Storelli IG follower count, used to compute views/followers ratio
 # when the sheet has no per-row Followers column.
 try:

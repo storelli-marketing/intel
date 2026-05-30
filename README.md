@@ -101,6 +101,24 @@ python src/main.py analyze --limit 5     # test mode: at most 5 rows
 `--limit N` caps how many eligible rows are analyzed in a run — use it for cheap
 test runs without calling Gemini on the whole sheet.
 
+`--no-qa` skips the QA compiler pass (1 Gemini call/row instead of 2). Same as
+setting `QA_COMPILER_ENABLED=false`. Pass-1 still emits confidence, so the
+`needs_review` guardrail keeps working. Use it to stretch a limited free-tier
+quota (~20 calls/day ≈ 20 rows/day with QA off vs ~10 with it on).
+
+### Free-tier daily batching
+
+With no paid Gemini tier, process the sheet across several days. Idempotency
+means each run resumes where the last stopped, and a 429 stops the run cleanly:
+
+```bash
+# once per day, with QA off to maximize rows/day:
+python src/main.py analyze --limit 18 --no-qa
+```
+
+Already-analyzed rows are skipped, so you don't redo work. ~18 rows/day covers
+~150 rows in ~8 days.
+
 ## What gets written back
 
 Per analyzed row (human columns `ID`/`LINK`/`PERFORMANCE`/`Storytelling
