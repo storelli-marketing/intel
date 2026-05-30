@@ -215,3 +215,13 @@ class SheetsClient:
                 range_name=gspread.utils.rowcol_to_a1(row_index, self.meta_col["Status"]),
                 values=[[value]],
             )
+
+    def reset_statuses(self, row_indices: list[int]) -> None:
+        """Blank the Status cell for the given rows (batched). Used to re-queue
+        rows that were marked processed but never actually tagged."""
+        if "Status" not in self.meta_col or not row_indices:
+            return
+        col = self.meta_col["Status"]
+        updates = [{"range": gspread.utils.rowcol_to_a1(ri, col), "values": [[""]]}
+                   for ri in row_indices]
+        self.ws.batch_update(updates)

@@ -24,7 +24,7 @@ import correlations as corr
 import performance
 import taxonomy
 from logger import get_logger
-from sheets_client import SheetsClient
+from sheets_client import PROCESSED_STATUSES, SheetsClient
 
 log = get_logger()
 
@@ -334,6 +334,30 @@ def _group_counts(rows: list[dict], buckets: dict, key: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# reset-incomplete
+# ---------------------------------------------------------------------------
+def cmd_reset_incomplete() -> int:
+    """Clear Status on rows that are marked processed (completed/failed/
+    needs_review) but carry no real taxonomy tags — re-queues rows left
+    half-baked by an interrupted/failed run so plain `analyze` picks them up."""
+    sheets = SheetsClient()
+    sheets.validate_columns()
+    rows = sheets.read_rows()
+    broken = [r["_row"] for r in rows
+              if str(r.get("Status", "")).strip().lower() in PROCESSED_STATUSES
+              and not SheetsClient.is_analyzed(r)]
+    if not broken:
+        print("No incomplete rows found (processed but untagged). Nothing to reset.")
+        return 0
+    sheets.reset_statuses(broken)
+    log.info("Reset Status on %d incomplete row(s): %s", len(broken), broken)
+    print(f"Reset Status to blank on {len(broken)} incomplete row(s) "
+          f"(processed but no taxonomy) — they are eligible again.")
+    print(f"Rows: {broken}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # notion-sync
 # ---------------------------------------------------------------------------
 def cmd_notion_sync() -> tuple[bool, dict, list[dict]]:
@@ -387,7 +411,8 @@ def print_run_summary(stats: dict, results: list[dict], notion_done: bool) -> No
 def main() -> int:
     parser = argparse.ArgumentParser(description="Storelli intelligence MVP")
     parser.add_argument("command",
-                        choices=["analyze", "correlations", "notion-sync", "run-all"])
+                        choices=["analyze", "correlations", "notion-sync", "run-all",
+                                 "reset-incomplete"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -407,6 +432,9 @@ def main() -> int:
 
         elif args.command == "correlations":
             cmd_correlations()
+
+        elif args.command == "reset-incomplete":
+            return cmd_reset_incomplete()
 
         elif args.command == "notion-sync":
             done, _findings, results = cmd_notion_sync()
