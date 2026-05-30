@@ -23,9 +23,26 @@ _PROMPTS = os.path.join(os.path.dirname(__file__), "..", "prompts")
 _PROMPT_PATH = os.path.join(_PROMPTS, "video_analysis_prompt.md")
 _QA_PROMPT_PATH = os.path.join(_PROMPTS, "qa_compiler_prompt.md")
 
+# Backoff for transient Gemini 503 UNAVAILABLE: up to 3 retries, waiting
+# 10s / 30s / 60s before each. After that we give up and the caller marks the
+# row failed.
+RETRY_DELAYS = (10, 30, 60)
+
 
 class VideoDownloadError(RuntimeError):
     pass
+
+
+def _is_unavailable(exc: Exception) -> bool:
+    """True for a transient 503 / UNAVAILABLE error from the Gemini API."""
+    code = getattr(exc, "code", None)
+    if code == 503:
+        return True
+    status = str(getattr(exc, "status", "") or "").upper()
+    if status == "UNAVAILABLE":
+        return True
+    text = str(exc).upper()
+    return "503" in text or "UNAVAILABLE" in text
 
 
 class GeminiClient:
@@ -79,6 +96,26 @@ class GeminiClient:
             raise RuntimeError("Gemini file processing failed")
         return myfile
 
+    # ---- model call with 503 retry/backoff -----------------------------
+    def _generate(self, contents) -> str:
+        """Call generate_content, retrying transient 503 UNAVAILABLE with
+        10s/30s/60s backoff. Non-503 errors propagate immediately."""
+        attempt = 0
+        while True:
+            try:
+                resp = self.client.models.generate_content(
+                    model=self.model, contents=contents)
+                return resp.text or ""
+            except Exception as e:  # noqa: BLE001
+                if _is_unavailable(e) and attempt < len(RETRY_DELAYS):
+                    delay = RETRY_DELAYS[attempt]
+                    attempt += 1
+                    log.warning("Gemini 503 UNAVAILABLE; retry %d/%d in %ds",
+                                attempt, len(RETRY_DELAYS), delay)
+                    time.sleep(delay)
+                    continue
+                raise
+
     # ---- analysis ------------------------------------------------------
     def _build_prompt(self, taxonomy_block: str, product: str, icp: str, notes: str) -> str:
         return (
@@ -97,11 +134,7 @@ class GeminiClient:
         try:
             uploaded = self._upload_and_wait(path)
             prompt = self._build_prompt(taxonomy_block, product, icp, notes)
-            resp = self.client.models.generate_content(
-                model=self.model,
-                contents=[uploaded, prompt],
-            )
-            return resp.text or ""
+            return self._generate([uploaded, prompt])
         finally:
             try:
                 os.remove(path)
@@ -120,11 +153,7 @@ class GeminiClient:
             .replace("{notes}", notes or "(none)")
             .replace("{taxonomy}", taxonomy_block)
         )
-        resp = self.client.models.generate_content(model=self.model, contents=[prompt])
-        return resp.text or ""
+        return self._generate([prompt])
 
     def summarize_findings(self, prompt_text: str) -> str:
-        resp = self.client.models.generate_content(
-            model=self.model, contents=[prompt_text]
-        )
-        return resp.text or ""
+        return self._generate([prompt_text])

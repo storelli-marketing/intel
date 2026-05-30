@@ -169,6 +169,9 @@ causation.**
   other human columns.
 - Two Gemini passes (analysis + QA compiler); each retries invalid JSON once,
   then the row is marked `failed`.
+- Transient Gemini **503 UNAVAILABLE** errors are retried up to 3 times with
+  10s / 30s / 60s backoff; if still failing, the row is marked `failed` and the
+  run continues. Non-503 errors are not retried.
 - Idempotent: filled taxonomy cells are skipped unless `--reprocess`.
 - No frontend, no database, no Zapier/Make/n8n.
 
