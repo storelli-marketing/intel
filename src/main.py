@@ -113,30 +113,47 @@ def cmd_analyze(reprocess: bool, limit: int | None = None) -> dict:
     sheets.validate_columns()
 
     rows = sheets.read_rows()
-    targets = [r for r in rows if SheetsClient.should_process(r, reprocess)]
+    eligible = [r for r in rows if SheetsClient.should_process(r, reprocess)]
 
-    if limit is not None and limit >= 0:
-        if len(targets) > limit:
-            log.info("Limiting this run to %d of %d candidate row(s)", limit, len(targets))
-        targets = targets[:limit]
+    # Count rows skipped specifically because they were already analyzed
+    # (idempotency). Under --reprocess nothing is skipped for this reason.
+    skipped_already = 0
+    if not reprocess:
+        skipped_already = sum(
+            1 for r in rows
+            if str(r.get("LINK", "")).strip()
+            and str(r.get("PERFORMANCE", "")).strip().lower() != "non classified"
+            and SheetsClient.is_processed(r)
+        )
 
-    stats = {"scanned": len(rows), "analyzed": 0, "skipped": len(rows) - len(targets),
-             "failed": 0, "needs_review": 0}
+    targets = eligible
+    if limit is not None and limit >= 0 and len(eligible) > limit:
+        log.info("Limiting this run to %d of %d eligible row(s)", limit, len(eligible))
+        targets = eligible[:limit]
 
-    gemini = GeminiClient()
+    stats = {
+        "scanned": len(rows),
+        "eligible": len(eligible),
+        "skipped_already_analyzed": skipped_already,
+        "skipped_no_performance": 0,
+        "analyzed": 0,
+        "needs_review": 0,
+        "failed": 0,
+    }
+
+    gemini = GeminiClient() if targets else None
 
     for r in targets:
         link = str(r.get("LINK", "")).strip()
         row_idx = r["_row"]
 
-        # Determine PERFORMANCE first — either keep existing, auto-compute from
-        # views/followers, or mark needs_review and skip the Gemini call.
+        # Determine PERFORMANCE first — keep existing, or auto-compute from
+        # views/followers. If neither works, skip the row entirely (no write,
+        # no Gemini) so it stays eligible once performance is added later.
         perf_label, perf_write = _determine_performance(r, reprocess)
         if perf_label is None:
-            log.info("Row %d: PERFORMANCE undeterminable -> needs_review (no analysis)", row_idx)
-            sheets.write_row(row_idx, existing_row=r, signal_values={},
-                             reprocess=reprocess, status_value="needs_review")
-            stats["needs_review"] += 1
+            log.info("Row %d: no determinable PERFORMANCE -> skipped", row_idx)
+            stats["skipped_no_performance"] += 1
             continue
         r["PERFORMANCE"] = perf_label  # used by buckets_for_rows downstream
 
@@ -327,11 +344,13 @@ def print_run_summary(stats: dict, results: list[dict], notion_done: bool) -> No
     win = corr.winning(results)[:3] if results else []
     wk = corr.weak(results)[:3] if results else []
     print("\nRun completed.\n")
-    print(f"Rows scanned:       {stats.get('scanned', 0)}")
-    print(f"Rows analyzed:      {stats.get('analyzed', 0)}")
-    print(f"Rows needs_review:  {stats.get('needs_review', 0)}")
-    print(f"Rows skipped:       {stats.get('skipped', 0)}")
-    print(f"Rows failed:        {stats.get('failed', 0)}\n")
+    print(f"Eligible rows found:        {stats.get('eligible', 0)}")
+    print(f"Skipped (already analyzed): {stats.get('skipped_already_analyzed', 0)}")
+    print(f"Skipped (no performance):   {stats.get('skipped_no_performance', 0)}")
+    print(f"Analyzed:                   {stats.get('analyzed', 0)}")
+    print(f"Needs review:               {stats.get('needs_review', 0)}")
+    print(f"Failed:                     {stats.get('failed', 0)}")
+    print(f"(rows scanned: {stats.get('scanned', 0)})\n")
     print("Top winning signals:")
     for i, r in enumerate(win, 1):
         print(f"{i}. {r['signal']} ({corr.fmt_lift(r['lift'])}, {r['confidence']})")

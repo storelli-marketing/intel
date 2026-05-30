@@ -65,15 +65,27 @@ because bare labels collide (e.g. "None" under both CONVERSION and PRODUCT
 PRESENCE). Required columns: `LINK`, `PERFORMANCE`, `Status` — missing ones
 raise a clear error.
 
-### Which rows are processed
+### Which rows are processed (idempotency)
 
-Only rows where **all** of these hold:
-- `LINK` is not empty
-- `PERFORMANCE` is not empty and not `Non classified`
-- `Status` is empty or `pending` (ignored when `--reprocess` is passed)
+A row is **eligible** only when `LINK` is set, `PERFORMANCE` is not
+`Non classified`, and the row is **not already analyzed**. A row counts as
+already analyzed when **any** of these hold:
 
-Within a processed row, only **empty** taxonomy cells are filled (unless
-`--reprocess`), so human-entered tags are preserved.
+- `Status` = `completed`, `needs_review`, or `failed`, or
+- any taxonomy 1/0 cell already carries a value (0 or 1).
+
+Default behavior is therefore safe to re-run:
+- already-analyzed rows are skipped,
+- existing taxonomy values are never overwritten (empty cells only),
+- completed rows are never reprocessed.
+
+The **only** exception is `--reprocess`, which re-runs eligible rows and
+overwrites taxonomy + PERFORMANCE. Rows with no determinable performance are
+skipped without writing anything, so they become eligible automatically once
+views/PERFORMANCE are added.
+
+Each run prints a summary: eligible found · skipped (already analyzed) ·
+skipped (no performance) · analyzed · needs_review · failed.
 
 ## Commands
 

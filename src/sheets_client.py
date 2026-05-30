@@ -33,6 +33,9 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 REQUIRED_META = ["LINK", "PERFORMANCE", "Status"]
 STATUS_DONE = "completed"
 
+# A row with any of these Status values has already been through the analyzer.
+PROCESSED_STATUSES = {"completed", "needs_review", "failed"}
+
 
 class SheetsClient:
     def __init__(self):
@@ -124,6 +127,20 @@ class SheetsClient:
         return rows
 
     @staticmethod
+    def is_processed(row: dict) -> bool:
+        """Idempotency check: has this row already been analyzed?
+
+        True when Status is completed/needs_review/failed, OR any taxonomy cell
+        already carries a value (0 or 1). Such rows are skipped by default and
+        only re-run when --reprocess is passed.
+        """
+        status = str(row.get("Status", "")).strip().lower()
+        if status in PROCESSED_STATUSES:
+            return True
+        return any(str(row.get(c, "")).strip() != ""
+                   for c in taxonomy.all_signal_columns())
+
+    @staticmethod
     def should_process(row: dict, reprocess: bool = False) -> bool:
         link = str(row.get("LINK", "")).strip()
         if not link:
@@ -131,16 +148,14 @@ class SheetsClient:
         perf = str(row.get("PERFORMANCE", "")).strip().lower()
         if perf == "non classified":
             return False  # explicit human skip; never reprocess these
-        # Blank PERFORMANCE is now eligible — the runner will try to compute it
-        # from views/followers; if that fails the row is flagged needs_review.
         if reprocess:
             return True
-        status = str(row.get("Status", "")).strip().lower()
-        return status in ("", "pending")
+        return not SheetsClient.is_processed(row)
 
     @staticmethod
     def is_analyzed(row: dict) -> bool:
-        """True if any taxonomy cell is already tagged 1."""
+        """True if the row carries real (1) taxonomy tags — used to select rows
+        for correlations (narrower than is_processed)."""
         return any(str(row.get(c, "")).strip() == "1"
                    for c in taxonomy.all_signal_columns())
 

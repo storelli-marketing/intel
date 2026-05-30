@@ -1,5 +1,7 @@
 # secrets / credentials
 .env
+.env.*
+!.env.example
 *.json
 !data/*.json
 service-account*.json

@@ -230,7 +230,9 @@ function tbl(title, rows){
 }
 function renderSummary(j){
   const s = j.stats || {};
-  const counts = `<p>scanned ${s.scanned||0} · analyzed ${s.analyzed||0} · needs_review ${s.needs_review||0} · failed ${s.failed||0} · skipped ${s.skipped||0}</p>`;
+  const counts = `<p>eligible ${s.eligible||0} · analyzed ${s.analyzed||0} · needs_review ${s.needs_review||0}`
+    + ` · skipped(already) ${s.skipped_already_analyzed||0} · skipped(no perf) ${s.skipped_no_performance||0}`
+    + ` · failed ${s.failed||0} <span style="color:#888">(scanned ${s.scanned||0})</span></p>`;
   return counts + tbl('Top winning signals', j.top_winning) + tbl('Top weak signals', j.top_weak);
 }
 async function run(e){
