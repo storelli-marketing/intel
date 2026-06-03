@@ -92,11 +92,23 @@ skipped (no performance) · analyzed · needs_review · failed.
 ```bash
 python src/main.py analyze        # analyze eligible rows, write taxonomy tags
 python src/main.py correlations   # print signal/performance findings
+python src/main.py synthesize     # write data/latest_learnings.md (no API calls)
 python src/main.py notion-sync    # push findings to Notion (later)
 python src/main.py run-all        # analyze -> correlations -> notion
 python src/main.py run-all --reprocess   # re-tag rows (overwrite existing)
 python src/main.py analyze --limit 5     # test mode: at most 5 rows
+python src/main.py reset-incomplete      # re-queue processed-but-untagged rows
 ```
+
+### Learning Synthesizer (`synthesize`)
+
+Turns the correlation results + tagged rows + performance buckets into a
+structured markdown brief at **`data/latest_learnings.md`** with seven sections:
+Winning Patterns, Weak Patterns, Product Learnings, ICP Learnings, Next Tests,
+Formats To Scale, Formats To Kill. It's pure computation (no Gemini calls), so
+it's free and repeatable, and it prints a thin-data warning when there are too
+few `Great` videos for the lifts to be reliable. The file is a generated
+artifact (gitignored).
 
 `--limit N` caps how many eligible rows are analyzed in a run — use it for cheap
 test runs without calling Gemini on the whole sheet.

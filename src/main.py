@@ -334,6 +334,30 @@ def _group_counts(rows: list[dict], buckets: dict, key: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# synthesize (Learning Synthesizer -> data/latest_learnings.md)
+# ---------------------------------------------------------------------------
+def cmd_synthesize() -> int:
+    from datetime import datetime, timezone
+
+    import synthesizer
+
+    sheets = SheetsClient()
+    sheets.validate_columns()
+    analyzed, buckets, results = compute_findings(sheets)
+    if not analyzed:
+        print("No tagged rows with performance yet — nothing to synthesize. "
+              "Run `analyze` first.")
+        return 0
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    path = synthesizer.write_learnings(analyzed, buckets, results, ts)
+    great = sum(1 for r in analyzed if performance.is_positive(buckets.get(r["_row"], "")))
+    print(f"Learnings written to {path}")
+    print(f"({len(analyzed)} tagged videos, {great} Great; "
+          f"positive class = {performance.POSITIVE_BUCKET})")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # reset-incomplete
 # ---------------------------------------------------------------------------
 def cmd_reset_incomplete() -> int:
@@ -411,8 +435,8 @@ def print_run_summary(stats: dict, results: list[dict], notion_done: bool) -> No
 def main() -> int:
     parser = argparse.ArgumentParser(description="Storelli intelligence MVP")
     parser.add_argument("command",
-                        choices=["analyze", "correlations", "notion-sync", "run-all",
-                                 "reset-incomplete"])
+                        choices=["analyze", "correlations", "synthesize", "notion-sync",
+                                 "run-all", "reset-incomplete"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -432,6 +456,9 @@ def main() -> int:
 
         elif args.command == "correlations":
             cmd_correlations()
+
+        elif args.command == "synthesize":
+            return cmd_synthesize()
 
         elif args.command == "reset-incomplete":
             return cmd_reset_incomplete()
