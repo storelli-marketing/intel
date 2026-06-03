@@ -37,6 +37,8 @@ if _SA_B64:
 # Notion
 NOTION_API_KEY = os.getenv("NOTION_API_KEY", "").strip()
 NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID", "").strip()
+# Optional: a Notion page/dashboard URL the "Open Notion Dashboard" button links to.
+NOTION_DASHBOARD_URL = os.getenv("NOTION_DASHBOARD_URL", "").strip()
 
 # Web trigger
 RUN_SECRET = os.getenv("RUN_SECRET", "").strip()

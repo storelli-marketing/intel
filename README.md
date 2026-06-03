@@ -215,46 +215,52 @@ causation.**
 `data/sample_input.csv` / `data/sample_output.csv` show the shape of the sheet
 before and after a run.
 
-## Internal web trigger (FastAPI)
+## Dashboard (FastAPI control panel)
 
-A tiny FastAPI app wraps the CLI so the analyze loop can be kicked off from a
-browser. It's not a SaaS, dashboard app, or login system — just three endpoints
-and a small HTML page. No database; run state is kept in memory and resets on
-restart.
+A stupid-simple internal control panel (dark + brand-yellow, Saira). Not a SaaS
+or login system — one HTML page, no DB, run state in memory (resets on restart).
+Errors are shown in the page rather than crashing. One run at a time (409 while
+busy). Read-only `GET`s are open; actions require the `X-Run-Secret` header.
+
+Sections: **Run Controls** (limit dropdown 5/18/25/50/150/All, QA on/off toggle,
+run-secret), **Run Status** (idle/running/completed/failed + scanned / analyzed /
+skipped / needs_review / failed + top winning/weak signals), **Latest Learnings**
+(live preview of `data/latest_learnings.md`), **Notion** (Open Notion Dashboard).
 
 ```
-GET  /            Dashboard: title, limit dropdown (5/25/50/150/all),
-                  run-secret input, status, last-run summary.
-POST /run/social  Queues analyze (with --limit) + correlations + (if Notion
-                  env vars are set) notion-sync, in a background thread.
-                  Requires X-Run-Secret header == RUN_SECRET env. Returns 409
-                  if a run is already in progress.
-GET  /status      JSON: status (idle|queued|running|completed|failed), counts
-                  (scanned / analyzed / needs_review / skipped / failed), top
-                  winning + weak signals, notion sync state.
+GET  /                 dashboard HTML
+GET  /status           JSON run state + counts + top signals + notion_url
+GET  /learnings        {exists, content} from data/latest_learnings.md
+POST /run/social       analyze {limit, qa} in background        (X-Run-Secret)
+POST /run/correlations recompute correlations in background     (X-Run-Secret)
+POST /run/synthesize   regenerate latest_learnings.md           (X-Run-Secret)
 ```
 
 Run locally:
 
 ```bash
-PYTHONPATH=src uvicorn web:app --reload   # http://127.0.0.1:8000
+RUN_SECRET=dev PYTHONPATH=src uvicorn web:app --reload   # http://127.0.0.1:8000
 ```
 
 ### Deploy on Railway
 
-1. Push this repo to the GitHub remote Railway is connected to. The included
-   `Procfile` runs `uvicorn web:app` against `$PORT`.
+1. Push to the GitHub remote Railway is connected to. The included `Procfile`
+   runs `uvicorn web:app` against `$PORT`. The brand logo in `static/` is served
+   at `/static/logo-accent.png`.
 2. In Railway → Variables, set:
    - `GEMINI_API_KEY`, `GEMINI_MODEL` (default `gemini-2.5-flash`)
    - `GOOGLE_SHEET_ID`, `GOOGLE_WORKSHEET_NAME`
    - `GOOGLE_SERVICE_ACCOUNT_JSON_B64` — base64 of your service-account JSON
      (Railway can't read local files; on import, `config.py` decodes this to
-     `/tmp/service-account.json` and points the loader at it). To produce the
-     value locally: `base64 -i service-account.json | tr -d '\n'`.
-   - `NOTION_API_KEY` + `NOTION_PARENT_PAGE_ID` — optional; the web trigger
-     skips Notion sync if either is blank.
-   - `RUN_SECRET` — required; the `/run/social` endpoint returns 503 until
-     this is set. Generate one with `openssl rand -hex 24`.
-3. Make sure the Google Sheet is shared with the service-account `client_email`
-   as **Editor**.
-4. Open the Railway URL, paste the run secret, pick a limit, click run.
+     `/tmp/service-account.json`). Produce it locally:
+     `base64 -i service-account.json | tr -d '\n'`.
+   - `RUN_SECRET` — **required**; the `POST /run/*` endpoints return 503 until
+     set. Generate one with `openssl rand -hex 24`.
+   - `QA_COMPILER_ENABLED` — `false` to run 1 Gemini call/row (free-tier friendly).
+   - `NOTION_DASHBOARD_URL` — optional; the "Open Notion Dashboard" button links
+     here (button shows "not configured" until set).
+   - `NOTION_API_KEY` + `NOTION_PARENT_PAGE_ID` — optional (Notion sync, later).
+3. Share the Google Sheet with the service-account `client_email` as **Editor**.
+4. Open the Railway URL, paste the run secret, pick a limit, toggle QA, click a
+   button. Note: a real `Run Social Media Learning` consumes Gemini quota; the
+   429 guardrail stops the run cleanly when the free tier is exhausted.

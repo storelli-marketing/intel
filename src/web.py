@@ -1,18 +1,20 @@
-"""Minimal internal web trigger for the Storelli intelligence MVP.
+"""Internal dashboard + control panel for the Storelli intelligence MVP.
+
+Stupid-simple FastAPI app (no framework, no DB). Wraps the CLI functions behind
+buttons. One run at a time; state kept in-memory (resets on restart). Errors are
+captured into STATE.error and shown in the UI rather than crashing.
 
 Endpoints:
-  GET  /            -> tiny HTML dashboard (no framework, no login).
-  POST /run/social  -> queues analyze + correlations (+ optional notion-sync)
-                       in the background. Requires X-Run-Secret header that
-                       matches RUN_SECRET env. Single-flight (409 if running).
-  GET  /status      -> latest run state (idle/queued/running/completed/failed)
-                       + counts and top winning/weak signals.
-
-Architecture stays exactly as before: this just wraps the same CLI functions.
-No database. State is kept in-memory; on Railway restart, state resets.
+  GET  /                 dashboard (HTML)
+  GET  /status           current run state (JSON)
+  GET  /learnings        data/latest_learnings.md (JSON: {exists, content})
+  POST /run/social       analyze with {limit, qa} (background; RUN_SECRET)
+  POST /run/correlations recompute correlations (background; RUN_SECRET)
+  POST /run/synthesize   regenerate latest_learnings.md (background; RUN_SECRET)
 """
 from __future__ import annotations
 
+import os
 import secrets as stdlib_secrets
 import threading
 from datetime import datetime, timezone
@@ -20,6 +22,7 @@ from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
@@ -30,17 +33,25 @@ log = get_logger()
 
 app = FastAPI(title="Storelli Marketing Brain")
 
-# In-memory state. One run at a time; latest result lives here.
+_STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
+if os.path.isdir(_STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+_LEARNINGS = os.path.join(os.path.dirname(__file__), "..", "data", "latest_learnings.md")
+
 STATE: dict = {
-    "status": "idle",          # idle | queued | running | completed | failed
+    "status": "idle",        # idle | queued | running | completed | failed
+    "action": "",            # social | correlations | synthesize
     "limit": None,
+    "qa": True,
     "started_at": None,
     "finished_at": None,
     "stats": {},
     "top_winning": [],
     "top_weak": [],
-    "notion": "not_configured",  # not_configured | skipped | synced | failed
-    "notion_url": "",
+    "learnings_ready": os.path.exists(_LEARNINGS),
+    "notion": "synced" if False else "not_run",
+    "notion_url": config.NOTION_DASHBOARD_URL,
     "error": "",
 }
 _LOCK = threading.Lock()
@@ -52,11 +63,9 @@ def _now() -> str:
 
 
 def _short(r: dict) -> dict:
-    return {
-        "signal": r["signal"], "layer": r["layer"], "label": r["label"],
-        "lift": corr.fmt_lift(r["lift"]),
-        "n": r["videos_with_signal"], "confidence": r["confidence"],
-    }
+    return {"signal": r["signal"], "layer": r["layer"], "label": r["label"],
+            "lift": corr.fmt_lift(r["lift"]), "n": r["videos_with_signal"],
+            "confidence": r["confidence"]}
 
 
 def _check_secret(provided: Optional[str]) -> None:
@@ -68,7 +77,7 @@ def _check_secret(provided: Optional[str]) -> None:
 
 
 def _parse_limit(value) -> Optional[int]:
-    if value in (None, "", "all"):
+    if value in (None, "", "all", "All", "ALL"):
         return None
     try:
         n = int(value)
@@ -79,51 +88,93 @@ def _parse_limit(value) -> Optional[int]:
     return n
 
 
-# ---- the actual work (runs in a thread) -----------------------------------
-def _do_run(limit: Optional[int]) -> None:
-    # Lazy imports so module import doesn't require Google/Gemini creds.
-    from main import cmd_analyze, compute_findings, build_findings
+def _begin(action: str, **fields) -> None:
+    with _LOCK:
+        STATE.update(status="running", action=action, started_at=_now(),
+                     finished_at=None, error="", **fields)
+
+
+def _finish(**fields) -> None:
+    with _LOCK:
+        STATE.update(status="completed", finished_at=_now(), **fields)
+
+
+def _fail(msg: str) -> None:
+    log.exception("dashboard action failed")
+    with _LOCK:
+        STATE.update(status="failed", finished_at=_now(), error=msg)
+
+
+# ---- background workers ----------------------------------------------------
+def _refresh_correlations() -> None:
+    from main import compute_findings
     from sheets_client import SheetsClient
+    sheets = SheetsClient()
+    sheets.validate_columns()
+    _analyzed, _buckets, results = compute_findings(sheets)
+    with _LOCK:
+        STATE["top_winning"] = [_short(x) for x in corr.winning(results)[:5]]
+        STATE["top_weak"] = [_short(x) for x in corr.weak(results)[:5]]
 
+
+def _do_social(limit: Optional[int], qa: bool) -> None:
+    from main import cmd_analyze
     try:
+        _begin("social", limit=limit, qa=qa)
+        stats = cmd_analyze(reprocess=False, limit=limit, qa_enabled=qa)
         with _LOCK:
-            STATE.update(status="running", limit=limit, started_at=_now(),
-                         finished_at=None, stats={}, top_winning=[], top_weak=[],
-                         notion="not_configured", notion_url="", error="")
+            STATE["stats"] = stats
+        try:
+            _refresh_correlations()
+        except Exception as e:  # noqa: BLE001 - correlations are best-effort here
+            log.warning("post-analyze correlations refresh failed: %s", e)
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
 
-        stats = cmd_analyze(reprocess=False, limit=limit,
-                            qa_enabled=config.QA_COMPILER_ENABLED)
 
+def _do_correlations() -> None:
+    try:
+        _begin("correlations")
+        _refresh_correlations()
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
+def _do_synthesize() -> None:
+    try:
+        _begin("synthesize")
+        from main import compute_findings
+        from sheets_client import SheetsClient
+        import synthesizer
         sheets = SheetsClient()
         sheets.validate_columns()
         analyzed, buckets, results = compute_findings(sheets)
-        top_w = [_short(x) for x in corr.winning(results)[:5]]
-        top_b = [_short(x) for x in corr.weak(results)[:5]]
-
-        notion_status = "not_configured"
-        notion_url = ""
-        if config.NOTION_API_KEY and config.NOTION_PARENT_PAGE_ID:
-            if analyzed:
-                try:
-                    findings = build_findings(results, analyzed, buckets)
-                    from notion_client import NotionDashboard
-                    notion_url = NotionDashboard().publish(findings)
-                    notion_status = "synced"
-                except Exception as e:  # noqa: BLE001
-                    log.exception("notion sync failed")
-                    notion_status = "failed"
-                    notion_url = f"error: {e}"
-            else:
-                notion_status = "skipped"
-
-        with _LOCK:
-            STATE.update(status="completed", finished_at=_now(), stats=stats,
-                         top_winning=top_w, top_weak=top_b,
-                         notion=notion_status, notion_url=notion_url)
+        if not analyzed:
+            _finish(learnings_ready=os.path.exists(_LEARNINGS),
+                    error="No tagged rows yet — nothing to synthesize.")
+            return
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        synthesizer.write_learnings(analyzed, buckets, results, ts)
+        _finish(learnings_ready=True)
     except Exception as e:  # noqa: BLE001
-        log.exception("run failed")
-        with _LOCK:
-            STATE.update(status="failed", finished_at=_now(), error=str(e))
+        _fail(str(e))
+
+
+def _guarded(action_fn, background: BackgroundTasks) -> dict:
+    with _LOCK:
+        if STATE["status"] in ("queued", "running"):
+            raise HTTPException(409, "a run is already in progress")
+        STATE.update(status="queued", error="")
+    background.add_task(action_fn)
+    return {"status": "queued"}
+
+
+# ---- request models --------------------------------------------------------
+class SocialReq(BaseModel):
+    limit: Optional[str] = None   # "5"|"18"|"25"|"50"|"150"|"all"
+    qa: bool = True
 
 
 # ---- routes ----------------------------------------------------------------
@@ -138,118 +189,244 @@ def status() -> JSONResponse:
         return JSONResponse(dict(STATE))
 
 
-class RunReq(BaseModel):
-    limit: Optional[str] = None  # "5"|"25"|"50"|"150"|"all"
+@app.get("/learnings")
+def learnings() -> JSONResponse:
+    if not os.path.exists(_LEARNINGS):
+        return JSONResponse({"exists": False, "content": "",
+                             "error": "No learnings yet — run Generate Learnings."})
+    try:
+        with open(_LEARNINGS, encoding="utf-8") as f:
+            return JSONResponse({"exists": True, "content": f.read(), "error": ""})
+    except OSError as e:
+        return JSONResponse({"exists": False, "content": "", "error": str(e)})
 
 
 @app.post("/run/social", status_code=202)
-def run_social(req: RunReq, background: BackgroundTasks,
-               x_run_secret: Optional[str] = Header(default=None,
-                                                    alias="X-Run-Secret")) -> dict:
+def run_social(req: SocialReq, background: BackgroundTasks,
+               x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     limit = _parse_limit(req.limit)
-    with _LOCK:
-        if STATE["status"] in ("queued", "running"):
-            raise HTTPException(409, "a run is already in progress")
-        STATE.update(status="queued", limit=limit, error="")
-    background.add_task(_do_run, limit)
-    return {"status": "queued", "limit": limit}
+    qa = bool(req.qa)
+    return _guarded(lambda: _do_social(limit, qa), background) | {"limit": limit, "qa": qa}
 
 
-# ---- HTML (no framework, inline) ------------------------------------------
+@app.post("/run/correlations", status_code=202)
+def run_correlations(background: BackgroundTasks,
+                     x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_correlations, background)
+
+
+@app.post("/run/synthesize", status_code=202)
+def run_synthesize(background: BackgroundTasks,
+                   x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_synthesize, background)
+
+
+# ---- dashboard HTML --------------------------------------------------------
 _HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Storelli Marketing Brain</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Saira:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,800;1,900&display=swap" rel="stylesheet">
 <style>
-  body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;color:#111}
-  h1{margin-bottom:.25rem} .sub{color:#666;margin-top:0;margin-bottom:1.5rem}
-  form{display:flex;gap:.75rem;align-items:end;flex-wrap:wrap;margin-bottom:1.5rem}
-  label{display:flex;flex-direction:column;font-size:.85rem;color:#555}
-  select,input,button{padding:.5rem .75rem;font-size:1rem;border:1px solid #ccc;border-radius:6px}
-  button{background:#111;color:#fff;border:0;cursor:pointer}
-  button:disabled{opacity:.6;cursor:not-allowed}
-  pre{background:#f5f5f5;padding:.75rem;border-radius:6px;overflow:auto;font-size:.85rem}
-  .pill{display:inline-block;padding:.15rem .6rem;border-radius:999px;background:#eee;color:#333;font-size:.8rem;margin-left:.5rem}
-  .pill.running,.pill.queued{background:#fff3bf;color:#7a5a00}
-  .pill.completed{background:#d3f9d8;color:#0b5d1a}
-  .pill.failed{background:#ffe3e3;color:#a01919}
-  table{width:100%;border-collapse:collapse;font-size:.85rem;margin-top:.25rem}
-  th,td{text-align:left;padding:.3rem .5rem;border-bottom:1px solid #eee}
+  :root{--bg:#050505;--yellow:#e4f000;--panel:rgba(16,16,16,.72);--border:rgba(255,255,255,.08);
+        --gray:#8d8d8d;--gray-dim:#6b6b6b;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:#fff;font-family:'Saira',sans-serif;
+       padding:32px 18px 64px;display:flex;justify-content:center}
+  .wrap{width:100%;max-width:720px}
+  header{display:flex;flex-direction:column;align-items:center;text-align:center;margin-bottom:30px}
+  header img{width:180px;height:auto;filter:drop-shadow(0 2px 14px rgba(0,0,0,.5));margin-bottom:18px}
+  h1{margin:0;line-height:.9;font-style:italic;font-weight:900;letter-spacing:-1px}
+  h1 .a{color:#fff;font-size:42px;display:block}
+  h1 .b{color:var(--yellow);font-size:42px;display:block}
+  .sub{color:var(--gray);font-weight:600;font-size:13px;letter-spacing:7px;margin-top:14px}
+  section{background:var(--panel);border:1px solid var(--border);border-radius:18px;
+          padding:22px 22px 24px;margin-top:18px;backdrop-filter:blur(2px)}
+  h2{margin:0 0 16px;font-size:13px;font-weight:700;letter-spacing:3px;color:#fff;text-transform:uppercase}
+  h2 .pin{color:var(--yellow);margin-right:10px}
+  label.fld{display:block;font-size:11px;letter-spacing:1.5px;color:var(--gray);
+            text-transform:uppercase;margin:0 0 6px}
+  .row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+  .row > div{flex:1;min-width:130px}
+  select,input{width:100%;padding:11px 12px;font-size:15px;font-family:inherit;color:#fff;
+       background:#0c0c0c;border:1px solid var(--border);border-radius:10px}
+  select:focus,input:focus{outline:none;border-color:rgba(228,240,0,.55)}
+  .toggle{display:flex;align-items:center;gap:10px;height:43px}
+  .toggle input{width:auto}
+  button{font-family:inherit;cursor:pointer;border:0;border-radius:12px;font-weight:800;
+         font-style:italic;letter-spacing:.5px;transition:transform .12s,box-shadow .2s,background .2s}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .btn-primary{width:100%;height:62px;background:var(--yellow);color:#000;font-size:22px;
+       margin-top:16px;box-shadow:0 0 50px rgba(228,240,0,.16)}
+  .btn-primary:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 0 70px rgba(228,240,0,.28)}
+  .btn-row{display:flex;gap:12px;margin-top:14px}
+  .btn-secondary{flex:1;height:52px;background:rgba(228,240,0,.04);color:var(--yellow);
+       border:1.5px solid rgba(228,240,0,.45);font-size:16px}
+  .btn-secondary:hover:not(:disabled){background:rgba(228,240,0,.1);border-color:var(--yellow)}
+  .notion{display:flex;align-items:center;justify-content:center;gap:12px;width:100%;height:60px;
+       background:rgba(228,240,0,.04);color:var(--yellow);border:1.5px solid rgba(228,240,0,.55);
+       font-size:20px;text-decoration:none;border-radius:14px}
+  .notion:hover{background:rgba(228,240,0,.1);border-color:var(--yellow)}
+  .notion.off{color:var(--gray-dim);border-color:var(--border);pointer-events:none}
+  .pill{display:inline-block;padding:.2rem .7rem;border-radius:999px;font-size:12px;font-weight:700;
+        letter-spacing:1px;text-transform:uppercase;background:#222;color:#bbb}
+  .pill.queued,.pill.running{background:#3a3300;color:#ffe066}
+  .pill.completed{background:#0c3d18;color:#7ee29a}
+  .pill.failed{background:#3d0c0c;color:#ff8f8f}
+  .err{background:#3d0c0c;border:1px solid #5a1a1a;color:#ffb3b3;padding:10px 14px;border-radius:10px;
+       margin-top:12px;font-size:13px;white-space:pre-wrap;word-break:break-word;display:none}
+  .stats{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:14px}
+  .stat{background:#0c0c0c;border:1px solid var(--border);border-radius:12px;padding:12px 6px;text-align:center}
+  .stat .num{font-size:30px;font-weight:800;line-height:1}
+  .stat .lbl{font-size:10px;letter-spacing:1px;color:var(--gray);text-transform:uppercase;margin-top:6px}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+  th,td{text-align:left;padding:5px 6px;border-bottom:1px solid rgba(255,255,255,.06)}
+  th{color:var(--gray);font-weight:600;letter-spacing:1px}
+  .meta{font-size:12px;color:var(--gray);margin-top:8px}
+  pre{background:#0c0c0c;border:1px solid var(--border);border-radius:12px;padding:14px;
+      max-height:380px;overflow:auto;font-size:12px;line-height:1.5;white-space:pre-wrap;color:#d8d8d8}
+  .hint{font-size:11px;color:var(--gray-dim);margin-top:6px}
 </style>
 </head>
 <body>
-<h1>Storelli Marketing Brain</h1>
-<p class="sub">Internal trigger — Sheets ↔ Gemini ↔ Notion. Correlations only, never causation.</p>
+<div class="wrap">
+  <header>
+    <img src="/static/logo-accent.png" alt="Storelli" onerror="this.style.display='none'">
+    <h1><span class="a">STORELLI</span><span class="b">MARKETING BRAIN</span></h1>
+    <div class="sub">SOCIAL LEARNING</div>
+  </header>
 
-<form id="runForm" onsubmit="return run(event)">
-  <label>Limit<select id="limit">
-    <option value="5">5</option>
-    <option value="25">25</option>
-    <option value="50">50</option>
-    <option value="150">150</option>
-    <option value="all">all</option>
-  </select></label>
-  <label>Run secret<input id="secret" type="password" required></label>
-  <button id="goBtn" type="submit">Run Social Media Learning</button>
-</form>
+  <div id="err" class="err"></div>
 
-<h2>Status <span id="pill" class="pill">idle</span></h2>
-<pre id="status">loading…</pre>
+  <!-- 1 + 2: Social Media Learning + Run Controls -->
+  <section>
+    <h2><span class="pin">+</span>Run Controls</h2>
+    <div class="row">
+      <div>
+        <label class="fld">Limit (rows)</label>
+        <select id="limit">
+          <option>5</option><option selected>18</option><option>25</option>
+          <option>50</option><option>150</option><option value="all">All</option>
+        </select>
+      </div>
+      <div style="flex:0 0 140px">
+        <label class="fld">QA pass</label>
+        <div class="toggle"><input type="checkbox" id="qa"><span id="qaLbl">off (1 call/row)</span></div>
+      </div>
+      <div>
+        <label class="fld">Run secret</label>
+        <input id="secret" type="password" placeholder="RUN_SECRET" autocomplete="off">
+      </div>
+    </div>
+    <button class="btn-primary" id="btnSocial" onclick="run('social')">⚡ Run Social Media Learning</button>
+    <div class="btn-row">
+      <button class="btn-secondary" id="btnCorr" onclick="run('correlations')">Run Correlations</button>
+      <button class="btn-secondary" id="btnSyn" onclick="run('synthesize')">Generate Learnings</button>
+    </div>
+    <div class="hint">QA off = 1 Gemini call/row (stretches free-tier quota). Already-analyzed rows are always skipped.</div>
+  </section>
 
-<h2>Last run</h2>
-<div id="summary">—</div>
+  <!-- 3: Run Status -->
+  <section>
+    <h2><span class="pin">+</span>Run Status &nbsp;<span id="pill" class="pill">idle</span></h2>
+    <div class="meta" id="meta">—</div>
+    <div class="stats">
+      <div class="stat"><div class="num" id="s_scanned">–</div><div class="lbl">Scanned</div></div>
+      <div class="stat"><div class="num" id="s_analyzed">–</div><div class="lbl">Analyzed</div></div>
+      <div class="stat"><div class="num" id="s_skipped">–</div><div class="lbl">Skipped</div></div>
+      <div class="stat"><div class="num" id="s_review">–</div><div class="lbl">Needs review</div></div>
+      <div class="stat"><div class="num" id="s_failed">–</div><div class="lbl">Failed</div></div>
+    </div>
+    <div id="signals"></div>
+  </section>
+
+  <!-- 4: Latest Learnings -->
+  <section>
+    <h2><span class="pin">+</span>Latest Learnings</h2>
+    <pre id="learnings">Loading…</pre>
+  </section>
+
+  <!-- 5: Notion Link -->
+  <section>
+    <h2><span class="pin">+</span>Notion</h2>
+    <a id="notion" class="notion off" target="_blank" rel="noopener">Open Notion Dashboard</a>
+  </section>
+</div>
 
 <script>
+const $ = id => document.getElementById(id);
+function showErr(m){ const e=$('err'); if(m){e.textContent=m;e.style.display='block';} else {e.style.display='none';} }
+
+$('qa').addEventListener('change', e => {
+  $('qaLbl').textContent = e.target.checked ? 'on (2 calls/row)' : 'off (1 call/row)';
+});
+
+function tbl(title, rows){
+  if(!rows || !rows.length) return '<p class="meta"><b>'+title+'</b>: (none yet)</p>';
+  let h='<p class="meta" style="margin-bottom:2px"><b>'+title+'</b></p><table><thead><tr>'
+       +'<th>signal</th><th>layer</th><th>lift</th><th>n</th><th>conf</th></tr></thead><tbody>';
+  for(const r of rows) h+='<tr><td>'+r.label+'</td><td>'+r.layer+'</td><td>'+r.lift+'</td><td>'+r.n+'</td><td>'+r.confidence+'</td></tr>';
+  return h+'</tbody></table>';
+}
+
 async function poll(){
   try{
-    const r = await fetch('/status'); const j = await r.json();
-    const pill = document.getElementById('pill');
-    pill.textContent = j.status; pill.className = 'pill ' + j.status;
-    document.getElementById('goBtn').disabled =
-      (j.status === 'queued' || j.status === 'running');
-    document.getElementById('status').textContent = JSON.stringify({
-      status: j.status, limit: j.limit,
-      started_at: j.started_at, finished_at: j.finished_at,
-      notion: j.notion, error: j.error,
-    }, null, 2);
-    document.getElementById('summary').innerHTML = renderSummary(j);
-  }catch(e){
-    document.getElementById('status').textContent = 'status fetch failed: ' + e;
-  }
+    const j = await (await fetch('/status')).json();
+    const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
+    const busy = (j.status==='queued'||j.status==='running');
+    ['btnSocial','btnCorr','btnSyn'].forEach(b=>$(b).disabled=busy);
+    const s=j.stats||{};
+    const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0);
+    $('s_scanned').textContent = s.scanned ?? '–';
+    $('s_analyzed').textContent= s.analyzed ?? '–';
+    $('s_skipped').textContent = (s.scanned!=null)?skipped:'–';
+    $('s_review').textContent  = s.needs_review ?? '–';
+    $('s_failed').textContent  = s.failed ?? '–';
+    let meta = 'action: '+(j.action||'—')+' · limit: '+(j.limit==null?'all':j.limit)+' · qa: '+(j.qa?'on':'off');
+    if(j.started_at) meta+=' · started '+j.started_at;
+    if(j.finished_at) meta+=' · finished '+j.finished_at;
+    if(s.quota_stopped) meta+=' · ⚠ stopped on Gemini quota (429)';
+    $('meta').textContent=meta;
+    $('signals').innerHTML = tbl('Top winning signals', j.top_winning)+tbl('Top weak signals', j.top_weak);
+    // Notion button
+    const n=$('notion');
+    if(j.notion_url){ n.href=j.notion_url; n.classList.remove('off'); n.textContent='Open Notion Dashboard ↗'; }
+    else { n.removeAttribute('href'); n.classList.add('off'); n.textContent='Notion not configured'; }
+    showErr(j.error);
+  }catch(e){ showErr('status fetch failed: '+e); }
 }
-function tbl(title, rows){
-  if(!rows || !rows.length) return '<p><b>'+title+'</b>: (none)</p>';
-  let h = '<p><b>'+title+'</b></p><table><thead><tr>'
-        + '<th>signal</th><th>layer</th><th>lift</th><th>n</th><th>confidence</th>'
-        + '</tr></thead><tbody>';
-  for(const r of rows){
-    h += '<tr><td>'+r.label+'</td><td>'+r.layer+'</td><td>'+r.lift+'</td><td>'+r.n+'</td><td>'+r.confidence+'</td></tr>';
-  }
-  return h + '</tbody></table>';
+
+async function loadLearnings(){
+  try{
+    const j = await (await fetch('/learnings')).json();
+    $('learnings').textContent = j.exists ? j.content : (j.error||'No learnings yet.');
+  }catch(e){ $('learnings').textContent='failed to load learnings: '+e; }
 }
-function renderSummary(j){
-  const s = j.stats || {};
-  const counts = `<p>eligible ${s.eligible||0} · analyzed ${s.analyzed||0} · needs_review ${s.needs_review||0}`
-    + ` · skipped(already) ${s.skipped_already_analyzed||0} · skipped(no perf) ${s.skipped_no_performance||0}`
-    + ` · failed ${s.failed||0} <span style="color:#888">(scanned ${s.scanned||0})</span></p>`;
-  return counts + tbl('Top winning signals', j.top_winning) + tbl('Top weak signals', j.top_weak);
+
+async function run(action){
+  showErr('');
+  const secret=$('secret').value;
+  const path = action==='social' ? '/run/social' : action==='correlations' ? '/run/correlations' : '/run/synthesize';
+  const body = action==='social' ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';
+  try{
+    const r = await fetch(path, {method:'POST',
+      headers:{'X-Run-Secret':secret,'Content-Type':'application/json'}, body});
+    if(!r.ok){ showErr('error '+r.status+': '+(await r.text())); }
+    await poll();
+    if(action!=='social') setTimeout(()=>{poll();loadLearnings();}, 1500);
+  }catch(e){ showErr('request failed: '+e); }
 }
-async function run(e){
-  e.preventDefault();
-  const limit = document.getElementById('limit').value;
-  const secret = document.getElementById('secret').value;
-  const r = await fetch('/run/social', {
-    method: 'POST',
-    headers: {'X-Run-Secret': secret, 'Content-Type': 'application/json'},
-    body: JSON.stringify({limit}),
-  });
-  if(!r.ok){ alert('error ' + r.status + ': ' + (await r.text())); }
-  poll();
-  return false;
-}
-poll(); setInterval(poll, 3000);
+
+poll(); loadLearnings();
+setInterval(poll, 3000);
+setInterval(loadLearnings, 15000);
 </script>
 </body></html>
 """
