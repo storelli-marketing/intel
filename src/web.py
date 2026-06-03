@@ -50,8 +50,10 @@ STATE: dict = {
     "top_winning": [],
     "top_weak": [],
     "learnings_ready": os.path.exists(_LEARNINGS),
-    "notion": "synced" if False else "not_run",
+    "notion": "not_run",     # not_run | synced | failed | not_configured
+    "notion_summary": {},
     "notion_url": config.NOTION_DASHBOARD_URL,
+    "slack": "not_run",      # not_run | posted | failed
     "error": "",
 }
 _LOCK = threading.Lock()
@@ -117,6 +119,24 @@ def _refresh_correlations() -> None:
         STATE["top_weak"] = [_short(x) for x in corr.weak(results)[:5]]
 
 
+def _maybe_slack(videos_analyzed) -> None:
+    """Best-effort Slack post after a run; never fails the run."""
+    if not config.SLACK_WEBHOOK_URL:
+        return
+    try:
+        from main import gather_slack_inputs
+        import slack_report
+        data = gather_slack_inputs(videos_analyzed=videos_analyzed,
+                                   notion_updated=(STATE.get("notion") == "synced"))
+        slack_report.post(slack_report.build_message(**data))
+        with _LOCK:
+            STATE["slack"] = "posted"
+    except Exception as e:  # noqa: BLE001
+        with _LOCK:
+            STATE["slack"] = "failed"
+        log.warning("auto slack post failed: %s", e)
+
+
 def _do_social(limit: Optional[int], qa: bool) -> None:
     from main import cmd_analyze
     try:
@@ -128,8 +148,45 @@ def _do_social(limit: Optional[int], qa: bool) -> None:
             _refresh_correlations()
         except Exception as e:  # noqa: BLE001 - correlations are best-effort here
             log.warning("post-analyze correlations refresh failed: %s", e)
+        _maybe_slack(stats.get("analyzed"))
         _finish()
     except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
+def _do_notion_sync() -> None:
+    try:
+        _begin("notion-sync")
+        from main import notion_sync
+        summary = notion_sync()
+        _finish(notion="synced", notion_summary=summary)
+    except RuntimeError as e:
+        # known clean prerequisite (not configured / no learnings) — show, don't crash
+        with _LOCK:
+            STATE.update(status="failed", finished_at=_now(),
+                         notion="not_configured", error=str(e))
+    except Exception as e:  # noqa: BLE001
+        with _LOCK:
+            STATE["notion"] = "failed"
+        _fail(str(e))
+
+
+def _do_slack() -> None:
+    try:
+        _begin("slack-report")
+        if not config.SLACK_WEBHOOK_URL:
+            with _LOCK:
+                STATE.update(status="failed", finished_at=_now(), slack="failed",
+                             error="SLACK_WEBHOOK_URL not configured.")
+            return
+        from main import gather_slack_inputs
+        import slack_report
+        data = gather_slack_inputs(notion_updated=(STATE.get("notion") == "synced"))
+        slack_report.post(slack_report.build_message(**data))
+        _finish(slack="posted")
+    except Exception as e:  # noqa: BLE001
+        with _LOCK:
+            STATE["slack"] = "failed"
         _fail(str(e))
 
 
@@ -222,6 +279,20 @@ def run_synthesize(background: BackgroundTasks,
                    x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     return _guarded(_do_synthesize, background)
+
+
+@app.post("/run/notion-sync", status_code=202)
+def run_notion_sync(background: BackgroundTasks,
+                    x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_notion_sync, background)
+
+
+@app.post("/run/slack-report", status_code=202)
+def run_slack_report(background: BackgroundTasks,
+                     x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_slack, background)
 
 
 # ---- dashboard HTML --------------------------------------------------------
@@ -355,8 +426,13 @@ _HTML = """<!doctype html>
 
   <!-- 5: Notion Link -->
   <section>
-    <h2><span class="pin">+</span>Notion</h2>
-    <a id="notion" class="notion off" target="_blank" rel="noopener">Open Notion Dashboard</a>
+    <h2><span class="pin">+</span>Notion Brain</h2>
+    <div class="btn-row">
+      <button class="btn-secondary" id="btnNotion" onclick="run('notion-sync')">Update Notion Brain</button>
+      <button class="btn-secondary" id="btnSlack" onclick="run('slack-report')">Send Slack Report</button>
+    </div>
+    <div class="meta" id="notionSummary"></div>
+    <a id="notion" class="notion off" target="_blank" rel="noopener" style="margin-top:14px">Open Notion Dashboard</a>
   </section>
 </div>
 
@@ -381,7 +457,7 @@ async function poll(){
     const j = await (await fetch('/status')).json();
     const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
     const busy = (j.status==='queued'||j.status==='running');
-    ['btnSocial','btnCorr','btnSyn'].forEach(b=>$(b).disabled=busy);
+    ['btnSocial','btnCorr','btnSyn','btnNotion','btnSlack'].forEach(b=>$(b).disabled=busy);
     const s=j.stats||{};
     const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0);
     $('s_scanned').textContent = s.scanned ?? '–';
@@ -395,10 +471,19 @@ async function poll(){
     if(s.quota_stopped) meta+=' · ⚠ stopped on Gemini quota (429)';
     $('meta').textContent=meta;
     $('signals').innerHTML = tbl('Top winning signals', j.top_winning)+tbl('Top weak signals', j.top_weak);
-    // Notion button
+    // Notion button + sync summary
     const n=$('notion');
     if(j.notion_url){ n.href=j.notion_url; n.classList.remove('off'); n.textContent='Open Notion Dashboard ↗'; }
     else { n.removeAttribute('href'); n.classList.add('off'); n.textContent='Notion not configured'; }
+    const ns=j.notion_summary||{};
+    const sumKeys=Object.keys(ns);
+    if(sumKeys.length){
+      $('notionSummary').textContent = 'Last Notion sync — ' + sumKeys.map(k=>{
+        const d=ns[k]; return k+': +'+(d.created||0)+' / ~'+(d.updated||0);
+      }).join(' · ');
+    } else {
+      $('notionSummary').textContent = 'Notion: '+(j.notion||'not run')+(j.slack&&j.slack!=='not_run'?(' · Slack: '+j.slack):'');
+    }
     showErr(j.error);
   }catch(e){ showErr('status fetch failed: '+e); }
 }
@@ -413,7 +498,9 @@ async function loadLearnings(){
 async function run(action){
   showErr('');
   const secret=$('secret').value;
-  const path = action==='social' ? '/run/social' : action==='correlations' ? '/run/correlations' : '/run/synthesize';
+  const paths = {social:'/run/social', correlations:'/run/correlations', synthesize:'/run/synthesize',
+                 'notion-sync':'/run/notion-sync', 'slack-report':'/run/slack-report'};
+  const path = paths[action];
   const body = action==='social' ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';
   try{
     const r = await fetch(path, {method:'POST',

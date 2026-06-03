@@ -18,6 +18,7 @@ from performance import is_positive
 log = get_logger()
 
 _OUT = os.path.join(os.path.dirname(__file__), "..", "data", "latest_learnings.md")
+LEARNINGS_PATH = _OUT  # public alias for other modules
 
 MIN_GROUP = 2  # min videos before a product/ICP group is worth a finding
 
@@ -85,6 +86,7 @@ def _next_tests(win: list[dict], products: dict, icps: dict) -> list[dict]:
         ("Authority", "Tutorial"),
         (hook, "Do / Don't"),
     ]
+    problem = _first_label(win, "problem_type", "Chronic Pain")
     seen, tests = set(), []
     for h, f in combos:
         key = (h, f)
@@ -94,6 +96,8 @@ def _next_tests(win: list[dict], products: dict, icps: dict) -> list[dict]:
         tests.append({
             "hypothesis": f"A '{f}' format led by a '{h}' hook lifts the Great rate for {icp}.",
             "icp": icp, "product": prod, "hook": h, "format": f, "funnel": funnel,
+            "problem_type": problem, "solution_type": sol,
+            "priority": "High" if len(tests) < 2 else "Medium",
             "idea": (f"{f} reel opening on a '{h}' hook, showing {prod} solving a "
                      f"{sol.lower()} need; target {icp} at the {funnel.lower()} stage."),
         })

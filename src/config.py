@@ -2,6 +2,7 @@
 import base64
 import os
 import pathlib
+import re
 
 from dotenv import load_dotenv
 
@@ -13,6 +14,19 @@ def _require(name: str) -> str:
     if not val:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return val
+
+
+def clean_notion_id(raw: str) -> str:
+    """Extract a clean dashed Notion UUID from whatever the user pasted — a bare
+    id, a `...-32hex` page URL, or a `32hex?v=...` database-view URL."""
+    if not raw:
+        return raw
+    head = raw.split("?")[0]                       # drop ?v=... view query
+    compact = re.sub(r"[^0-9a-fA-F]", "", head)     # strip URL/title/dashes
+    if len(compact) >= 32:
+        h = compact[-32:].lower()                   # Notion id sits at the end
+        return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+    return head.strip()
 
 
 # Gemini
@@ -36,12 +50,19 @@ if _SA_B64:
 
 # Notion
 NOTION_API_KEY = os.getenv("NOTION_API_KEY", "").strip()
-NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID", "").strip()
+NOTION_PARENT_PAGE_ID = clean_notion_id(os.getenv("NOTION_PARENT_PAGE_ID", "").strip())
 # Optional: a Notion page/dashboard URL the "Open Notion Dashboard" button links to.
 NOTION_DASHBOARD_URL = os.getenv("NOTION_DASHBOARD_URL", "").strip()
 
 # Web trigger
 RUN_SECRET = os.getenv("RUN_SECRET", "").strip()
+
+# Slack reporting (optional). If set, the dashboard can post a run summary and
+# `python src/main.py slack-report` works.
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "").strip()
+
+# Public dashboard URL, shown in the Slack report (optional).
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "").strip()
 
 # QA compiler pass. On by default (2 Gemini calls/row). Set false to skip it
 # (1 call/row) — useful to stretch a limited free-tier quota.

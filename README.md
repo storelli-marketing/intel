@@ -93,8 +93,9 @@ skipped (no performance) · analyzed · needs_review · failed.
 python src/main.py analyze        # analyze eligible rows, write taxonomy tags
 python src/main.py correlations   # print signal/performance findings
 python src/main.py synthesize     # write data/latest_learnings.md (no API calls)
-python src/main.py notion-sync    # push findings to Notion (later)
-python src/main.py run-all        # analyze -> correlations -> notion
+python src/main.py notion-sync    # upsert synthesized learnings into Notion Brain
+python src/main.py slack-report   # post a run summary to Slack
+python src/main.py run-all        # analyze -> correlations -> synthesize -> notion -> slack
 python src/main.py run-all --reprocess   # re-tag rows (overwrite existing)
 python src/main.py analyze --limit 5     # test mode: at most 5 rows
 python src/main.py reset-incomplete      # re-queue processed-but-untagged rows
@@ -214,6 +215,28 @@ causation.**
 
 `data/sample_input.csv` / `data/sample_output.csv` show the shape of the sheet
 before and after a run.
+
+## Notion Brain + Slack
+
+**Notion is the Marketing Brain** (structured synthesized intelligence only —
+**never raw video rows**); Google Sheets stays the raw analysis warehouse; Slack
+is the reporting layer. `notion-sync` upserts the synthesized learnings into five
+databases under `NOTION_PARENT_PAGE_ID`, locating them by title each run (no
+local state) and updating rows in place:
+
+- **Marketing Learnings**, **Signal Library**, **Next Creative Tests**,
+  **Product Learnings**, **ICP Learnings**.
+
+Prereqs: run `synthesize` first (it gates the sync), and set `NOTION_API_KEY` +
+`NOTION_PARENT_PAGE_ID`. **The parent must be a normal Notion PAGE** (the five
+databases are created as its children) — a database/`?v=` view URL won't work.
+You can paste a full page URL or bare id; it's sanitized to a UUID. Missing
+config or a Notion API error is shown cleanly in the dashboard, never crashes it.
+
+`slack-report` posts a run summary to `SLACK_WEBHOOK_URL` (videos analyzed, total
+tagged, new learnings, Notion updated y/n, top winning/weak signals, next tests,
+dashboard + Notion links). The dashboard also auto-posts after a successful
+social run when the webhook is set.
 
 ## Dashboard (FastAPI control panel)
 

@@ -382,21 +382,102 @@ def cmd_reset_incomplete() -> int:
 
 
 # ---------------------------------------------------------------------------
-# notion-sync
+# notion-sync (Notion Brain — structured synthesized intelligence only)
 # ---------------------------------------------------------------------------
-def cmd_notion_sync() -> tuple[bool, dict, list[dict]]:
-    sheets = SheetsClient()
-    sheets.validate_columns()
-    completed, buckets, results = compute_findings(sheets)
-    if not completed:
-        log.warning("No completed rows; nothing to sync to Notion.")
-        return False, {}, results
+def notion_sync(sheets: SheetsClient | None = None) -> dict:
+    """Push synthesized learnings into the five Notion Brain databases.
 
-    findings = build_findings(results, completed, buckets)
-    from notion_client import NotionDashboard
-    url = NotionDashboard().publish(findings)
-    log.info("Notion page created: %s", url)
-    return True, findings, results
+    Returns a summary dict. Raises RuntimeError with a clean message when
+    prerequisites are missing (caller shows it; no crash).
+    """
+    import os
+
+    import synthesizer
+
+    if not (config.NOTION_API_KEY and config.NOTION_PARENT_PAGE_ID):
+        raise RuntimeError("Notion not configured (NOTION_API_KEY / NOTION_PARENT_PAGE_ID).")
+    if not os.path.exists(synthesizer.LEARNINGS_PATH):
+        raise RuntimeError("No latest_learnings.md yet — run `synthesize` first.")
+
+    sheets = sheets or SheetsClient()
+    sheets.validate_columns()
+    analyzed, buckets, results = compute_findings(sheets)
+    if not analyzed:
+        raise RuntimeError("No tagged rows with performance yet — nothing to sync.")
+
+    from datetime import datetime, timezone
+
+    import notion_brain
+    s = synthesizer.synthesize(analyzed, buckets, results)
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return notion_brain.NotionBrain().sync(s, date_str)
+
+
+def _fmt_notion_summary(summary: dict) -> str:
+    def tot(name):
+        d = summary.get(name, {})
+        return d.get("created", 0) + d.get("updated", 0)
+    return (f"learnings created: {summary.get('Marketing Learnings', {}).get('created', 0)} · "
+            f"signals updated: {tot('Signal Library')} · "
+            f"tests created: {summary.get('Next Creative Tests', {}).get('created', 0)} · "
+            f"product learnings updated: {tot('Product Learnings')} · "
+            f"ICP learnings updated: {tot('ICP Learnings')}")
+
+
+def cmd_notion_sync() -> int:
+    try:
+        summary = notion_sync()
+    except RuntimeError as e:
+        print(f"Notion sync skipped: {e}")
+        return 1
+    except Exception as e:  # noqa: BLE001 - surface Notion API errors cleanly
+        print(f"Notion sync failed: {e}")
+        return 1
+    print("Notion Brain updated.")
+    print(_fmt_notion_summary(summary))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# slack-report
+# ---------------------------------------------------------------------------
+def gather_slack_inputs(sheets: SheetsClient | None = None,
+                        videos_analyzed=None, notion_updated: bool | None = None) -> dict:
+    """Collect everything the Slack report needs from the sheet + synthesis."""
+    import synthesizer
+    sheets = sheets or SheetsClient()
+    sheets.validate_columns()
+    analyzed, buckets, results = compute_findings(sheets)
+    s = synthesizer.synthesize(analyzed, buckets, results)
+    win = [f"{r['label']} ({corr.fmt_lift(r['lift'])})" for r in corr.winning(results)[:3]]
+    weak = [f"{r['label']} ({corr.fmt_lift(r['lift'])})" for r in corr.weak(results)[:3]]
+    tests = [t["hypothesis"] for t in s["tests"][:3]]
+    if notion_updated is None:
+        notion_updated = bool(config.NOTION_API_KEY and config.NOTION_PARENT_PAGE_ID)
+    return {
+        "videos_analyzed": videos_analyzed if videos_analyzed is not None else len(analyzed),
+        "total_tagged": len(analyzed),
+        "new_learnings": len(corr.winning(results)),
+        "notion_updated": notion_updated,
+        "winning": win, "weak": weak, "tests": tests,
+        "dashboard_url": config.DASHBOARD_URL, "notion_url": config.NOTION_DASHBOARD_URL,
+    }
+
+
+def cmd_slack_report() -> int:
+    import slack_report
+    if not config.SLACK_WEBHOOK_URL:
+        print("Slack report skipped: SLACK_WEBHOOK_URL not configured.")
+        return 1
+    try:
+        data = gather_slack_inputs()
+        msg = slack_report.build_message(**data)
+        slack_report.post(msg)
+    except Exception as e:  # noqa: BLE001
+        print(f"Slack report failed: {e}")
+        return 1
+    print("Slack report posted.")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -436,7 +517,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Storelli intelligence MVP")
     parser.add_argument("command",
                         choices=["analyze", "correlations", "synthesize", "notion-sync",
-                                 "run-all", "reset-incomplete"])
+                                 "slack-report", "run-all", "reset-incomplete"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -464,13 +545,18 @@ def main() -> int:
             return cmd_reset_incomplete()
 
         elif args.command == "notion-sync":
-            done, _findings, results = cmd_notion_sync()
-            print_run_summary({}, results, notion_done=done)
+            return cmd_notion_sync()
+
+        elif args.command == "slack-report":
+            return cmd_slack_report()
 
         elif args.command == "run-all":
             stats = cmd_analyze(args.reprocess, args.limit, qa_enabled)
-            done, _findings, results = cmd_notion_sync()
-            print_run_summary(stats, results, notion_done=done)
+            results = cmd_correlations(print_summary=False)
+            print_run_summary(stats, results, notion_done=False)
+            cmd_synthesize()
+            cmd_notion_sync()      # prints clean message if Notion not configured
+            cmd_slack_report()     # prints clean message if Slack not configured
     except RuntimeError as e:
         log.error(str(e))
         return 1
