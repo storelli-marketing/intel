@@ -41,12 +41,20 @@ GOOGLE_WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Sheet1").strip()
 # Optional Railway helper: if you can't mount the service-account JSON file,
 # base64-encode it and set GOOGLE_SERVICE_ACCOUNT_JSON_B64. We decode it to
 # disk on import so the existing path-based loader keeps working unchanged.
+# Fail-soft: a malformed value must NOT crash app startup — it's logged and the
+# Sheets-dependent actions simply error cleanly when used.
 _SA_B64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "").strip()
 if _SA_B64:
-    _out = pathlib.Path(GOOGLE_SERVICE_ACCOUNT_JSON_PATH or "/tmp/service-account.json")
-    _out.parent.mkdir(parents=True, exist_ok=True)
-    _out.write_bytes(base64.b64decode(_SA_B64))
-    GOOGLE_SERVICE_ACCOUNT_JSON_PATH = str(_out)
+    try:
+        _out = pathlib.Path(GOOGLE_SERVICE_ACCOUNT_JSON_PATH or "/tmp/service-account.json")
+        _out.parent.mkdir(parents=True, exist_ok=True)
+        _out.write_bytes(base64.b64decode(_SA_B64, validate=True))
+        GOOGLE_SERVICE_ACCOUNT_JSON_PATH = str(_out)
+    except Exception as _e:  # noqa: BLE001 - never crash import on a bad env value
+        import sys
+        print(f"WARNING: could not decode GOOGLE_SERVICE_ACCOUNT_JSON_B64 "
+              f"({type(_e).__name__}: {_e}); Sheets actions will fail until fixed.",
+              file=sys.stderr)
 
 # Notion
 NOTION_API_KEY = os.getenv("NOTION_API_KEY", "").strip()
