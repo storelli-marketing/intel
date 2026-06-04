@@ -441,17 +441,46 @@ def cmd_notion_sync() -> int:
 # ---------------------------------------------------------------------------
 # slack-report
 # ---------------------------------------------------------------------------
+def _example_link(analyzed: list[dict], signal_col: str) -> str:
+    """First IG link among tagged rows where this signal is present (for Slack
+    only — never pushed to Notion)."""
+    for r in analyzed:
+        if str(r.get(signal_col, "")).strip() == "1":
+            link = str(r.get("LINK", "")).strip()
+            if link:
+                return link
+    return ""
+
+
 def gather_slack_inputs(sheets: SheetsClient | None = None,
                         videos_analyzed=None, notion_updated: bool | None = None) -> dict:
-    """Collect everything the Slack report needs from the sheet + synthesis."""
+    """Collect everything the Slack report needs from the sheet + synthesis.
+
+    Winning signals carry their confidence; weak signals carry one example IG
+    link; creative tests are gated by confidence (only surfaced when the
+    pattern is strong enough, else the caller shows the 'needs more data' line).
+    """
     import synthesizer
     sheets = sheets or SheetsClient()
     sheets.validate_columns()
     analyzed, buckets, results = compute_findings(sheets)
     s = synthesizer.synthesize(analyzed, buckets, results)
-    win = [f"{r['label']} ({corr.fmt_lift(r['lift'])})" for r in corr.winning(results)[:3]]
-    weak = [f"{r['label']} ({corr.fmt_lift(r['lift'])})" for r in corr.weak(results)[:3]]
-    tests = [t["hypothesis"] for t in s["tests"][:3]]
+
+    win = [f"{r['label']} ({corr.fmt_lift(r['lift'])}) — {r['confidence']} confidence"
+           for r in corr.winning(results)[:3]]
+    weak = []
+    for r in corr.weak(results)[:3]:
+        link = _example_link(analyzed, r["signal"])
+        weak.append(f"{r['label']} ({corr.fmt_lift(r['lift'])}) — example: {link or 'n/a'}")
+
+    tests_ready = bool(s["tests"]) and s["tests"][0].get("confidence", "Directional") != "Directional"
+    tests = []
+    if tests_ready:
+        for t in s["tests"][:3]:
+            tests.append({"test": f"{t['format']} + {t['hook']} for {t['icp']}",
+                          "product": t["product"], "icp": t["icp"],
+                          "execution": t.get("execution", "")})
+
     if notion_updated is None:
         notion_updated = bool(config.NOTION_API_KEY and config.NOTION_PARENT_PAGE_ID)
     return {
@@ -459,7 +488,7 @@ def gather_slack_inputs(sheets: SheetsClient | None = None,
         "total_tagged": len(analyzed),
         "new_learnings": len(corr.winning(results)),
         "notion_updated": notion_updated,
-        "winning": win, "weak": weak, "tests": tests,
+        "winning": win, "weak": weak, "tests": tests, "tests_ready": tests_ready,
         "dashboard_url": config.DASHBOARD_URL, "notion_url": config.NOTION_DASHBOARD_URL,
     }
 

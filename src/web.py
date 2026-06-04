@@ -15,6 +15,7 @@ Endpoints:
 from __future__ import annotations
 
 import os
+import re
 import secrets as stdlib_secrets
 import threading
 from datetime import datetime, timezone
@@ -38,6 +39,16 @@ if os.path.isdir(_STATIC_DIR):
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 _LEARNINGS = os.path.join(os.path.dirname(__file__), "..", "data", "latest_learnings.md")
+_GUIDELINES_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "guidelines")
+
+GUIDELINE_TYPES = [
+    "Social Content Guidelines", "Email Guidelines", "Ads Guidelines",
+    "Brand Voice Guidelines", "Product Messaging Guidelines",
+]
+
+
+def _slug(t: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", t.lower()).strip("_")
 
 STATE: dict = {
     "status": "idle",        # idle | queued | running | completed | failed
@@ -295,6 +306,50 @@ def run_slack_report(background: BackgroundTasks,
     return _guarded(_do_slack, background)
 
 
+# ---- guidelines (operator-uploaded brand/content guidelines) ---------------
+class GuidelineReq(BaseModel):
+    guideline_type: str
+    content: str
+
+
+@app.get("/guidelines")
+def list_guidelines() -> JSONResponse:
+    items = []
+    if os.path.isdir(_GUIDELINES_DIR):
+        for fn in sorted(os.listdir(_GUIDELINES_DIR)):
+            if not fn.endswith(".md"):
+                continue
+            path = os.path.join(_GUIDELINES_DIR, fn)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    txt = f.read()
+            except OSError:
+                continue
+            first = txt.splitlines()[0] if txt else ""
+            gtype = first.lstrip("# ").strip() if first.startswith("#") else fn
+            mtime = datetime.fromtimestamp(os.path.getmtime(path), timezone.utc)
+            items.append({"filename": fn, "type": gtype, "chars": len(txt),
+                          "modified": mtime.strftime("%Y-%m-%d %H:%M UTC")})
+    return JSONResponse({"types": GUIDELINE_TYPES, "saved": items})
+
+
+@app.post("/guidelines")
+def save_guideline(req: GuidelineReq,
+                   x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    if req.guideline_type not in GUIDELINE_TYPES:
+        raise HTTPException(400, f"unknown guideline_type (expected one of {GUIDELINE_TYPES})")
+    if not req.content.strip():
+        raise HTTPException(400, "content is empty")
+    os.makedirs(_GUIDELINES_DIR, exist_ok=True)
+    fn = _slug(req.guideline_type) + ".md"
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    with open(os.path.join(_GUIDELINES_DIR, fn), "w", encoding="utf-8") as f:
+        f.write(f"# {req.guideline_type}\n\n_Saved {ts}_\n\n{req.content.strip()}\n")
+    log.info("Saved guideline '%s' (%d chars)", req.guideline_type, len(req.content))
+    return {"saved": fn, "guideline_type": req.guideline_type, "chars": len(req.content)}
+
+
 # ---- dashboard HTML --------------------------------------------------------
 _HTML = """<!doctype html>
 <html lang="en">
@@ -363,6 +418,9 @@ _HTML = """<!doctype html>
   .meta{font-size:12px;color:var(--gray);margin-top:8px}
   pre{background:#0c0c0c;border:1px solid var(--border);border-radius:12px;padding:14px;
       max-height:380px;overflow:auto;font-size:12px;line-height:1.5;white-space:pre-wrap;color:#d8d8d8}
+  textarea{width:100%;margin-top:12px;padding:11px 12px;font-family:inherit;font-size:14px;color:#fff;
+      background:#0c0c0c;border:1px solid var(--border);border-radius:10px;resize:vertical;min-height:120px}
+  textarea:focus{outline:none;border-color:rgba(228,240,0,.55)}
   .hint{font-size:11px;color:var(--gray-dim);margin-top:6px}
 </style>
 </head>
@@ -433,6 +491,26 @@ _HTML = """<!doctype html>
     </div>
     <div class="meta" id="notionSummary"></div>
     <a id="notion" class="notion off" target="_blank" rel="noopener" style="margin-top:14px">Open Notion Dashboard</a>
+  </section>
+
+  <!-- 6: Upload Guidelines -->
+  <section>
+    <h2><span class="pin">+</span>Upload Guidelines</h2>
+    <div class="hint" style="margin-top:0;margin-bottom:10px">Paste brand/content guidelines. Saved to data/guidelines/ for future content, email &amp; ad generation.</div>
+    <div class="row">
+      <div><label class="fld">Guideline type</label>
+        <select id="gtype">
+          <option>Social Content Guidelines</option>
+          <option>Email Guidelines</option>
+          <option>Ads Guidelines</option>
+          <option>Brand Voice Guidelines</option>
+          <option>Product Messaging Guidelines</option>
+        </select></div>
+    </div>
+    <textarea id="gcontent" placeholder="Paste guidelines here…"></textarea>
+    <button class="btn-secondary" id="btnGuide" style="margin-top:12px" onclick="saveGuideline()">Save Guideline</button>
+    <div class="meta" id="guideMsg"></div>
+    <div class="meta" id="guideList">Loading…</div>
   </section>
 </div>
 
@@ -511,7 +589,27 @@ async function run(action){
   }catch(e){ showErr('request failed: '+e); }
 }
 
-poll(); loadLearnings();
+async function loadGuidelines(){
+  try{
+    const j = await (await fetch('/guidelines')).json();
+    $('guideList').innerHTML = (j.saved && j.saved.length)
+      ? '<b>Saved:</b> ' + j.saved.map(g => g.type+' ('+g.chars+' chars · '+g.modified+')').join('<br>')
+      : 'No guidelines saved yet.';
+  }catch(e){ $('guideList').textContent='failed to load guidelines: '+e; }
+}
+async function saveGuideline(){
+  const secret=$('secret').value;
+  $('guideMsg').textContent='';
+  try{
+    const r = await fetch('/guidelines', {method:'POST',
+      headers:{'X-Run-Secret':secret,'Content-Type':'application/json'},
+      body: JSON.stringify({guideline_type:$('gtype').value, content:$('gcontent').value})});
+    if(!r.ok){ $('guideMsg').textContent='error '+r.status+': '+(await r.text()); return; }
+    $('guideMsg').textContent='Saved.'; $('gcontent').value=''; loadGuidelines();
+  }catch(e){ $('guideMsg').textContent='request failed: '+e; }
+}
+
+poll(); loadLearnings(); loadGuidelines();
 setInterval(poll, 3000);
 setInterval(loadLearnings, 15000);
 </script>

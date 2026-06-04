@@ -16,3 +16,4 @@ venv/
 data/run.log
 data/latest_learnings.md
 data/*.out
+data/guidelines/

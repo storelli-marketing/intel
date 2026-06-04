@@ -233,10 +233,25 @@ databases are created as its children) — a database/`?v=` view URL won't work.
 You can paste a full page URL or bare id; it's sanitized to a UUID. Missing
 config or a Notion API error is shown cleanly in the dashboard, never crashes it.
 
-`slack-report` posts a run summary to `SLACK_WEBHOOK_URL` (videos analyzed, total
-tagged, new learnings, Notion updated y/n, top winning/weak signals, next tests,
-dashboard + Notion links). The dashboard also auto-posts after a successful
-social run when the webhook is set.
+`slack-report` posts a run summary to `SLACK_WEBHOOK_URL`. It's built to be
+**actionable**: winning signals carry their confidence; **weak signals include an
+example IG link** where the signal appeared (Slack only — never Notion); and
+**creative tests are confidence-gated** — only surfaced when enough `Great`
+videos support the pattern (labels: Directional / Medium confidence / Strong
+confidence). Below the bar it shows *"No strong creative tests yet — more tagged
+videos needed."*; above it, each test includes Product, ICP and a concrete
+Execution line. The dashboard also auto-posts after a successful social run when
+the webhook is set.
+
+## Upload Guidelines
+
+The dashboard's **Upload Guidelines** section lets the operator paste
+brand/content guidelines (Social Content / Email / Ads / Brand Voice / Product
+Messaging). `POST /guidelines` saves one markdown file per type under
+`data/guidelines/` (gitignored); `GET /guidelines` lists them. These are not
+used for generation yet — `src/content_context.py` bundles
+`data/latest_learnings.md` + `data/guidelines/*.md` (and, later, the Notion Brain)
+as the context a future content/email/ad generator will draw on.
 
 ## Dashboard (FastAPI control panel)
 

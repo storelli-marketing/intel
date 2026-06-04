@@ -71,13 +71,42 @@ def _best_group(groups: dict) -> str | None:
     return ranked[0][0]
 
 
-def _next_tests(win: list[dict], products: dict, icps: dict) -> list[dict]:
+_HOOK_OPENER = {
+    "Curiosity Gap": "open with a keeper-facing question",
+    "Fear / Risk": "open on the injury/risk moment",
+    "Aspiration": "open on the aspirational end-state",
+    "Education": "open with a quick teaching promise",
+    "Humor": "open with a relatable goalkeeper moment",
+    "Social Proof": "open with a pro/coach using the gear",
+    "Authority": "open with an expert/credibility cue",
+}
+
+
+def _test_confidence(great_count: int, win: list[dict]) -> str:
+    """Reliability label for creative-test recommendations, driven by how many
+    Great videos support the pattern (the positive class) and signal strength."""
+    has_high = any(r["confidence"] == "High" for r in win if r["layer"] in ("hook", "format"))
+    if great_count >= 10 and has_high:
+        return "Strong confidence"
+    if great_count >= 5:
+        return "Medium confidence"
+    return "Directional"
+
+
+def _execution(hook: str, fmt: str) -> str:
+    opener = _HOOK_OPENER.get(hook, f"open with a {hook.lower()} hook")
+    return (f"{opener}, show the protection moment in the first 3 seconds, "
+            f"end with a soft-follow CTA.")
+
+
+def _next_tests(win: list[dict], products: dict, icps: dict, great_count: int = 0) -> list[dict]:
     hook = _first_label(win, "hook", "Curiosity Gap")
     fmt = _first_label(win, "format", "Demo")
     funnel = _first_label(win, "funnel_stage", "Awareness")
     sol = _first_label(win, "solution_type", "Prevention")
     prod = _best_group(products) or "GK Gloves"
     icp = _best_group(icps) or "General"
+    confidence = _test_confidence(great_count, win)
 
     combos = [
         (hook, fmt),
@@ -98,6 +127,8 @@ def _next_tests(win: list[dict], products: dict, icps: dict) -> list[dict]:
             "icp": icp, "product": prod, "hook": h, "format": f, "funnel": funnel,
             "problem_type": problem, "solution_type": sol,
             "priority": "High" if len(tests) < 2 else "Medium",
+            "confidence": confidence,
+            "execution": _execution(h, f),
             "idea": (f"{f} reel opening on a '{h}' hook, showing {prod} solving a "
                      f"{sol.lower()} need; target {icp} at the {funnel.lower()} stage."),
         })
@@ -122,7 +153,7 @@ def synthesize(rows: list[dict], buckets: dict, results: list[dict]) -> dict:
         "fmt_kill": [r for r in results if r["layer"] == "format"
                      and r["lift"] < 0 and r["videos_with_signal"] >= 1],
         "tests": _next_tests(win, _group(rows, buckets, "Product"),
-                             _group(rows, buckets, "ICP")),
+                             _group(rows, buckets, "ICP"), _great_count(rows, buckets)),
     }
 
 

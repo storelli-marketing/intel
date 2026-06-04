@@ -15,12 +15,9 @@ log = get_logger()
 
 def build_message(*, videos_analyzed, total_tagged: int, new_learnings: int,
                   notion_updated: bool, winning: list[str], weak: list[str],
-                  tests: list[str], dashboard_url: str = "", notion_url: str = "") -> str:
-    def numbered(items):
-        items = [i for i in items if i]
-        return "\n".join(f"{n}. {x}" for n, x in enumerate(items[:3], 1)) or "—"
-
-    return "\n".join([
+                  tests: list[dict], tests_ready: bool = False,
+                  dashboard_url: str = "", notion_url: str = "") -> str:
+    lines = [
         "*Storelli Marketing Brain Update*",
         "",
         f"Videos analyzed: {videos_analyzed}",
@@ -29,17 +26,33 @@ def build_message(*, videos_analyzed, total_tagged: int, new_learnings: int,
         f"Notion updated: {'yes' if notion_updated else 'no'}",
         "",
         "Top winning signals:",
-        numbered(winning),
-        "",
-        "Top weak signals:",
-        numbered(weak),
-        "",
-        "Next creative tests:",
-        numbered(tests),
-        "",
-        f"Dashboard: {dashboard_url or '(not set)'}",
-        f"Notion: {notion_url or '(not set)'}",
-    ])
+    ]
+    if winning:
+        lines += [f"{i}. {x}" for i, x in enumerate(winning[:3], 1)]
+    else:
+        lines.append("—")
+
+    lines += ["", "Top weak signals:"]
+    if weak:
+        lines += [f"{i}. {x}" for i, x in enumerate(weak[:3], 1)]
+    else:
+        lines.append("—")
+
+    lines += ["", "Next creative tests:"]
+    if not tests_ready or not tests:
+        lines.append("No strong creative tests yet — more tagged videos needed.")
+    else:
+        for i, t in enumerate(tests[:3], 1):
+            lines += [
+                f"{i}. Test: {t.get('test', '')}",
+                f"   Product: {t.get('product', '')}",
+                f"   ICP: {t.get('icp', '')}",
+                f"   Execution: {t.get('execution', '')}",
+            ]
+
+    lines += ["", f"Open Notion: {notion_url or '(not set)'}",
+              f"Open Dashboard: {dashboard_url or '(not set)'}"]
+    return "\n".join(lines)
 
 
 def post(text: str) -> int:
