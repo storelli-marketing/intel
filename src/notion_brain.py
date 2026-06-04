@@ -13,6 +13,8 @@ among the parent page's children on each run.
 """
 from __future__ import annotations
 
+import time
+
 import config
 import correlations as corr
 import taxonomy
@@ -20,6 +22,18 @@ from logger import get_logger
 from synthesizer import MIN_GROUP
 
 log = get_logger()
+
+# Backoff for transient Notion 5xx / rate-limit errors during a multi-call sync.
+NOTION_RETRY_DELAYS = (1, 3, 6)
+
+
+def _is_transient(exc: Exception) -> bool:
+    code = getattr(exc, "status", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    if code in (429, 502, 503, 504):
+        return True
+    s = str(exc)
+    return any(x in s for x in ("429", "502", "503", "504", "Bad Gateway",
+                                "Service Unavailable", "Gateway Timeout", "rate_limited"))
 
 # Each database: ordered property schema (name -> Notion type) + title key.
 SCHEMAS: dict[str, dict] = {
@@ -184,6 +198,22 @@ class NotionBrain:
         self.client = NotionSDK(auth=config.NOTION_API_KEY)
         self.parent = config.NOTION_PARENT_PAGE_ID
 
+    def _call(self, fn, *args, **kwargs):
+        """Invoke a Notion SDK call, retrying transient 5xx / rate-limit errors."""
+        attempt = 0
+        while True:
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:  # noqa: BLE001
+                if _is_transient(e) and attempt < len(NOTION_RETRY_DELAYS):
+                    delay = NOTION_RETRY_DELAYS[attempt]
+                    attempt += 1
+                    log.warning("Notion transient error; retry %d/%d in %ds: %s",
+                                attempt, len(NOTION_RETRY_DELAYS), delay, e)
+                    time.sleep(delay)
+                    continue
+                raise
+
     # -- database discovery / creation --
     def _find_child_databases(self) -> dict:
         out, cursor = {}, None
@@ -191,7 +221,7 @@ class NotionBrain:
             kw = {"block_id": self.parent}
             if cursor:
                 kw["start_cursor"] = cursor
-            res = self.client.blocks.children.list(**kw)
+            res = self._call(self.client.blocks.children.list, **kw)
             for b in res.get("results", []):
                 if b.get("type") == "child_database":
                     title = b["child_database"].get("title", "")
@@ -205,7 +235,8 @@ class NotionBrain:
     def _ensure_db(self, title: str, existing: dict) -> str:
         if title in existing:
             return existing[title]
-        db = self.client.databases.create(
+        db = self._call(
+            self.client.databases.create,
             parent={"type": "page_id", "page_id": self.parent},
             title=[{"type": "text", "text": {"content": title}}],
             properties=_schema_properties(title),
@@ -231,7 +262,8 @@ class NotionBrain:
         return props
 
     def _find_page(self, db_id: str, key_prop: str, key_val: str):
-        res = self.client.databases.query(
+        res = self._call(
+            self.client.databases.query,
             database_id=db_id,
             filter={"property": key_prop, "title": {"equals": key_val}},
         )
@@ -245,10 +277,11 @@ class NotionBrain:
             props = self._to_props(title, e)
             pid = self._find_page(db_id, key, str(e[key]))
             if pid:
-                self.client.pages.update(page_id=pid, properties=props)
+                self._call(self.client.pages.update, page_id=pid, properties=props)
                 updated += 1
             else:
-                self.client.pages.create(parent={"database_id": db_id}, properties=props)
+                self._call(self.client.pages.create,
+                           parent={"database_id": db_id}, properties=props)
                 created += 1
         return {"created": created, "updated": updated}
 
