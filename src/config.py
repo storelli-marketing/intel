@@ -50,6 +50,8 @@ if _SA_B64:
         _out.parent.mkdir(parents=True, exist_ok=True)
         _out.write_bytes(base64.b64decode(_SA_B64, validate=True))
         GOOGLE_SERVICE_ACCOUNT_JSON_PATH = str(_out)
+        # Mirror to env so require_sheets() (which reads os.getenv) sees it.
+        os.environ["GOOGLE_SERVICE_ACCOUNT_JSON_PATH"] = str(_out)
     except Exception as _e:  # noqa: BLE001 - never crash import on a bad env value
         import sys
         print(f"WARNING: could not decode GOOGLE_SERVICE_ACCOUNT_JSON_B64 "
