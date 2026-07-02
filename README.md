@@ -372,15 +372,45 @@ bot has already replied in. Required Slack app configuration:
 | DMs | `message.im` | `im:history` | **not assumed — add both together if you want DM support** (Slack requires the scope to receive the event at all) |
 | Channel follow-ups without re-mention | `message.channels` (+ `message.groups` for private channels) | `channels:history` (+ `groups:history`) | optional — code already filters to active-bot-threads only, safe to enable broadly |
 
-**Optional LLM polish** (`config.SLACK_LLM_POLISH_ENABLED`, default **off**):
-when on and `GEMINI_API_KEY` is set, Gemini rewords the deterministic answer
-to sound more conversational. It's validated afterward and silently discarded
-in favor of the deterministic text if it drops/invents a `[S#]` citation,
-introduces a number not already present, or uses causal language — the
-LLM only ever words an already-grounded answer, never re-retrieves or invents
-facts. Left off by default because Gemini's free-tier quota (~20 req/day) is
-shared with video tagging; turning this on means every Slack reply spends one
-of those calls.
+#### Strategist mode (`src/social_strategist.py`)
+
+By default, when `GEMINI_API_KEY` is set, the bot answers like a marketing
+strategist rather than a retrieval tool: it still retrieves evidence first
+via the exact same deterministic modes above (Notion-first, Sheet fallback,
+the ideas engine — nothing new is queried here), then hands Gemini a compact,
+already-cited evidence pack and asks for real judgment — "My read: ...",
+what to do, why, what to avoid, a next action — instead of a data dump.
+Follow-ups ("why?", "expand #2", "what are you least sure about?", "what
+would you do if you were me?") re-derive the same underlying evidence (the
+retrieval is deterministic, so re-running it reproduces the same facts) and
+let Gemini resolve "#2" / "that" from the thread itself, rather than relying
+on a rigid parser.
+
+Controlled by `config.SLACK_STRATEGIST_MODE_ENABLED` — defaults to **on**
+whenever `GEMINI_API_KEY` is configured (explicit `true`/`false` always
+wins). Every answer is validated before it's ever shown:
+- every `[S#]` it cites must already be a key in the evidence pack's own
+  source list — an invented or unknown id discards the answer;
+- every number/percentage it states must already appear in the evidence —
+  an invented metric discards the answer;
+- causal language ("causes", "leads to", ...) discards the answer.
+
+Any failure — disabled, Gemini errors, or a validation check above — falls
+straight through to the fully deterministic engine (the same
+expand/sources/shorter/brief/risky transforms and Notion-first modes this
+bot already had), which is itself a complete, correctly-cited answer on its
+own. Gemini only ever **words** an answer here; it never re-retrieves or
+invents the underlying facts.
+
+**Optional plain LLM polish** (`config.SLACK_LLM_POLISH_ENABLED`, default
+**off**, only used when strategist mode is off): a simpler, older mode where
+Gemini just rewords the deterministic answer verbatim rather than composing
+new judgment from a structured pack. Same validation, same fallback.
+
+Both of these spend one Gemini call per Slack reply when active — worth
+knowing since that quota (~20 req/day on the free tier) is shared with video
+tagging. Strategist mode is on by default per the above, so budget
+accordingly if you're mid-tagging-batch.
 
 **Idea interpretation layer** (`src/interpretation.py`). The `ideas` mode is
 backed by a small deterministic layer that joins winning signals × formats ×

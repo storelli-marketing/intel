@@ -37,7 +37,8 @@ The app is a single FastAPI service (`web:app`). No database. Deploys from
 | `DASHBOARD_URL` | no | the Railway URL (shown in the Slack footer) |
 | `YTDLP_COOKIES_B64` | no | base64 of an exported Instagram `cookies.txt` — set if anonymous downloads start failing with an "empty media response" error (see §5 notes) |
 | `YTDLP_COOKIES_PATH` | no | path to a `cookies.txt` file directly; if `YTDLP_COOKIES_B64` is also set, it's decoded into this path (overwriting it) at startup |
-| `SLACK_LLM_POLISH_ENABLED` | no | `true` = let Gemini reword Slack conversational replies (validated, discarded if it breaks grounding); default **off** to protect the shared Gemini quota |
+| `SLACK_LLM_POLISH_ENABLED` | no | `true` = let Gemini reword Slack conversational replies (validated, discarded if it breaks grounding); default **off**, and only used when strategist mode (below) is off |
+| `SLACK_STRATEGIST_MODE_ENABLED` | no | `false` to disable; default **on** whenever `GEMINI_API_KEY` is set. Bot answers with real judgment (a recommendation, tradeoffs, a "why") composed from an already-retrieved, already-cited evidence pack — never raw retrieval dumped as-is. Validated (citations/numbers/no causal language) and falls back to the deterministic engine on any failure. Spends one Gemini call per Slack reply — shares the ~20/day free-tier quota with video tagging |
 
 ## 4. Slack chat app (interactive Marketing Brain — threaded, conversational)
 
@@ -76,7 +77,11 @@ run-report path).
 The bot stays read-only throughout — never writes to the Sheet, never writes
 to Notion, never triggers video analysis. It reads Notion Brain first, then
 the Sheet + `latest_learnings.md` + `data/guidelines/`, and replies in the
-same thread. Conversation context comes from live Slack thread history when
+same thread — retrieval always happens first; with `GEMINI_API_KEY` set
+(default), Gemini then composes a strategist's judgment from that already-
+cited evidence rather than just listing it (see README "Strategist mode" —
+validated and falls back to the deterministic answer on any grounding
+failure). Conversation context comes from live Slack thread history when
 the optional history scopes above are granted, falling back to a small
 in-memory-only cache (resets on restart, no database) otherwise — either way,
 a missing scope degrades to single-turn answers rather than failing.

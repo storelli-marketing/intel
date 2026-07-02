@@ -34,6 +34,7 @@ import config
 import correlations as corr
 import interpretation
 import notion_retrieval
+import social_strategist
 import social_retrieval
 import taxonomy
 from content_context import gather_context
@@ -767,13 +768,17 @@ def _classify_followup(text: str) -> str:
 
 def _extract_sources_block(text: str) -> str:
     """Grab the trailing sources block, whichever style rendered it — the
-    single-line '_Sources:_ [S1]...' (most modes) or the multi-line
-    '*Sources:*\\n  S1 ...' block (ideas mode)."""
+    single-line '_Sources:_ [S1]...' (most modes), the multi-line
+    '*Sources:*\\n  S1 ...' block (ideas mode), or the plain 'Sources: [S1],
+    [S2]' line a strategist-composed answer renders per its prompt template."""
     m = re.search(r"_Sources:_.*", text)
     if m:
         return m.group(0)
     idx = text.find("*Sources:*")
-    return text[idx:].strip() if idx != -1 else ""
+    if idx != -1:
+        return text[idx:].strip()
+    m2 = re.search(r"^Sources:\s*\[S\d+\].*$", text, re.MULTILINE | re.IGNORECASE)
+    return m2.group(0).strip() if m2 else ""
 
 
 def _split_numbered_items(text: str) -> list[str]:
@@ -975,16 +980,50 @@ def _maybe_llm_polish(deterministic_text: str, user_text: str) -> Optional[str]:
     return polished
 
 
-def _finish_conversational(base: str, user_text: str) -> str:
-    """Optional validated LLM polish, then ensure a natural follow-up nudge is
-    present so the conversation can continue (skipped if one is already there)."""
-    text = _maybe_llm_polish(base, user_text) or base
-    # Allow trailing markdown (Slack italics/bold close with _ or *) after the
-    # question mark — the nudge itself is wrapped in "_..._", so a naive
-    # "ends right after ?" check would miss it and double up the prompt.
-    has_prompt = bool(re.search(r"(want|would you like|should i|shall i).{0,80}\?[_*]*\s*$",
-                                text.strip(), re.IGNORECASE))
+def _finish_conversational(base: str, user_text: str, skip_polish: bool = False) -> str:
+    """Optional validated LLM polish (skipped when strategist mode already ran
+    — no point spending a second Gemini call on the same failed attempt), then
+    ensure a natural follow-up nudge is present (skipped if one is already
+    there)."""
+    text = base
+    if not skip_polish and not config.SLACK_STRATEGIST_MODE_ENABLED:
+        text = _maybe_llm_polish(base, user_text) or base
+    # Phrasing-agnostic: any natural continuation question (deterministic or
+    # LLM-composed) already ends its last line with "?" — checking for that
+    # instead of a fixed keyword list avoids missing phrasings we didn't
+    # anticipate (a free-form strategist answer won't reuse our fixed wording).
+    stripped = text.strip()
+    last_line = stripped.splitlines()[-1].strip() if stripped else ""
+    has_prompt = bool(re.search(r"\?[_*]*\s*$", last_line))
     return text if has_prompt else text + _FOLLOWUP_NUDGE
+
+
+def _deterministic_conversation_answer(text: str, context: list, last_assistant: str) -> str:
+    """The proven, fully-deterministic engine from the conversational-mode
+    milestone — used as-is whenever strategist mode is off, unavailable, or
+    its output fails validation."""
+    if not last_assistant:
+        return answer_question(text)
+    follow_up = _classify_followup(text)
+    if follow_up == "sources":
+        return _followup_sources(last_assistant)
+    if follow_up == "expand":
+        return _followup_expand(text, last_assistant)
+    if follow_up == "make_for":
+        return _followup_make_for(text, context)
+    if follow_up == "brief":
+        return _followup_brief(last_assistant)
+    if follow_up == "risky":
+        return _followup_risky(last_assistant)
+    if follow_up == "shorter":
+        return _followup_shorter(last_assistant)
+    if follow_up == "why":
+        return _followup_why(last_assistant)
+    if follow_up == "more":
+        return _followup_more(context)
+    if follow_up == "next":
+        return _mode_tests()
+    return answer_question(text)
 
 
 # --- public: conversational entrypoint --------------------------------------
@@ -994,14 +1033,19 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
 
     conversation_context: chronological (oldest-first) list of
     {"role": "user"|"assistant", "text": str} — typically live Slack thread
-    history or the lightweight in-memory cache (see slack_bot.py). Every
-    follow-up either deterministically transforms the previous assistant
-    message (expand/sources/shorter/brief/risky — no new retrieval, so nothing
-    is invented) or re-runs one of the existing grounded modes with a
-    segment/topic pulled from the conversation. Falls back to plain
-    answer_question() when there's no prior turn or no recognized follow-up
-    pattern. channel_context is reserved for future per-channel metadata and
-    is currently unused.
+    history or the lightweight in-memory cache (see slack_bot.py).
+
+    When strategist mode is enabled (config.SLACK_STRATEGIST_MODE_ENABLED,
+    default on when GEMINI_API_KEY is set), retrieval happens first via the
+    same deterministic modes as always, then `social_strategist.py` asks
+    Gemini to compose real judgment — a recommendation, tradeoffs, a "why" —
+    from that already-cited evidence pack, never inventing a source or fact.
+    Any failure, invalid citation, invented number, or causal claim discards
+    the LLM output and falls through to the proven deterministic engine
+    (expand/sources/shorter/brief/risky — no new retrieval, so nothing is
+    invented — or a fresh re-run of the matching grounded mode).
+    channel_context is reserved for future per-channel metadata and is
+    currently unused.
     """
     text = (user_text or "").strip()
     if not text:
@@ -1011,30 +1055,13 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     last_assistant = next((m["text"] for m in reversed(context) if m.get("role") == "assistant"), "")
 
     try:
-        if not last_assistant:
-            return _finish_conversational(answer_question(text), text)
+        if config.SLACK_STRATEGIST_MODE_ENABLED and config.GEMINI_API_KEY:
+            pack = social_strategist.build_context_pack(text, context)
+            strategic = social_strategist.compose_strategic_answer(text, context, pack)
+            if strategic:
+                return _finish_conversational(strategic, text, skip_polish=True)
 
-        follow_up = _classify_followup(text)
-        if follow_up == "sources":
-            base = _followup_sources(last_assistant)
-        elif follow_up == "expand":
-            base = _followup_expand(text, last_assistant)
-        elif follow_up == "make_for":
-            base = _followup_make_for(text, context)
-        elif follow_up == "brief":
-            base = _followup_brief(last_assistant)
-        elif follow_up == "risky":
-            base = _followup_risky(last_assistant)
-        elif follow_up == "shorter":
-            base = _followup_shorter(last_assistant)
-        elif follow_up == "why":
-            base = _followup_why(last_assistant)
-        elif follow_up == "more":
-            base = _followup_more(context)
-        elif follow_up == "next":
-            base = _mode_tests()
-        else:
-            base = answer_question(text)
+        base = _deterministic_conversation_answer(text, context, last_assistant)
         return _finish_conversational(base, text)
     except Exception as e:  # noqa: BLE001 - Slack should never see a stack trace
         log.exception("answer_conversation failed")

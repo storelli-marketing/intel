@@ -33,6 +33,21 @@ def clean_notion_id(raw: str) -> str:
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
+# Slack strategist synthesis mode (src/social_strategist.py). When enabled,
+# the Slack bot's answers are composed by Gemini from an already-retrieved,
+# already-cited evidence pack (never raw/endless data) instead of just
+# rendering the deterministic mode text verbatim — real judgment/tradeoffs,
+# not a data dump. Defaults to on when Gemini is configured (explicit
+# true/false always wins); every path falls back to the proven deterministic
+# answer on any failure, invalid citation, invented number, or causal claim.
+_STRATEGIST_ENV = os.getenv("SLACK_STRATEGIST_MODE_ENABLED", "").strip().lower()
+if _STRATEGIST_ENV in ("true", "1", "yes", "on"):
+    SLACK_STRATEGIST_MODE_ENABLED = True
+elif _STRATEGIST_ENV in ("false", "0", "no", "off"):
+    SLACK_STRATEGIST_MODE_ENABLED = False
+else:
+    SLACK_STRATEGIST_MODE_ENABLED = bool(GEMINI_API_KEY)
+
 # Google Sheets
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH", "").strip()
