@@ -99,6 +99,16 @@ SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "").strip()
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "").strip()
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "").strip()
 
+# Optional: let the Slack conversational bot ask Gemini to rephrase its
+# deterministic, cited answers more conversationally. OFF by default —
+# Gemini quota is scarce and shared with video tagging (~20 req/day per the
+# free tier); every enabled Slack reply would spend one call from that same
+# pool. The deterministic (grounded, cited) answer is always used verbatim
+# when this is off, when Gemini fails, or when its output fails validation
+# (dropped/invented citations, invented numbers, causal language).
+SLACK_LLM_POLISH_ENABLED = os.getenv("SLACK_LLM_POLISH_ENABLED", "false").strip().lower() \
+    in ("true", "1", "yes", "on")
+
 # Public dashboard URL, shown in the Slack report (optional).
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "").strip()
 

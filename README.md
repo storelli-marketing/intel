@@ -335,6 +335,53 @@ row, link, metric, or conclusion. An unmatched IG link, an empty Notion
 database, or a segment with too little tagged data says so plainly instead of
 guessing, and answers stay compact (a handful of bullets, not a data dump).
 
+#### Threaded conversational mode
+
+The bot feels like a chat, not a one-shot command responder — reply in-thread
+and it understands follow-ups without re-stating context:
+
+> "give me ideas for BodyShield" → "expand #2" → "make it for parents" →
+> "show me sources" → "turn this into a content brief"
+
+Recognized follow-up patterns: *expand #N*, *make it for \<segment\>*, *show
+me sources*, *turn this into a content brief*, *shorter*, *why?*, *give me N
+more*, *give me the risky version*, *what should we do next?*. Each either
+deterministically transforms the **previous assistant message** (expand,
+re-cite, compress, reformat — no new retrieval, so nothing is invented) or
+re-runs one of the modes above with a segment pulled from the conversation.
+Anything that doesn't match a follow-up pattern is treated as a fresh
+question via the normal routing above.
+
+**Context sourcing**, in `src/slack_bot.py`: a live fetch of Slack thread
+history (`conversations.replies`) is tried first — best-effort, returns
+cleanly with no context if the scope isn't granted — falling back to a small
+in-memory-only cache of the last ~10 turns per thread (resets on restart, no
+database). This cache is also what lets a thread be recognized as one "the
+bot is already participating in," so a plain follow-up reply works without
+re-mentioning the bot.
+
+**Where it listens** — only three cases trigger a reply, never general channel
+chatter: an `app_mention`, a direct message, or a reply inside a thread the
+bot has already replied in. Required Slack app configuration:
+
+| Capability | Event | Scope | Status |
+|---|---|---|---|
+| Mentions (existing) | `app_mention` | `app_mentions:read` | already enabled |
+| Replying (existing) | — | `chat:write` | already enabled |
+| Thread history backfill | — | `channels:history` (+ `groups:history` for private channels) | optional — code degrades to the in-memory cache without it |
+| DMs | `message.im` | `im:history` | **not assumed — add both together if you want DM support** (Slack requires the scope to receive the event at all) |
+| Channel follow-ups without re-mention | `message.channels` (+ `message.groups` for private channels) | `channels:history` (+ `groups:history`) | optional — code already filters to active-bot-threads only, safe to enable broadly |
+
+**Optional LLM polish** (`config.SLACK_LLM_POLISH_ENABLED`, default **off**):
+when on and `GEMINI_API_KEY` is set, Gemini rewords the deterministic answer
+to sound more conversational. It's validated afterward and silently discarded
+in favor of the deterministic text if it drops/invents a `[S#]` citation,
+introduces a number not already present, or uses causal language — the
+LLM only ever words an already-grounded answer, never re-retrieves or invents
+facts. Left off by default because Gemini's free-tier quota (~20 req/day) is
+shared with video tagging; turning this on means every Slack reply spends one
+of those calls.
+
 **Idea interpretation layer** (`src/interpretation.py`). The `ideas` mode is
 backed by a small deterministic layer that joins winning signals × formats ×
 top product/ICP into concrete reel briefs. If the user's message mentions a

@@ -372,22 +372,33 @@ def run_generate_social_ideas(background: BackgroundTasks,
     return _guarded(_do_generate_social_ideas, background)
 
 
-# ---- Slack chat (app_mention → in-thread reply) ----------------------------
-def _handle_slack_mention(channel: str, thread_ts: str, user_text: str) -> None:
-    """Background worker: build a grounded answer and post it back in-thread.
-    Read/synthesize only — never writes to the Sheet."""
+# ---- Slack chat (app_mention / DM / active-thread reply) -------------------
+# Conversational mode: each turn tries live Slack thread history first
+# (conversations.replies — best-effort, needs channels:history/groups:history/
+# im:history depending on channel type; returns None cleanly without those
+# scopes), then falls back to the lightweight in-memory per-thread cache in
+# slack_bot.py. Either way, read/synthesize only — never writes to the Sheet
+# or Notion, never triggers video analysis.
+def _converse(channel: str, thread_ts: str, user_text: str) -> None:
+    """Shared background worker for app_mention, DMs, and active-thread
+    replies: build a grounded, thread-aware answer and post it back."""
     import slack_bot
     import social_brain
     try:
         clean = slack_bot.strip_mention(user_text)
-        answer = social_brain.answer_question(clean)
-        slack_bot.post_message(channel, answer, thread_ts=thread_ts)
+        context = slack_bot.fetch_thread_context(channel, thread_ts)
+        if context is None:
+            context = slack_bot.cached_context(channel, thread_ts)
+        answer = social_brain.answer_conversation(clean, context)
+        slack_bot.remember(channel, thread_ts, "user", clean)
+        slack_bot.remember(channel, thread_ts, "assistant", answer)
+        slack_bot.post_message(channel, answer, thread_ts=thread_ts or None)
     except Exception as e:  # noqa: BLE001 - Slack never sees a stack trace
-        log.exception("slack mention handling failed: %s", e)
+        log.exception("slack conversation handling failed: %s", e)
         try:
             slack_bot.post_message(channel,
                                    f"Sorry — I hit an error handling that. ({type(e).__name__})",
-                                   thread_ts=thread_ts)
+                                   thread_ts=thread_ts or None)
         except Exception:  # noqa: BLE001
             log.exception("slack error-reply also failed")
 
@@ -424,12 +435,34 @@ async def slack_events(request: Request, background: BackgroundTasks):
         # Ignore any message the bot itself (or another bot) authored.
         if event.get("bot_id") or event.get("subtype") == "bot_message":
             return {"ok": True, "skipped": "bot"}
+
         if etype == "app_mention":
             channel = event.get("channel", "")
             thread_ts = event.get("thread_ts") or event.get("ts") or ""
             user_text = event.get("text", "") or ""
             if channel:
-                background.add_task(_handle_slack_mention, channel, thread_ts, user_text)
+                background.add_task(_converse, channel, thread_ts, user_text)
+            return {"ok": True}
+
+        if etype == "message":
+            channel = event.get("channel", "")
+            channel_type = event.get("channel_type", "")
+            thread_ts = event.get("thread_ts") or ""
+            user_text = event.get("text", "") or ""
+            if not channel or not user_text:
+                return {"ok": True}
+            # app_mention already handles messages that mention the bot — skip
+            # here so a mention inside a channel doesn't get answered twice.
+            bot_id = slack_bot.get_bot_user_id()
+            if bot_id and f"<@{bot_id}>" in user_text:
+                return {"ok": True, "skipped": "mention-handled-elsewhere"}
+            is_dm = channel_type == "im"
+            # Never over-listen to general channel chatter: a plain (non-DM)
+            # message only gets a reply when it's inside a thread the bot has
+            # already replied in this process's lifetime.
+            is_active_reply = bool(thread_ts) and slack_bot.is_active_thread(channel, thread_ts)
+            if is_dm or is_active_reply:
+                background.add_task(_converse, channel, thread_ts, user_text)
             return {"ok": True}
     return {"ok": True}
 

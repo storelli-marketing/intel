@@ -37,30 +37,51 @@ The app is a single FastAPI service (`web:app`). No database. Deploys from
 | `DASHBOARD_URL` | no | the Railway URL (shown in the Slack footer) |
 | `YTDLP_COOKIES_B64` | no | base64 of an exported Instagram `cookies.txt` — set if anonymous downloads start failing with an "empty media response" error (see §5 notes) |
 | `YTDLP_COOKIES_PATH` | no | path to a `cookies.txt` file directly; if `YTDLP_COOKIES_B64` is also set, it's decoded into this path (overwriting it) at startup |
+| `SLACK_LLM_POLISH_ENABLED` | no | `true` = let Gemini reword Slack conversational replies (validated, discarded if it breaks grounding); default **off** to protect the shared Gemini quota |
 
-## 4. Slack chat app (interactive Marketing Brain)
+## 4. Slack chat app (interactive Marketing Brain — threaded, conversational)
 
-The interactive brain (mention the bot in a channel → it replies in-thread with
-ideas / feedback / learnings / next tests) is optional and completely separate
-from `SLACK_WEBHOOK_URL` (which stays as the outbound run-report path).
+The interactive brain (mention the bot → it replies in-thread and understands
+follow-ups like "expand #2" or "make it for parents") is optional and
+completely separate from `SLACK_WEBHOOK_URL` (which stays as the outbound
+run-report path).
 
 1. https://api.slack.com/apps → **Create New App** → *From scratch*.
-2. **OAuth & Permissions** → *Bot Token Scopes* → add `chat:write`. Install the
-   app to the workspace and copy the **Bot User OAuth Token** (starts with `xoxb-`).
-3. **Basic Information** → copy the **Signing Secret**.
+2. **OAuth & Permissions** → *Bot Token Scopes* → add `chat:write` and
+   `app_mentions:read`. Install the app to the workspace and copy the **Bot
+   User OAuth Token** (starts with `xoxb-`).
+3. **Basic Information** → copy the **Signing Secret** (not the Verification
+   Token — that's a legacy mechanism this app doesn't use).
 4. **Event Subscriptions** → *Enable Events* → Request URL:
-   `https://<railway-url>/slack/events` (must return the challenge on save).
+   `https://<railway-url>/slack/events` (must return the challenge on save —
+   it only will once `SLACK_BOT_TOKEN` / `SLACK_SIGNING_SECRET` are already
+   set in Railway, since the endpoint 503s without them).
    Under *Subscribe to bot events*, add `app_mention`. Save.
 5. In Railway → Variables, set:
    - `SLACK_BOT_TOKEN` = the `xoxb-...` token
    - `SLACK_SIGNING_SECRET` = the signing secret
 6. Invite the bot to a channel (`/invite @<bot>`) and mention it:
-   `@storelli-brain ideas` / `feedback https://...` / `learnings` / `tests`.
+   `@storelli-brain ideas` / `feedback https://...` / `learnings` / `tests` /
+   `summarize the brain`.
+7. **Optional — DMs**: add the `message.im` bot event *and* the `im:history`
+   scope together (Slack requires both to deliver the event at all), then
+   **reinstall the app** (any scope change requires reinstalling). DMs are
+   answered the same way as mentions.
+8. **Optional — follow-ups without re-mentioning in channels**: add
+   `message.channels` (+ `channels:history`), and `message.groups` (+
+   `groups:history`) for private channels, then reinstall. The bot already
+   only acts on messages inside a thread it has already replied in — it will
+   not start responding to unrelated channel chatter even with this enabled.
 
-The bot never writes to the Sheet or triggers video analysis — it reads the
-existing Sheet + `latest_learnings.md` + `data/guidelines/` and replies in the
-same thread. `/slack/events` returns **503** cleanly when the two Slack env
-vars are missing; existing dashboard endpoints are unaffected.
+The bot stays read-only throughout — never writes to the Sheet, never writes
+to Notion, never triggers video analysis. It reads Notion Brain first, then
+the Sheet + `latest_learnings.md` + `data/guidelines/`, and replies in the
+same thread. Conversation context comes from live Slack thread history when
+the optional history scopes above are granted, falling back to a small
+in-memory-only cache (resets on restart, no database) otherwise — either way,
+a missing scope degrades to single-turn answers rather than failing.
+`/slack/events` returns **503** cleanly when `SLACK_BOT_TOKEN` /
+`SLACK_SIGNING_SECRET` are missing; existing dashboard endpoints are unaffected.
 
 ## 5. Post-deploy smoke test
 

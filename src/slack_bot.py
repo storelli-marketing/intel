@@ -2,12 +2,20 @@
 
 Read-only companion to `slack_report.py`:
 - `slack_report.py` = one-way outbound run summaries via incoming webhook.
-- `slack_bot.py`    = interactive app_mention → in-thread reply, backed by
-                      `social_brain.answer_question()`.
+- `slack_bot.py`    = interactive app_mention / DM / active-thread-reply →
+                      reply, backed by `social_brain.answer_conversation()`.
 
 Verifies Slack request signatures against SLACK_SIGNING_SECRET (HMAC SHA256,
-5-minute freshness window). Never writes to the Sheet and never triggers
-video analysis — read/synthesize only.
+5-minute freshness window). Never writes to the Sheet, never writes to
+Notion, never triggers video analysis — read/synthesize only.
+
+Conversation memory: the primary source of context is live Slack thread
+history (`fetch_thread_context`, best-effort — returns None on any failure or
+missing scope so the caller can fall back cleanly). A small in-memory-only
+cache (`remember` / `cached_context` / `is_active_thread`) supplements this —
+it's what lets a thread be recognized as "the bot is already participating
+here" even without history-read scopes, and it resets on restart by design
+(no database, per the conversational-mode guardrails).
 """
 from __future__ import annotations
 
@@ -25,6 +33,92 @@ log = get_logger()
 
 _SIG_MAX_AGE_SEC = 60 * 5
 _SLACK_API = "https://slack.com/api"
+
+# --- bot identity (cached) --------------------------------------------------
+_bot_id_cache: dict = {"id": None, "fetched": False}
+
+
+def get_bot_user_id() -> str | None:
+    """Best-effort, cached bot user id via auth.test. None on any failure —
+    callers must treat that as 'unknown' rather than crash."""
+    if _bot_id_cache["fetched"]:
+        return _bot_id_cache["id"]
+    _bot_id_cache["fetched"] = True
+    if not config.SLACK_BOT_TOKEN:
+        return None
+    try:
+        resp = httpx.post(f"{_SLACK_API}/auth.test",
+                          headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
+                          timeout=10)
+        data = resp.json()
+        if data.get("ok"):
+            _bot_id_cache["id"] = data.get("user_id")
+    except Exception as e:  # noqa: BLE001 - identity lookup is best-effort
+        log.warning("slack_bot: could not resolve bot user id: %s", e)
+    return _bot_id_cache["id"]
+
+
+# --- lightweight in-memory conversation cache -------------------------------
+# Keyed by (channel, thread_key) where thread_key is the thread_ts, or the
+# channel id itself for un-threaded DMs. Never persisted; resets on restart.
+_THREAD_CACHE: dict[tuple, list[dict]] = {}
+_MAX_CACHE_MESSAGES = 10
+_MAX_TRACKED_THREADS = 500  # simple bound so this can't grow unbounded
+
+
+def _mem_key(channel: str, thread_ts: str) -> tuple:
+    return (channel, thread_ts or channel)
+
+
+def is_active_thread(channel: str, thread_ts: str) -> bool:
+    """True if we've already participated in this thread this process's
+    lifetime — used to allow plain follow-up replies (no re-mention needed)
+    without listening to unrelated channel chatter."""
+    return _mem_key(channel, thread_ts) in _THREAD_CACHE
+
+
+def remember(channel: str, thread_ts: str, role: str, text: str) -> None:
+    """Append a turn to the per-thread cache (role is 'user' or 'assistant')."""
+    key = _mem_key(channel, thread_ts)
+    if key not in _THREAD_CACHE and len(_THREAD_CACHE) >= _MAX_TRACKED_THREADS:
+        _THREAD_CACHE.pop(next(iter(_THREAD_CACHE)))  # drop oldest-inserted
+    _THREAD_CACHE.setdefault(key, []).append({"role": role, "text": text})
+    _THREAD_CACHE[key] = _THREAD_CACHE[key][-_MAX_CACHE_MESSAGES:]
+
+
+def cached_context(channel: str, thread_ts: str) -> list[dict]:
+    return list(_THREAD_CACHE.get(_mem_key(channel, thread_ts), []))
+
+
+def fetch_thread_context(channel: str, thread_ts: str, limit: int = 10) -> list[dict] | None:
+    """Best-effort live fetch of thread history via conversations.replies.
+
+    Returns None (not []) on any failure or missing scope, so the caller can
+    tell 'no history available' apart from 'empty thread' and fall back to
+    the in-memory cache instead of silently answering with no context.
+    """
+    if not (config.SLACK_BOT_TOKEN and thread_ts):
+        return None
+    try:
+        resp = httpx.get(f"{_SLACK_API}/conversations.replies",
+                         headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
+                         params={"channel": channel, "ts": thread_ts, "limit": limit},
+                         timeout=10)
+        data = resp.json()
+        if not data.get("ok"):
+            log.warning("slack_bot: conversations.replies unavailable (%s) — "
+                        "falling back to in-memory thread cache.", data.get("error"))
+            return None
+    except Exception as e:  # noqa: BLE001 - history fetch is best-effort
+        log.warning("slack_bot: fetch_thread_context failed: %s", e)
+        return None
+
+    bot_id = get_bot_user_id()
+    out = []
+    for m in (data.get("messages") or [])[-limit:]:
+        role = "assistant" if (bot_id and m.get("user") == bot_id) else "user"
+        out.append({"role": role, "text": strip_mention(m.get("text", ""))})
+    return out
 
 
 def verify_request(body: bytes, timestamp: str, signature: str,

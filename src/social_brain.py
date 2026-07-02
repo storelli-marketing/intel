@@ -712,3 +712,330 @@ def answer_question(user_text: str) -> str:
     except Exception as e:  # noqa: BLE001 - Slack should never see a stack trace
         log.exception("social_brain: mode %s failed", mode)
         return f"Something went wrong answering that. ({type(e).__name__}: {e})"
+
+
+# ---------------------------------------------------------------------------
+# Conversational mode — thread-aware follow-ups on top of the modes above.
+#
+# answer_conversation() never re-invents retrieval: every follow-up either (a)
+# transforms the PREVIOUS assistant message deterministically (expand a numbered
+# item, re-show its sources, compress it, reformat it as a brief) so nothing new
+# is invented, or (b) re-runs one of the existing grounded modes above with a
+# segment/topic pulled from the conversation. LLM polish (opt-in, see
+# config.SLACK_LLM_POLISH_ENABLED) may only reword the result — it is validated
+# afterward and discarded if it drops/adds a citation, adds a number that wasn't
+# already present, or uses causal language.
+# ---------------------------------------------------------------------------
+_EXPAND_RE = re.compile(r"\bexpand\b", re.IGNORECASE)
+_NUMBER_RE = re.compile(r"#\s*(\d+)|\b(\d+)\b")
+_SHOW_SOURCES_KW = ("show me sources", "show sources", "what source", "what sources",
+                    "cite your sources", "sources?")
+_BRIEF_KW = ("content brief", "into a brief", "make it a brief")
+_SHORTER_KW = ("shorter", "make it shorter", "tighten", "condense", "trim it")
+_MORE_KW = ("more", "5 more", "few more", "another one", "give me more")
+_WHY_KW = ("why?", "why do you recommend", "why is that", "why though", "why not")
+_MAKE_FOR_RE = re.compile(r"\bmake (?:it|that|those|these)\s+for\s+(.+)", re.IGNORECASE)
+_NEXT_KW = ("what should we do next", "what's next", "what next", "next steps")
+_RISKY_KW = ("risky version", "risky one", "bolder version", "bolder one",
+            "more aggressive", "spicier", "edgier")
+
+_FOLLOWUP_NUDGE = "\n\n_Want me to turn this into content briefs, or go deeper on any part?_"
+
+
+def _classify_followup(text: str) -> str:
+    t = text.lower().strip()
+    if _has_any(t, _SHOW_SOURCES_KW):
+        return "sources"
+    if _EXPAND_RE.search(t):
+        return "expand"
+    if _MAKE_FOR_RE.search(t):
+        return "make_for"
+    if _has_any(t, _BRIEF_KW):
+        return "brief"
+    if _has_any(t, _RISKY_KW):
+        return "risky"
+    if _has_any(t, _SHORTER_KW):
+        return "shorter"
+    if t in ("why?", "why", "why though") or _has_any(t, _WHY_KW):
+        return "why"
+    if _has_any(t, _MORE_KW):
+        return "more"
+    if _has_any(t, _NEXT_KW):
+        return "next"
+    return "none"
+
+
+def _extract_sources_block(text: str) -> str:
+    """Grab the trailing sources block, whichever style rendered it — the
+    single-line '_Sources:_ [S1]...' (most modes) or the multi-line
+    '*Sources:*\\n  S1 ...' block (ideas mode)."""
+    m = re.search(r"_Sources:_.*", text)
+    if m:
+        return m.group(0)
+    idx = text.find("*Sources:*")
+    return text[idx:].strip() if idx != -1 else ""
+
+
+def _split_numbered_items(text: str) -> list[str]:
+    """Split a rendered list-style reply into its numbered items — works for
+    both '*1. Title*' (ideas) and '*1. Hook × Format*' (tests) renderings."""
+    parts = re.split(r"\n(?=\*\d+\.\s)", text)
+    return [p.strip() for p in parts if re.match(r"^\*\d+\.\s", p.strip())]
+
+
+def _detect_last_mode(last_assistant: str) -> str:
+    """Best-effort classification of which mode produced the previous answer,
+    from its rendering — used to decide how to re-run it for a follow-up."""
+    if "*Ideas grounded" in last_assistant:
+        return "ideas"
+    if "Next creative tests" in last_assistant:
+        return "tests"
+    if "*Storelli Marketing Brain — summary*" in last_assistant:
+        return "summary"
+    if last_assistant.startswith("*Examples"):
+        return "examples"
+    if last_assistant.startswith("*Feedback on:"):
+        return "feedback"
+    if "*Current learnings*" in last_assistant or "Winning —" in last_assistant:
+        return "learnings"
+    if "Work well:" in last_assistant or "associated with performance" in last_assistant:
+        return "signals"
+    return "ideas"
+
+
+def _followup_sources(last_assistant: str) -> str:
+    block = _extract_sources_block(last_assistant)
+    if not block:
+        return ("I didn't cite any sources in my last message — ask me a grounded "
+                "question (like *what is working?*) and I'll show sources with the answer.")
+    return "Here are the sources behind that:\n\n" + block
+
+
+def _followup_expand(text: str, last_assistant: str) -> str:
+    items = _split_numbered_items(last_assistant)
+    if not items:
+        return ("I don't have a numbered list from my last message to expand on — "
+                "ask a specific question and I'll go deeper.")
+    m = _NUMBER_RE.search(text)
+    n = int(next(g for g in m.groups() if g)) if m else 1
+    if n < 1 or n > len(items):
+        return f"I only had {len(items)} item(s) last time — try a number between 1 and {len(items)}."
+    return f"*Expanding on #{n}:*\n\n{items[n - 1]}"
+
+
+def _followup_make_for(text: str, context: list[dict]) -> str:
+    m = _MAKE_FOR_RE.search(text)
+    segment = (m.group(1).strip() if m else text).rstrip("?.!")
+    last_assistant = next((m2["text"] for m2 in reversed(context) if m2.get("role") == "assistant"), "")
+    last_user = next((m2["text"] for m2 in reversed(context) if m2.get("role") == "user"), "")
+    mode = _detect_last_mode(last_assistant)
+    if mode in ("learnings", "signals") and (social_retrieval.detect_layer(last_user)
+                                             or social_retrieval.detect_layer(text)):
+        return _mode_signals(f"{last_user} for {segment}".strip())
+    # Ideas (and any other prior mode) — re-run ideas biased to the new segment;
+    # this covers the common case ("make it for parents" after an ideas answer)
+    # and degrades sensibly otherwise.
+    return _mode_ideas(f"{last_user or 'ideas'} for {segment}".strip())
+
+
+def _followup_brief(last_assistant: str) -> str:
+    items = _split_numbered_items(last_assistant)
+    item = items[0] if items else last_assistant
+
+    def _field(label: str) -> str:
+        fm = re.search(rf"{label}:\s*(.+)", item)
+        return fm.group(1).strip() if fm else ""
+
+    title_m = re.search(r"\*\d+\.\s*(.+?)\*", item)
+    title = title_m.group(1) if title_m else "Untitled"
+    blocks_m = re.search(r"Story blocks:\n((?:\s*-.+\n?)+)", item)
+    blocks = blocks_m.group(1).strip() if blocks_m else ""
+    hook, structure = _field("Hook"), _field("Structure")
+    prod_icp, why = _field("Product / ICP"), _field("Why")
+    conf, sources = _field("Confidence"), _field("Sources")
+    if not (hook or structure or blocks):
+        return ("I don't have a prior idea to turn into a brief — ask for "
+                "*ideas* first, then \"turn this into a content brief\".")
+    return (
+        f"*Content Brief — {title}*\n"
+        f"  • Hook: {hook or 'n/a'}\n"
+        f"  • Structure: {structure or 'n/a'}\n"
+        f"  • Product / ICP: {prod_icp or 'n/a'}\n"
+        f"  • Beats:\n{blocks or '    (none)'}\n"
+        f"  • Why: {why or 'n/a'}\n"
+        f"  • Confidence: {conf or 'n/a'}\n"
+        f"  • Sources: {sources or 'n/a'}"
+    )
+
+
+def _followup_risky(last_assistant: str) -> str:
+    items = _split_numbered_items(last_assistant)
+    if not items:
+        return "I don't have prior ideas to pick a bolder angle from — ask for *ideas* first."
+    risky = next((it for it in items if re.search(r"fear|risk", it, re.IGNORECASE)), items[0])
+    return "*Here's the bolder angle:*\n\n" + risky
+
+
+def _followup_shorter(last_assistant: str) -> str:
+    src = _extract_sources_block(last_assistant)
+    body = last_assistant
+    if src:
+        body = body[:body.find(src)]
+    lines = [l for l in body.splitlines() if l.strip()]
+    out = "\n".join(lines[:4]) or "(nothing to shorten)"
+    return out + (f"\n\n{src}" if src else "")
+
+
+def _followup_why(last_assistant: str) -> str:
+    lines = [l for l in last_assistant.splitlines()
+            if re.search(r"\b(why|diagnosis|associated with|correlated with|lift)\b", l, re.IGNORECASE)]
+    src = _extract_sources_block(last_assistant)
+    if not lines and not src:
+        return ("I don't have a specific reason recorded from my last message — "
+                "ask a grounded question like *what is working?* and I'll explain with evidence.")
+    body = "\n".join(lines[:5]) if lines else "(see sources below)"
+    return "Here's the evidence behind that:\n\n" + body + (f"\n\n{src}" if src else "")
+
+
+def _followup_more(context: list[dict]) -> str:
+    last_user = next((m["text"] for m in reversed(context) if m.get("role") == "user"), "")
+    last_assistant = next((m["text"] for m in reversed(context) if m.get("role") == "assistant"), "")
+    if _detect_last_mode(last_assistant) == "ideas":
+        return ("_Current signals support at most 5 grounded ideas at once — here they are:_\n\n"
+                + _mode_ideas(last_user or "ideas"))
+    return answer_question(last_user or "learnings")
+
+
+# --- optional LLM polish (opt-in, validated, never the source of truth) -----
+_CAUSAL_WORDS = ("causes", "caused by", "causing", "leads to", "results in", "because of the")
+
+
+def _has_causal_language(text: str) -> bool:
+    t = text.lower()
+    return any(w in t for w in _CAUSAL_WORDS)
+
+
+def _citations_preserved(original: str, polished: str) -> bool:
+    orig = set(re.findall(r"\[S\d+\]", original))
+    new = set(re.findall(r"\[S\d+\]", polished))
+    if not orig:
+        return not new  # nothing to cite -> polished must not invent a citation
+    return bool(new) and new.issubset(orig)
+
+
+def _introduced_new_numbers(original: str, polished: str) -> bool:
+    orig_nums = set(re.findall(r"\d+%|\bn=\d+\b", original))
+    new_nums = set(re.findall(r"\d+%|\bn=\d+\b", polished))
+    return not new_nums.issubset(orig_nums)
+
+
+def _maybe_llm_polish(deterministic_text: str, user_text: str) -> Optional[str]:
+    """Best-effort, opt-in (config.SLACK_LLM_POLISH_ENABLED): ask Gemini to
+    reword the deterministic answer more conversationally. Never re-retrieves
+    facts itself. Returns None (caller uses the deterministic text as-is) when
+    disabled, on any failure, or when the output fails validation — dropped or
+    invented [S#] citations, invented numbers, or causal language."""
+    if not (config.SLACK_LLM_POLISH_ENABLED and config.GEMINI_API_KEY):
+        return None
+    try:
+        from gemini_client import GeminiClient
+        prompt = (
+            "Rewrite the following Slack bot reply to sound more natural and "
+            "conversational, as a direct reply to the user's message below. "
+            "Keep every fact, number, and [S#] citation EXACTLY as given — do "
+            "not add, remove, or change any of them, and do not invent new "
+            "sources, links, or metrics. Never say something 'causes' or "
+            "'leads to' performance — only 'associated with' / 'correlated "
+            "with'. Keep it roughly the same length. Use Slack's mrkdwn "
+            "formatting, NOT standard Markdown: *single asterisks* for bold "
+            "(never **double asterisks**), _underscores_ for italics, and "
+            "plain '•' or '-' for bullets. Return ONLY the rewritten text, "
+            "no commentary.\n\n"
+            f"User asked: {user_text}\n\nOriginal reply:\n{deterministic_text}"
+        )
+        polished = GeminiClient().summarize_findings(prompt).strip()
+    except Exception as e:  # noqa: BLE001 - LLM polish is optional, never fatal
+        log.warning("LLM polish failed (%s); using deterministic answer.", e)
+        return None
+
+    if not polished:
+        return None
+    # Defensive: normalize standard-Markdown bold to Slack's mrkdwn syntax
+    # regardless of whether the model actually followed the prompt's instruction.
+    polished = re.sub(r"\*\*(.+?)\*\*", r"*\1*", polished)
+    if not _citations_preserved(deterministic_text, polished):
+        log.warning("LLM polish dropped/altered citations; using deterministic answer.")
+        return None
+    if _introduced_new_numbers(deterministic_text, polished):
+        log.warning("LLM polish introduced numbers not in the original; using deterministic answer.")
+        return None
+    if _has_causal_language(polished):
+        log.warning("LLM polish introduced causal language; using deterministic answer.")
+        return None
+    return polished
+
+
+def _finish_conversational(base: str, user_text: str) -> str:
+    """Optional validated LLM polish, then ensure a natural follow-up nudge is
+    present so the conversation can continue (skipped if one is already there)."""
+    text = _maybe_llm_polish(base, user_text) or base
+    # Allow trailing markdown (Slack italics/bold close with _ or *) after the
+    # question mark — the nudge itself is wrapped in "_..._", so a naive
+    # "ends right after ?" check would miss it and double up the prompt.
+    has_prompt = bool(re.search(r"(want|would you like|should i|shall i).{0,80}\?[_*]*\s*$",
+                                text.strip(), re.IGNORECASE))
+    return text if has_prompt else text + _FOLLOWUP_NUDGE
+
+
+# --- public: conversational entrypoint --------------------------------------
+def answer_conversation(user_text: str, conversation_context: Optional[list[dict]] = None,
+                        channel_context: Optional[dict] = None) -> str:
+    """Thread-aware, multi-turn variant of answer_question().
+
+    conversation_context: chronological (oldest-first) list of
+    {"role": "user"|"assistant", "text": str} — typically live Slack thread
+    history or the lightweight in-memory cache (see slack_bot.py). Every
+    follow-up either deterministically transforms the previous assistant
+    message (expand/sources/shorter/brief/risky — no new retrieval, so nothing
+    is invented) or re-runs one of the existing grounded modes with a
+    segment/topic pulled from the conversation. Falls back to plain
+    answer_question() when there's no prior turn or no recognized follow-up
+    pattern. channel_context is reserved for future per-channel metadata and
+    is currently unused.
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return _HELP
+
+    context = conversation_context or []
+    last_assistant = next((m["text"] for m in reversed(context) if m.get("role") == "assistant"), "")
+
+    try:
+        if not last_assistant:
+            return _finish_conversational(answer_question(text), text)
+
+        follow_up = _classify_followup(text)
+        if follow_up == "sources":
+            base = _followup_sources(last_assistant)
+        elif follow_up == "expand":
+            base = _followup_expand(text, last_assistant)
+        elif follow_up == "make_for":
+            base = _followup_make_for(text, context)
+        elif follow_up == "brief":
+            base = _followup_brief(last_assistant)
+        elif follow_up == "risky":
+            base = _followup_risky(last_assistant)
+        elif follow_up == "shorter":
+            base = _followup_shorter(last_assistant)
+        elif follow_up == "why":
+            base = _followup_why(last_assistant)
+        elif follow_up == "more":
+            base = _followup_more(context)
+        elif follow_up == "next":
+            base = _mode_tests()
+        else:
+            base = answer_question(text)
+        return _finish_conversational(base, text)
+    except Exception as e:  # noqa: BLE001 - Slack should never see a stack trace
+        log.exception("answer_conversation failed")
+        return f"Something went wrong answering that. ({type(e).__name__}: {e})"
