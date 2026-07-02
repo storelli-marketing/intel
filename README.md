@@ -254,10 +254,20 @@ Four modes (deterministic routing on the message text):
 
 | Ask… | You get |
 |---|---|
-| `ideas` / *what should we post* | 3–5 grounded Storelli video ideas (title, hook, format, product/ICP, why, confidence) |
+| `ideas` / *what should we post* / *ideas for BodyShield* / *ideas for parents* | 3–5 grounded Storelli video ideas — title, hook, storytelling structure, product/ICP, story blocks, visual beats, why, confidence, sources |
 | `feedback <IG link>` | Sheet lookup: performance bucket, Product, ICP, signals, diagnosis, next recommendation |
 | `learnings` / *what's working* | Top winning + weak signals, what to scale, what to avoid, thin-data warning |
 | `tests` / *what should we test* | 3 next creative tests from the synthesizer |
+
+**Idea interpretation layer** (`src/interpretation.py`). The `ideas` mode is
+backed by a small deterministic layer that joins winning signals × formats ×
+top product/ICP into concrete reel briefs. If the user's message mentions a
+Storelli product (e.g. "BodyShield", "gloves", "head guard") or an ICP
+(e.g. "parents", "aspiring pro"), the ideas are biased to that segment. Every
+idea comes with a sources block — analyzed Sheet rows (`[S1] row 12 — Great`),
+the learnings file (`[S2] data/latest_learnings.md`), and any guideline files
+loaded (`[S3] social_content_guidelines.md`). Metrics and links are never
+invented; the "why" line always uses "associated with" / "correlated with".
 
 Every substantive reply carries **inline sources** — `[S1] Sheet rows: …`,
 `[S2] data/latest_learnings.md`, `[S3] guidelines: …` — and only cites what was
@@ -271,6 +281,36 @@ Setup: create a Slack app, add bot scope `chat:write`, subscribe to
 `SLACK_SIGNING_SECRET` — see `DEPLOY.md` §4 for the exact steps.
 `SLACK_WEBHOOK_URL` remains optional and independent (it powers the outbound
 run report above).
+
+### Evidence vs. inspiration (optional `Source Type` column)
+
+The sheet can optionally include a **`Source Type`** column (also accepted as
+`source_type` / `Source`). Rows whose value is *External / Inspiration /
+Reference / Competitor / Creator* are treated as **inspiration only** — they
+never enter correlations, never justify a lift, and can be cited as an
+inspiration source (never as evidence). Rows marked *Internal / Storelli /
+Owned* — and rows in sheets that don't have the column at all — behave
+exactly as before. This is the only change to correlation behavior, and it
+protects the learning layer against explicit external contamination.
+
+### Generated Social Ideas (Notion / jsonl)
+
+`interpretation.build_idea_candidates()` output can be persisted:
+
+- Notion path (preferred, when `NOTION_API_KEY` + `NOTION_PARENT_PAGE_ID` are
+  set): a 6th database **Generated Social Ideas** is created under the parent
+  page. Schema: Title (key), Channel, Product, ICP, Hook, Format, Storytelling
+  Structure, Story Blocks, Visual Beats, Why This Should Work, Confidence,
+  Sources, Status *(default Proposed)*, Created At, Posted URL, Result,
+  Feedback. Upsert by Title. **Status / Posted URL / Result / Feedback are
+  preserved on update** so operator edits survive resyncs. The five existing
+  Notion databases are untouched by this flow.
+- Fallback (when Notion is unavailable): one JSON line per idea appended to
+  `data/generated_social_ideas.jsonl`. Never crashes the caller.
+
+Trigger via `POST /run/generate-social-ideas` (requires `X-Run-Secret`) or by
+importing `notion_brain.sync_or_persist_ideas(ideas, date_str)` directly.
+Slack chat never writes to the Sheet and does not auto-persist ideas.
 
 ## Upload Guidelines
 

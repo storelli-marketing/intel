@@ -71,6 +71,24 @@ Open the Railway URL, paste `RUN_SECRET`, then:
 5. **Upload Guidelines** — paste text, pick a type, Save → appears in the list.
 6. **Run Social Media Learning, limit 5 only** → analyzes ≤5 rows (or stops
    cleanly on a Gemini 429). **Do not run 150 yet.**
+7. **Slack ideas mode** — in a channel where the bot is invited, mention it:
+   `@storelli-brain ideas for parents on BodyShield`. It should reply
+   in-thread with 3–5 ideas that carry a `Sources: [S1], [S2]` line each and
+   an aggregate `Sources:` block at the bottom.
+8. *(optional)* **`POST /run/generate-social-ideas`** — with `X-Run-Secret`,
+   should return 202 queued; on completion the ideas are either upserted into
+   the Notion **Generated Social Ideas** DB (if Notion is configured) or
+   written to `data/generated_social_ideas.jsonl` (fallback). Existing Notion
+   sync for the five original databases is untouched.
+
+### Optional: `Source Type` column
+
+The Sheet may include an optional `Source Type` column (aliases:
+`source_type`, `Source`). Values *External / Inspiration / Reference /
+Competitor / Creator* mark **inspiration-only** rows — they are excluded from
+correlations so external content never contaminates Storelli learnings. Rows
+marked *Internal / Storelli / Owned* and sheets that don't include the column
+at all continue to work exactly as before.
 
 Success = Generate Learnings → Update Notion Brain → Send Slack Report works
 end-to-end from the deployed dashboard.

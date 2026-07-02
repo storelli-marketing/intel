@@ -33,15 +33,51 @@ POSITIVE_BUCKET = "Great"
 # Canonical display values written back to the sheet's PERFORMANCE column.
 PERF_LABELS = ("Great", "Good", "Underdog")
 
+# Optional Source Type column — when present, rows explicitly marked as
+# external/inspiration are excluded from the *learning layer* (correlations,
+# lifts). They can still be shown as inspiration by the idea interpreter.
+# Sheets without this column behave exactly as before.
+_SOURCE_TYPE_ALIASES = ("source type", "source_type", "source")
+_EXTERNAL_SOURCE_VALUES = {"external", "inspiration", "reference",
+                           "competitor", "creator"}
+_INTERNAL_SOURCE_VALUES = {"internal", "storelli", "owned"}
+
+
+def source_type(row: dict) -> str:
+    """Return the row's Source Type value (lowercased, stripped) or ''.
+    Case-insensitive across a few common column-name spellings."""
+    for k, v in row.items():
+        if k and k.lower() in _SOURCE_TYPE_ALIASES:
+            return str(v or "").strip().lower()
+    return ""
+
+
+def is_reference_row(row: dict) -> bool:
+    """True if this row is explicitly external/inspiration and must NOT
+    contaminate the Storelli learning layer."""
+    return source_type(row) in _EXTERNAL_SOURCE_VALUES
+
+
+def is_internal_row(row: dict) -> bool:
+    """True if this row is explicitly internal/Storelli-owned. When no Source
+    Type column exists, the answer is 'unknown' (returns False)."""
+    return source_type(row) in _INTERNAL_SOURCE_VALUES
+
 
 def bucket_from_performance(value) -> str | None:
     return _MAP.get(str(value or "").strip().lower())
 
 
 def buckets_for_rows(rows: list[dict]) -> dict[int, str]:
-    """{row_index: bucket} for every row with a recognized PERFORMANCE value."""
+    """{row_index: bucket} for every row with a recognized PERFORMANCE value.
+
+    Rows explicitly marked as external/inspiration via Source Type are excluded
+    — they are inspiration, not evidence, and must not enter correlations.
+    """
     out = {}
     for r in rows:
+        if is_reference_row(r):
+            continue
         b = bucket_from_performance(r.get("PERFORMANCE"))
         if b:
             out[r["_row"]] = b

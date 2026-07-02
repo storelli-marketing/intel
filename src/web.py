@@ -210,6 +210,41 @@ def _do_correlations() -> None:
         _fail(str(e))
 
 
+def _do_generate_social_ideas() -> None:
+    """Generate grounded social ideas from the current context and persist
+    them (Notion if configured, else data/generated_social_ideas.jsonl).
+    Never writes to the Sheet."""
+    try:
+        _begin("generate-social-ideas")
+        from datetime import datetime, timezone
+
+        import content_context
+        import interpretation
+        import notion_brain
+        from main import compute_findings
+        from sheets_client import SheetsClient
+
+        sheets = SheetsClient()
+        sheets.validate_columns()
+        analyzed, _buckets, results = compute_findings(sheets)
+        rows = sheets.read_rows()
+        ctx = content_context.gather_context()
+        ideas = interpretation.build_idea_candidates(
+            question="", rows=rows, findings=results, context=ctx, limit=5)
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        persist_summary = notion_brain.sync_or_persist_ideas(ideas, date_str)
+        with _LOCK:
+            STATE["generated_ideas"] = {
+                "count": len(ideas),
+                "target": persist_summary.get("target"),
+                "note": persist_summary.get("note", ""),
+                "path": persist_summary.get("path", ""),
+            }
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
 def _do_synthesize() -> None:
     try:
         _begin("synthesize")
@@ -304,6 +339,13 @@ def run_slack_report(background: BackgroundTasks,
                      x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     return _guarded(_do_slack, background)
+
+
+@app.post("/run/generate-social-ideas", status_code=202)
+def run_generate_social_ideas(background: BackgroundTasks,
+                              x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_generate_social_ideas, background)
 
 
 # ---- Slack chat (app_mention → in-thread reply) ----------------------------

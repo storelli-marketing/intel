@@ -13,6 +13,8 @@ among the parent page's children on each run.
 """
 from __future__ import annotations
 
+import json
+import os
 import time
 
 import config
@@ -79,6 +81,24 @@ SCHEMAS: dict[str, dict] = {
             "Core Motivation": "rich_text", "Recommended Messaging": "rich_text",
             "Confidence": "select", "Last Updated": "date",
         },
+    },
+    "Generated Social Ideas": {
+        "key": "Title",
+        "properties": {
+            "Title": "title", "Channel": "rich_text",
+            "Product": "rich_text", "ICP": "rich_text",
+            "Hook": "rich_text", "Format": "rich_text",
+            "Storytelling Structure": "rich_text",
+            "Story Blocks": "rich_text", "Visual Beats": "rich_text",
+            "Why This Should Work": "rich_text",
+            "Confidence": "select", "Sources": "rich_text",
+            "Status": "select", "Created At": "date",
+            "Posted URL": "rich_text", "Result": "rich_text",
+            "Feedback": "rich_text",
+        },
+        # Fields the operator edits by hand after an idea ships. On update we
+        # do NOT overwrite these, so the human-added values survive resyncs.
+        "preserve_on_update": ("Status", "Posted URL", "Result", "Feedback"),
     },
 }
 
@@ -183,6 +203,88 @@ def build_entries(s: dict, date_str: str) -> dict:
     }
 
 
+GENERATED_IDEAS_JSONL = os.path.join(os.path.dirname(__file__), "..", "data",
+                                     "generated_social_ideas.jsonl")
+
+
+def _source_line(s: dict) -> str:
+    """One-liner source rendering safe for Notion rich_text (2000-char cap
+    applies at write-time in _to_props)."""
+    parts = [f"[{s.get('id', '?')}]", s.get("type", ""), s.get("label", "")]
+    if s.get("url"):
+        parts.append(s["url"])
+    return " ".join(p for p in parts if p).strip()
+
+
+def generated_ideas_entries(ideas: list[dict], date_str: str) -> list[dict]:
+    """Pure: map interpretation ideas -> Notion Generated Social Ideas rows.
+
+    Status/Channel are defaulted (Proposed / Instagram). Posted URL, Result,
+    and Feedback stay blank on first-create and are preserved on update
+    (see SCHEMAS['Generated Social Ideas']['preserve_on_update']).
+    """
+    out = []
+    for idea in ideas or []:
+        srcs = idea.get("sources") or []
+        out.append({
+            "Title": str(idea.get("title", "")),
+            "Channel": "Instagram",
+            "Product": str(idea.get("product", "")),
+            "ICP": str(idea.get("icp", "")),
+            "Hook": str(idea.get("hook", "")),
+            "Format": str(idea.get("format", "")),
+            "Storytelling Structure": str(idea.get("storytelling_structure", "")),
+            "Story Blocks": "\n".join(idea.get("story_blocks") or []),
+            "Visual Beats": "\n".join(idea.get("visual_beats") or []),
+            "Why This Should Work": str(idea.get("why_this_should_work", "")),
+            "Confidence": str(idea.get("confidence", "Directional")),
+            "Sources": "\n".join(_source_line(s) for s in srcs),
+            "Status": "Proposed",
+            "Created At": date_str,
+            "Posted URL": "",
+            "Result": "",
+            "Feedback": "",
+        })
+    return out
+
+
+def _persist_ideas_jsonl(ideas: list[dict], date_str: str) -> str:
+    """Fallback when Notion is unavailable — one JSON line per idea.
+    Idempotent by (date_str, title) — repeated calls append; the caller can
+    dedupe downstream if needed. Returns the file path."""
+    os.makedirs(os.path.dirname(GENERATED_IDEAS_JSONL), exist_ok=True)
+    with open(GENERATED_IDEAS_JSONL, "a", encoding="utf-8") as f:
+        for idea in ideas or []:
+            record = dict(idea)
+            record["created_at"] = date_str
+            record.setdefault("status", "Proposed")
+            record.setdefault("channel", "Instagram")
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return GENERATED_IDEAS_JSONL
+
+
+def sync_or_persist_ideas(ideas: list[dict], date_str: str) -> dict:
+    """Try Notion first; on missing config or any Notion failure, fall back
+    to `data/generated_social_ideas.jsonl`. Never raises to the caller —
+    always returns a summary dict describing what happened.
+    """
+    if not ideas:
+        return {"ideas": 0, "target": "none", "note": "no ideas to persist"}
+    if not (config.NOTION_API_KEY and config.NOTION_PARENT_PAGE_ID):
+        path = _persist_ideas_jsonl(ideas, date_str)
+        return {"ideas": len(ideas), "target": "jsonl", "path": path,
+                "note": "Notion not configured — wrote jsonl fallback"}
+    try:
+        summary = NotionBrain().sync_generated_ideas(ideas, date_str)
+        summary.update({"ideas": len(ideas), "target": "notion"})
+        return summary
+    except Exception as e:  # noqa: BLE001 - never crash on a Notion failure here
+        log.warning("Notion generated-ideas sync failed (%s); writing jsonl fallback.", e)
+        path = _persist_ideas_jsonl(ideas, date_str)
+        return {"ideas": len(ideas), "target": "jsonl", "path": path,
+                "note": f"Notion failed ({type(e).__name__}); wrote jsonl fallback"}
+
+
 # ---- live Notion client ----------------------------------------------------
 def _schema_properties(title: str) -> dict:
     out = {}
@@ -272,12 +374,14 @@ class NotionBrain:
 
     def _upsert(self, title: str, db_id: str, entries: list[dict]) -> dict:
         key = SCHEMAS[title]["key"]
+        preserve = set(SCHEMAS[title].get("preserve_on_update", ()))
         created = updated = 0
         for e in entries:
             props = self._to_props(title, e)
             pid = self._find_page(db_id, key, str(e[key]))
             if pid:
-                self._call(self.client.pages.update, page_id=pid, properties=props)
+                update_props = {k: v for k, v in props.items() if k not in preserve}
+                self._call(self.client.pages.update, page_id=pid, properties=update_props)
                 updated += 1
             else:
                 self._call(self.client.pages.create,
@@ -285,12 +389,33 @@ class NotionBrain:
                 created += 1
         return {"created": created, "updated": updated}
 
+    # Existing five-database sync — kept intact. The 6th DB (Generated Social
+    # Ideas) is synced separately via `sync_generated_ideas()` so existing
+    # `notion-sync` runs don't touch it.
+    _SYNTHESIS_DBS = ("Marketing Learnings", "Signal Library", "Next Creative Tests",
+                      "Product Learnings", "ICP Learnings")
+
     def sync(self, synthesis: dict, date_str: str) -> dict:
         entries = build_entries(synthesis, date_str)
         existing = self._find_child_databases()
         summary = {}
-        for title in SCHEMAS:
+        for title in self._SYNTHESIS_DBS:
             db_id = self._ensure_db(title, existing)
             summary[title] = self._upsert(title, db_id, entries.get(title, []))
         log.info("Notion Brain sync summary: %s", summary)
         return summary
+
+    def sync_generated_ideas(self, ideas: list[dict], date_str: str) -> dict:
+        """Upsert generated social ideas into the 'Generated Social Ideas' DB.
+
+        Key = Title. Existing rows with the same title are updated in place,
+        so re-runs are idempotent. Rows created by this function default to
+        Status='Proposed' / Channel='Instagram' and never overwrite the
+        Posted URL / Result / Feedback fields on update.
+        """
+        entries = generated_ideas_entries(ideas, date_str)
+        existing = self._find_child_databases()
+        db_id = self._ensure_db("Generated Social Ideas", existing)
+        summary = self._upsert("Generated Social Ideas", db_id, entries)
+        log.info("Notion Generated Social Ideas sync: %s", summary)
+        return {"Generated Social Ideas": summary}

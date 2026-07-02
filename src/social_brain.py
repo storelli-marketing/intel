@@ -22,6 +22,7 @@ from typing import Optional
 
 import config
 import correlations as corr
+import interpretation
 import taxonomy
 from content_context import gather_context
 from logger import get_logger
@@ -81,6 +82,21 @@ def _load_sheet_state():
         return None
 
 
+def _load_all_rows() -> Optional[list[dict]]:
+    """Return every row (including inspiration/external) or None if the sheet
+    isn't reachable. Used by the idea interpreter so it can surface external
+    rows as *inspiration* without letting them contaminate the learning layer.
+    """
+    try:
+        from sheets_client import SheetsClient
+        sheets = SheetsClient()
+        sheets.validate_columns()
+        return sheets.read_rows()
+    except Exception as e:  # noqa: BLE001
+        log.warning("social_brain: full-sheet read unavailable: %s", e)
+        return None
+
+
 def _sources_line(used: dict) -> str:
     """Render only the sources that were actually consulted this call."""
     parts = []
@@ -110,108 +126,58 @@ def _thin_data_note(analyzed: list[dict], buckets: dict) -> str:
 
 
 # --- modes -----------------------------------------------------------------
-def _mode_ideas() -> str:
-    state = _load_sheet_state()
-    ctx = gather_context()
-    used = {"learnings": bool(ctx["learnings"]),
-            "guidelines": _guideline_names(ctx)}
+_NO_DATA_MSG = ("I don't have enough analyzed source data yet. Run "
+                "*Run Social Media Learning* / *Generate Learnings* first.")
 
-    if not state:
-        return ("I can't reach the analyzed Sheet right now, so I can't ground "
-                "ideas in current signals. Once the Sheet is configured and "
-                "some rows are tagged, ask me again."
-                + _sources_line(used))
 
-    analyzed, buckets, results = state
-    if not analyzed:
-        return ("No tagged rows with performance yet — run *Generate "
-                "Learnings* first, then ask me for ideas."
-                + _sources_line(used))
-
-    import synthesizer
-    s = synthesizer.synthesize(analyzed, buckets, results)
-    used["sheet_rows"] = [r["_row"] for r in analyzed[:5]]
-
-    win = s["winning"][:5] or []
-    top_products = sorted(s["products"].items(), key=lambda kv: len(kv[1]["rows"]),
-                          reverse=True)
-    top_icps = sorted(s["icps"].items(), key=lambda kv: len(kv[1]["rows"]),
-                      reverse=True)
-    top_product = next((n for n, _ in top_products if n != "(unspecified)"), "GK Gloves")
-    top_icp = next((n for n, _ in top_icps if n != "(unspecified)"), "General")
-
-    def _confidence_label(c: str) -> str:
-        return {"High": "Strong", "Medium": "Medium", "Low": "Low"}.get(c, "Directional")
-
-    def _first(layer, default):
-        for r in win:
-            if r["layer"] == layer:
-                return r["label"]
-        return default
-
-    hook_a = _first("hook", "Curiosity Gap")
-    fmt_a = _first("format", "Demo")
-    hook_b = "Fear / Risk" if hook_a != "Fear / Risk" else "Aspiration"
-    fmt_b = "POV" if fmt_a != "POV" else "Tutorial"
-
-    ideas = [
-        {
-            "title": f"{fmt_a}: {hook_a} on {top_product}",
-            "hook": f"Open with a {hook_a.lower()} question a {top_icp.lower()} keeper is already thinking about.",
-            "format": f"{fmt_a} — show the {top_product} in the first 3 seconds, resolve the hook in ≤15s.",
-            "product": top_product,
-            "icp": top_icp,
-            "why": (f"'{hook_a}' hook and '{fmt_a}' format are among the current winning "
-                    f"signals; '{top_product}' is the most-represented product in tagged rows."),
-            "confidence": _confidence_label(win[0]["confidence"]) if win else "Directional",
-        },
-        {
-            "title": f"{fmt_b}: {hook_b} moment for {top_icp}",
-            "hook": f"Open on the {hook_b.lower()} moment (a near-injury or risk situation).",
-            "format": f"{fmt_b} — first-person or close-up, no polish, natural sound.",
-            "product": top_product,
-            "icp": top_icp,
-            "why": "Fear/Risk framings historically drive save rates when paired with a protection story — worth pairing with our winning format.",
-            "confidence": "Directional",
-        },
-        {
-            "title": f"Authority: Coach/Keeper endorsing {top_product}",
-            "hook": "Open with a credibility cue — a coach or pro keeper stating the exact protection benefit.",
-            "format": "Talking head + insert of the product in-context.",
-            "product": top_product,
-            "icp": "Aspiring Pro",
-            "why": "Authority hooks work best when the product is Hard Focus in-frame; supports the Aspiring Pro ICP.",
-            "confidence": "Directional",
-        },
-    ]
-
-    # 2 more, filled from the next winning layers if any.
-    extra_hook = next((r["label"] for r in win if r["layer"] == "hook" and r["label"] != hook_a), None)
-    extra_fmt = next((r["label"] for r in win if r["layer"] == "format" and r["label"] != fmt_a), None)
-    if extra_hook and extra_fmt:
-        ideas.append({
-            "title": f"{extra_fmt}: {extra_hook} pattern",
-            "hook": f"Open with a {extra_hook.lower()} beat.",
-            "format": f"{extra_fmt} structure, 15–25s.",
-            "product": top_product, "icp": top_icp,
-            "why": f"Both '{extra_hook}' and '{extra_fmt}' are associated with a lift in the current data.",
-            "confidence": "Directional",
-        })
-
-    lines = [f"*Ideas grounded in current signals* — top product: {top_product} · top ICP: {top_icp}"]
+def _render_ideas(ideas: list[dict], analyzed: list[dict], buckets: dict) -> str:
+    """Slack-friendly render of the interpretation output."""
+    lines = ["*Ideas grounded in current Storelli signals.*"]
     note = _thin_data_note(analyzed, buckets)
     if note:
         lines.append(note)
+
     for i, idea in enumerate(ideas, 1):
+        src_ids = ", ".join(s["id"] for s in idea.get("sources") or []) or "(none)"
+        blocks = "\n".join(f"  - {b}" for b in idea.get("story_blocks") or [])
         lines.append(
             f"\n*{i}. {idea['title']}*\n"
-            f"  • Hook: {idea['hook']}\n"
-            f"  • Format/Structure: {idea['format']}\n"
-            f"  • Product / ICP: {idea['product']} / {idea['icp']}\n"
-            f"  • Why: {idea['why']}\n"
-            f"  • Confidence: {idea['confidence']}"
+            f"Hook: {idea['hook']}\n"
+            f"Structure: {idea['storytelling_structure']}\n"
+            f"Product / ICP: {idea['product']} / {idea['icp']}\n"
+            f"Story blocks:\n{blocks}\n"
+            f"Why: {idea['why_this_should_work']}\n"
+            f"Confidence: {idea['confidence']}\n"
+            f"Sources: {src_ids}"
         )
-    return "\n".join(lines) + _sources_line(used)
+
+    all_sources = interpretation.collect_sources(ideas)
+    if all_sources:
+        lines.append("\n*Sources:*")
+        for s in all_sources:
+            suffix = f" — {s['url']}" if s.get("url") else ""
+            lines.append(f"  {s['id']} [{s['type']}] {s['label']}{suffix}")
+    return "\n".join(lines)
+
+
+def _mode_ideas(user_text: str) -> str:
+    state = _load_sheet_state()
+    ctx = gather_context()
+    if not state:
+        return _NO_DATA_MSG
+    analyzed, buckets, results = state
+    if not analyzed and not ctx.get("learnings"):
+        return _NO_DATA_MSG
+
+    # Pull ALL rows so interpretation can also surface external/inspiration
+    # rows (never as evidence). Fall back to analyzed-only if unreachable.
+    rows = _load_all_rows() or analyzed
+
+    ideas = interpretation.build_idea_candidates(
+        question=user_text, rows=rows, findings=results, context=ctx, limit=5)
+    if not ideas:
+        return _NO_DATA_MSG
+    return _render_ideas(ideas, analyzed, buckets)
 
 
 def _find_row_by_link(analyzed: list[dict], link: str) -> Optional[dict]:
@@ -400,7 +366,7 @@ def answer_question(user_text: str) -> str:
     mode = _route(text)
     try:
         if mode == "ideas":
-            return _mode_ideas()
+            return _mode_ideas(text)
         if mode == "feedback":
             return _mode_feedback(text)
         if mode == "learnings":
