@@ -35,6 +35,8 @@ The app is a single FastAPI service (`web:app`). No database. Deploys from
 | `SLACK_BOT_TOKEN` | no | Slack bot token (interactive brain — see §4) |
 | `SLACK_SIGNING_SECRET` | no | Slack signing secret (interactive brain — see §4) |
 | `DASHBOARD_URL` | no | the Railway URL (shown in the Slack footer) |
+| `YTDLP_COOKIES_B64` | no | base64 of an exported Instagram `cookies.txt` — set if anonymous downloads start failing with an "empty media response" error (see §5 notes) |
+| `YTDLP_COOKIES_PATH` | no | path to a `cookies.txt` file directly; if `YTDLP_COOKIES_B64` is also set, it's decoded into this path (overwriting it) at startup |
 
 ## 4. Slack chat app (interactive Marketing Brain)
 
@@ -106,6 +108,16 @@ end-to-end from the deployed dashboard.
 - **yt-dlp + Instagram from Railway**: datacenter IPs are often blocked/rate-
   limited, so *Run Social* may have a higher download-failure rate than local.
   Generate / Notion / Slack don't touch Instagram and are unaffected.
+- **Instagram may require authenticated cookies**: Instagram has started
+  serving an empty/auth-walled response to some anonymous downloads regardless
+  of the specific video (yt-dlp error mentions "empty media response ... use
+  --cookies"). If downloads fail this way, set `YTDLP_COOKIES_B64` (or
+  `YTDLP_COOKIES_PATH` locally) to an exported `cookies.txt` from a **dedicated
+  Storelli/service Instagram account** — not a personal one. Cookies expire and
+  need periodic re-export. Never commit `cookies.txt` or its base64. After
+  fixing cookies, run `reset-incomplete` to re-queue the rows that were marked
+  `failed` by the download error (it only clears rows with no taxonomy tags
+  written, so tagged rows are untouched) — then re-run `analyze-all`.
 - **`data/` is ephemeral on Railway** (no volume): `latest_learnings.md` and
   `data/guidelines/*.md` live only within a deploy. Regenerate via the dashboard
   after a redeploy, or add a Railway volume / external store for persistence.

@@ -58,6 +58,28 @@ if _SA_B64:
               f"({type(_e).__name__}: {_e}); Sheets actions will fail until fixed.",
               file=sys.stderr)
 
+# yt-dlp cookies (optional). Instagram increasingly serves an empty/auth-walled
+# response to anonymous downloads, so yt-dlp may need an authenticated session's
+# exported cookies.txt (Netscape format) to fetch reel media. When neither var
+# is set, download behavior is unchanged (anonymous, as before). Fail-soft: a
+# malformed YTDLP_COOKIES_B64 must NOT crash app startup — only the Instagram
+# download itself fails cleanly when it's actually used.
+YTDLP_COOKIES_PATH = os.getenv("YTDLP_COOKIES_PATH", "").strip()
+
+_YTDLP_COOKIES_B64 = os.getenv("YTDLP_COOKIES_B64", "").strip()
+if _YTDLP_COOKIES_B64:
+    try:
+        _cookies_out = pathlib.Path(YTDLP_COOKIES_PATH or "/tmp/yt-dlp-cookies.txt")
+        _cookies_out.parent.mkdir(parents=True, exist_ok=True)
+        _cookies_out.write_bytes(base64.b64decode(_YTDLP_COOKIES_B64, validate=True))
+        YTDLP_COOKIES_PATH = str(_cookies_out)
+        os.environ["YTDLP_COOKIES_PATH"] = str(_cookies_out)
+    except Exception as _e:  # noqa: BLE001 - never crash import on a bad env value
+        import sys
+        print(f"WARNING: could not decode YTDLP_COOKIES_B64 "
+              f"({type(_e).__name__}: {_e}); yt-dlp will run without cookies until fixed.",
+              file=sys.stderr)
+
 # Notion
 NOTION_API_KEY = os.getenv("NOTION_API_KEY", "").strip()
 NOTION_PARENT_PAGE_ID = clean_notion_id(os.getenv("NOTION_PARENT_PAGE_ID", "").strip())

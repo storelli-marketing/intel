@@ -51,6 +51,13 @@ def _is_unavailable(exc: Exception) -> bool:
     return "503" in text or "UNAVAILABLE" in text
 
 
+def _needs_cookies(exc: Exception) -> bool:
+    """True for Instagram's authenticated-session-required response (an empty
+    media response served to anonymous/unauthenticated requests)."""
+    text = str(exc).lower()
+    return "empty media response" in text and "cooki" in text
+
+
 def _is_quota(exc: Exception) -> bool:
     """True for a 429 RESOURCE_EXHAUSTED quota error."""
     code = getattr(exc, "code", None)
@@ -90,10 +97,18 @@ class GeminiClient:
             "no_warnings": True,
             "noprogress": True,
         }
+        if config.YTDLP_COOKIES_PATH:
+            opts["cookiefile"] = config.YTDLP_COOKIES_PATH
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([ig_link])
         except Exception as e:  # noqa: BLE001 - yt-dlp raises many types
+            if _needs_cookies(e) and not config.YTDLP_COOKIES_PATH:
+                raise VideoDownloadError(
+                    "Instagram requires authenticated cookies. Set "
+                    "YTDLP_COOKIES_B64 or YTDLP_COOKIES_PATH. "
+                    f"(download failed for {ig_link}: {e})"
+                ) from e
             raise VideoDownloadError(f"download failed for {ig_link}: {e}") from e
 
         for fn in os.listdir(tmp_dir):

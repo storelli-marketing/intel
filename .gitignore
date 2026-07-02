@@ -5,6 +5,8 @@
 *.json
 !data/*.json
 service-account*.json
+cookies*.txt
+yt-dlp-cookies*.txt
 
 # python
 __pycache__/

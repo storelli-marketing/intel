@@ -50,6 +50,32 @@ cp .env.example .env   # then fill in the values
 | `GOOGLE_WORKSHEET_NAME` | tab name, default `Sheet1` |
 | `NOTION_API_KEY` | Notion internal integration token |
 | `NOTION_PARENT_PAGE_ID` | page the integration can write to (share the page with the integration) |
+| `YTDLP_COOKIES_B64` | optional; base64 of an exported `cookies.txt` (see below) |
+| `YTDLP_COOKIES_PATH` | optional; path to a `cookies.txt` file directly, instead of the base64 form |
+
+### Instagram cookies (if anonymous downloads start failing)
+
+Instagram has started serving an empty/auth-walled response to some anonymous,
+scraper-style requests instead of the reel media, which makes `yt-dlp` fail
+with an "empty media response ... use --cookies" error regardless of the video.
+When that happens, `yt-dlp` needs an authenticated session's cookies:
+
+1. Log into Instagram in a browser with a **dedicated Storelli/service
+   account** — not a personal account.
+2. Export cookies in Netscape format (e.g. a "cookies.txt" browser extension)
+   to a `cookies.txt` file.
+3. Either set `YTDLP_COOKIES_PATH` to that file's path, or base64-encode it
+   and set `YTDLP_COOKIES_B64` (same pattern as
+   `GOOGLE_SERVICE_ACCOUNT_JSON_B64` — required for Railway, which can't read
+   local files). `config.py` decodes it fail-soft to a temp file at startup; a
+   malformed value logs a warning instead of crashing, and only the download
+   step fails cleanly until it's fixed.
+4. Neither var set = current anonymous-download behavior, unchanged.
+
+Cookies **expire** (the session gets logged out or Instagram invalidates it)
+and will need periodic re-export. **Never commit `cookies.txt` or its base64**
+— treat it exactly like the service-account JSON: local `.env` /
+Railway variable only.
 
 ## POC sheet structure
 
