@@ -23,6 +23,7 @@ from typing import Optional
 import config
 import correlations as corr
 import interpretation
+import social_retrieval
 import taxonomy
 from content_context import gather_context
 from logger import get_logger
@@ -32,8 +33,11 @@ log = get_logger()
 _HELP = (
     "Hi — I'm the Storelli Marketing Brain. Ask me:\n"
     "• *ideas* — 3–5 practical Storelli social video ideas grounded in current signals\n"
+    "  _e.g. \"give me ideas for BodyShield\", \"ideas for parents\"_\n"
     "• *feedback <link>* — how a specific reel performed and what to do next\n"
     "• *learnings* — current winning + weak patterns and what to scale/avoid\n"
+    "• *what hooks/formats work for <product/ICP>?* — filtered signal breakdown\n"
+    "• *examples* — show me example videos (optionally by performance/product/ICP)\n"
     "• *tests* — next creative tests to run\n"
     "\n"
     "_I can only read. To analyze new videos, use the dashboard button "
@@ -49,7 +53,11 @@ _FEEDBACK_KW = ("feedback", "analyze this", "why did this perform",
                 "how did this do", "review this")
 _LEARNINGS_KW = ("learning", "learnings", "what is working", "what's working",
                  "winning pattern", "winning patterns", "what works")
+_AVOID_KW = ("avoid", "should we avoid", "what to avoid", "de-prioritize",
+             "stop doing")
+_EXAMPLES_KW = ("example", "examples", "show me", "show examples")
 _TESTS_KW = ("test", "tests", "what should we test", "next test", "creative test")
+_SIGNAL_HINT_KW = ("work", "works", "avoid", "should")
 
 
 def _has_any(text: str, keywords) -> bool:
@@ -58,11 +66,22 @@ def _has_any(text: str, keywords) -> bool:
 
 def _route(text: str) -> str:
     t = text.lower()
-    if _URL_RE.search(text) or _has_any(t, _FEEDBACK_KW):
+    # A pasted link is unambiguous — always a specific-row lookup.
+    if _URL_RE.search(text):
         return "feedback"
+    if _has_any(t, _EXAMPLES_KW):
+        return "examples"
+    # "what hooks work for parents?" / "what formats should we avoid?" —
+    # a taxonomy-layer word plus a filtering verb means a filtered signal
+    # breakdown, not a generic ideas/learnings answer.
+    layer = social_retrieval.detect_layer(t)
+    if layer and _has_any(t, _SIGNAL_HINT_KW):
+        return "signals"
     if _has_any(t, _IDEAS_KW):
         return "ideas"
-    if _has_any(t, _LEARNINGS_KW):
+    if _has_any(t, _LEARNINGS_KW) or _has_any(t, _AVOID_KW) or _has_any(t, _FEEDBACK_KW):
+        # Bare "why did this perform well?" / "review this" with no link can't
+        # look up a specific row, so it falls back to the general patterns.
         return "learnings"
     if _has_any(t, _TESTS_KW):
         return "tests"
@@ -111,7 +130,18 @@ def _sources_line(used: dict) -> str:
     if used.get("guidelines"):
         gs = ", ".join(used["guidelines"][:3])
         parts.append(f"[S3] guidelines: {gs}")
+    if used.get("notion"):
+        ns = ", ".join(used["notion"][:2])
+        parts.append(f"[S4] Notion Brain: {ns}")
     return ("\n\n_Sources:_ " + " · ".join(parts)) if parts else ""
+
+
+def _maybe_notion(used: dict) -> None:
+    """Best-effort: attach a Notion Brain citation if configured and reachable.
+    Mutates `used` in place; never raises, never blocks on failure."""
+    items = social_retrieval.notion_learnings()
+    if items:
+        used["notion"] = [i["title"] for i in items]
 
 
 def _guideline_names(ctx: dict) -> list[str]:
@@ -321,6 +351,89 @@ def _mode_learnings() -> str:
                      f"a {corr.fmt_lift(w['lift'])} lift on Great rate.")
 
     used["sheet_rows"] = [r["_row"] for r in analyzed[:5]]
+    _maybe_notion(used)
+    return "\n".join(lines) + _sources_line(used)
+
+
+def _mode_signals(user_text: str) -> str:
+    """Filtered signal breakdown for questions like 'what hooks work for
+    parents?' or 'what formats should we avoid?'. Recomputes lift within a
+    Product/ICP subgroup when one is detected and there's enough data."""
+    ctx = gather_context()
+    used = {"guidelines": _guideline_names(ctx)}
+    state = _load_sheet_state()
+    if not state:
+        return ("I can't reach the analyzed Sheet right now, so I can't "
+                "answer that." + _sources_line(used))
+    analyzed, buckets, results = state
+    if not analyzed:
+        return _NO_DATA_MSG
+
+    layer = social_retrieval.detect_layer(user_text)
+    filters = social_retrieval.extract_filters(user_text)
+    seg_results, seg_note = social_retrieval.segment_results(analyzed, buckets, results, filters)
+
+    win = social_retrieval.signals_for_layer(seg_results, layer, winning=True) if layer \
+        else corr.winning(seg_results)
+    weak = social_retrieval.signals_for_layer(seg_results, layer, winning=False) if layer \
+        else corr.weak(seg_results)
+
+    def _fmt(r):
+        return (f"  • *{r['label']}* — lift {corr.fmt_lift(r['lift'])} · "
+                f"n={r['videos_with_signal']} · {r['confidence']} confidence")
+
+    layer_label = layer.replace("_", " ").title() if layer else "Signals"
+    lines = [f"*{layer_label}{seg_note}* — associated with performance, not causal."]
+    note = _thin_data_note(analyzed, buckets)
+    if note:
+        lines.append(note)
+    lines.append("\n*Work well:*")
+    lines += [_fmt(r) for r in win[:5]] or ["  • (none yet)"]
+    lines.append("\n*Avoid / weak:*")
+    lines += [_fmt(r) for r in weak[:5]] or ["  • (none yet)"]
+
+    used["sheet_rows"] = [r["_row"] for r in analyzed[:5]]
+    used["learnings"] = bool(ctx.get("learnings"))
+    _maybe_notion(used)
+    return "\n".join(lines) + _sources_line(used)
+
+
+def _mode_examples(user_text: str) -> str:
+    """Show concrete example rows, optionally filtered by performance bucket /
+    product / ICP (e.g. 'show me examples of Great videos')."""
+    ctx = gather_context()
+    used = {"guidelines": _guideline_names(ctx)}
+    state = _load_sheet_state()
+    if not state:
+        return ("I can't reach the analyzed Sheet right now, so I can't pull "
+                "examples." + _sources_line(used))
+    analyzed, buckets, _results = state
+    if not analyzed:
+        return _NO_DATA_MSG
+
+    filters = social_retrieval.extract_filters(user_text)
+    pool = social_retrieval.filter_rows(analyzed, filters)
+    if not pool:
+        seg = filters.get("performance") or filters.get("product") or filters.get("icp") or "that"
+        return f"No tagged rows match {seg} yet." + _sources_line(used)
+
+    examples = social_retrieval.example_rows(pool, limit=3)
+    heading = "*Examples"
+    if filters.get("performance"):
+        heading += f" — {filters['performance']}"
+    heading += ":*"
+    lines = [heading]
+    note = _thin_data_note(analyzed, buckets)
+    if note:
+        lines.append(note)
+    for r in examples:
+        link = str(r.get("LINK", "")).strip() or "(no link)"
+        perf = str(r.get("PERFORMANCE", "")).strip() or "?"
+        signals = _row_signals(r)
+        sig_str = ", ".join(signals[:4]) if signals else "(none tagged)"
+        lines.append(f"  • row {r['_row']} — *{perf}* — {link}\n    Signals: {sig_str}")
+
+    used["sheet_rows"] = [r["_row"] for r in examples]
     return "\n".join(lines) + _sources_line(used)
 
 
@@ -376,6 +489,10 @@ def answer_question(user_text: str) -> str:
             return _mode_learnings()
         if mode == "tests":
             return _mode_tests()
+        if mode == "signals":
+            return _mode_signals(text)
+        if mode == "examples":
+            return _mode_examples(text)
         return _HELP
     except Exception as e:  # noqa: BLE001 - Slack should never see a stack trace
         log.exception("social_brain: mode %s failed", mode)

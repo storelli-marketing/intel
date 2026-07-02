@@ -78,10 +78,17 @@ Open the Railway URL, paste `RUN_SECRET`, then:
    PERFORMANCE. Rows without valid Storelli performance still stay out of
    correlations. Use this to build up the taxonomy signal library over the
    full sheet, independently of performance labeling.
-7. **Slack ideas mode** — in a channel where the bot is invited, mention it:
-   `@storelli-brain ideas for parents on BodyShield`. It should reply
-   in-thread with 3–5 ideas that carry a `Sources: [S1], [S2]` line each and
-   an aggregate `Sources:` block at the bottom.
+7. **Slack conversational retrieval** — in a channel where the bot is invited,
+   mention it with a range of phrasings, not just exact keywords:
+   `@storelli-brain ideas for parents on BodyShield`,
+   `@storelli-brain what hooks work for parents?`,
+   `@storelli-brain what should we avoid?`,
+   `@storelli-brain show me examples of Great videos`. Each reply should carry
+   a `Sources:` line citing only what it actually retrieved (`[S1]` Sheet
+   rows, `[S2]` learnings file, `[S3]` guidelines, `[S4]` Notion Brain when
+   configured) — never an invented link, metric, or row. The bot stays
+   read-only throughout: it never writes to the Sheet and never triggers
+   video analysis, regardless of phrasing.
 8. *(optional)* **`POST /run/generate-social-ideas`** — with `X-Run-Secret`,
    should return 202 queued; on completion the ideas are either upserted into
    the Notion **Generated Social Ideas** DB (if Notion is configured) or

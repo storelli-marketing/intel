@@ -298,16 +298,28 @@ the webhook is set.
 An optional Slack app turns the brain into a **chat interface**: mention the
 bot in any channel and it replies in-thread. It's read/synthesize only — never
 writes to the Sheet, never triggers video analysis. Backed by
-`data/latest_learnings.md`, the analyzed Sheet, and `data/guidelines/*.md`.
+`data/latest_learnings.md`, the analyzed Sheet, `data/guidelines/*.md`, and
+(best-effort, when configured) a couple of Notion Brain entries.
 
-Four modes (deterministic routing on the message text):
+Six modes (deterministic routing on the message text — a lightweight retrieval
+layer in `src/social_retrieval.py` parses Product/ICP/taxonomy-layer/
+performance-bucket filters out of free text; `social_brain.py` routes and
+renders):
 
 | Ask… | You get |
 |---|---|
 | `ideas` / *what should we post* / *ideas for BodyShield* / *ideas for parents* | 3–5 grounded Storelli video ideas — title, hook, storytelling structure, product/ICP, story blocks, visual beats, why, confidence, sources |
 | `feedback <IG link>` | Sheet lookup: performance bucket, Product, ICP, signals, diagnosis, next recommendation |
-| `learnings` / *what's working* | Top winning + weak signals, what to scale, what to avoid, thin-data warning |
+| `learnings` / *what's working* / *why did this perform well?* | Top winning + weak signals, what to scale, what to avoid, thin-data warning |
+| *what hooks work for parents?* / *what formats should we avoid?* | Filtered signal breakdown for that taxonomy layer, recomputed within the Product/ICP subgroup when there's enough tagged data, else falls back to sheet-wide with a note |
+| *show me examples* / *examples of Great videos* | Concrete example rows (link + signals), optionally filtered by performance bucket / product / ICP |
 | `tests` / *what should we test* | 3 next creative tests from the synthesizer |
+
+All modes only ever use "associated with" / "correlated with" language, cite
+exactly the sources they retrieved (`[S1]` Sheet rows, `[S2]` learnings file,
+`[S3]` guidelines, `[S4]` Notion Brain), and never invent a row, link, metric,
+or conclusion — an unmatched IG link or a segment with too little tagged data
+says so plainly instead of guessing.
 
 **Idea interpretation layer** (`src/interpretation.py`). The `ideas` mode is
 backed by a small deterministic layer that joins winning signals × formats ×
