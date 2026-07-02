@@ -78,12 +78,19 @@ Open the Railway URL, paste `RUN_SECRET`, then:
    PERFORMANCE. Rows without valid Storelli performance still stay out of
    correlations. Use this to build up the taxonomy signal library over the
    full sheet, independently of performance labeling.
-7. **Slack conversational retrieval** — in a channel where the bot is invited,
-   mention it with a range of phrasings, not just exact keywords:
+7. **Slack conversational retrieval (Notion-first)** — in a channel where the
+   bot is invited, mention it with a range of phrasings, not just exact
+   keywords: `@storelli-brain what is working?`,
    `@storelli-brain ideas for parents on BodyShield`,
    `@storelli-brain what hooks work for parents?`,
    `@storelli-brain what should we avoid?`,
-   `@storelli-brain show me examples of Great videos`. Each reply should carry
+   `@storelli-brain summarize the brain`,
+   `@storelli-brain what are the next creative tests?`,
+   `@storelli-brain show me examples of Great videos`. When Notion is
+   configured and synced, learnings/signal/test answers should read "(Notion
+   Brain)" and cite Notion entries first; with Notion unset or a database
+   empty, the same questions should still work via the Sheet/learnings.md
+   fallback. Each reply should carry
    a `Sources:` line citing only what it actually retrieved (`[S1]` Sheet
    rows, `[S2]` learnings file, `[S3]` guidelines, `[S4]` Notion Brain when
    configured) — never an invented link, metric, or row. The bot stays

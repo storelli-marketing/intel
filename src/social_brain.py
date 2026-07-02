@@ -1,18 +1,28 @@
 """Marketing Brain answering engine for Slack chat.
 
-`answer_question(user_text)` routes a mention to one of four deterministic
-modes — ideas / feedback / learnings / next tests — and returns a Slack-safe
-markdown string. Read-only: never writes to the Sheet and never triggers video
-analysis.
+`answer_question(user_text)` routes a mention to a deterministic mode — ideas /
+feedback / learnings / signals / examples / tests / summary — and returns a
+Slack-safe markdown string. Read-only throughout: never writes to the Sheet,
+never writes to Notion, never triggers video analysis, never posts anywhere on
+its own.
 
-Every substantive answer cites its sources:
-  [S1] Sheet row/link       (retrieved from the analyzed Sheet)
-  [S2] latest_learnings.md  (synthesized learnings file)
-  [S3] <guideline>.md       (operator-uploaded brand/content guidelines)
+**Notion Brain is the primary memory layer.** Learnings/signal/test questions
+try Notion first (via `notion_retrieval.py`); when a database doesn't exist
+yet, has no matching entry, or Notion isn't configured, they fall back to
+`data/latest_learnings.md` and a live Sheet + correlation computation — the
+same data, just recomputed locally instead of read from the synced snapshot.
 
-Sources are only cited when they were actually retrieved this call. Metrics and
-links are never invented. Language is always associational ("associated with" /
-"correlated with"), never causal.
+Every substantive answer cites only the sources it actually used this call,
+numbered in retrieval-priority order:
+  [S1] Notion: <database> — <title>  (Notion Brain, when used)
+  [S2] Notion: <database> — <title>  (a second Notion source, when used)
+  ...   latest_learnings.md
+  ...   Sheet rows / link
+  ...   guideline file(s)
+
+Metrics and links are never invented. Language is always associational
+("associated with" / "correlated with"), never causal. Thin-data segments say
+so instead of guessing.
 """
 from __future__ import annotations
 
@@ -23,6 +33,7 @@ from typing import Optional
 import config
 import correlations as corr
 import interpretation
+import notion_retrieval
 import social_retrieval
 import taxonomy
 from content_context import gather_context
@@ -35,13 +46,15 @@ _HELP = (
     "• *ideas* — 3–5 practical Storelli social video ideas grounded in current signals\n"
     "  _e.g. \"give me ideas for BodyShield\", \"ideas for parents\"_\n"
     "• *feedback <link>* — how a specific reel performed and what to do next\n"
-    "• *learnings* — current winning + weak patterns and what to scale/avoid\n"
-    "• *what hooks/formats work for <product/ICP>?* — filtered signal breakdown\n"
+    "• *what is working / what should we avoid* — current winning + weak patterns\n"
+    "• *what hooks/formats work for <product/ICP>?* / *what did we learn about <product>?*\n"
     "• *examples* — show me example videos (optionally by performance/product/ICP)\n"
     "• *tests* — next creative tests to run\n"
+    "• *summarize the brain* — a broad overview across everything synced\n"
     "\n"
-    "_I can only read. To analyze new videos, use the dashboard button "
-    "*Analyze All Untagged Videos* to tag the full Sheet._\n"
+    "_I can only read (Notion Brain first, then the Sheet/learnings file as "
+    "fallback). To analyze new videos, use the dashboard button "
+    "*Analyze All Untagged Videos*._\n"
 )
 
 # --- routing ---------------------------------------------------------------
@@ -58,6 +71,10 @@ _AVOID_KW = ("avoid", "should we avoid", "what to avoid", "de-prioritize",
 _EXAMPLES_KW = ("example", "examples", "show me", "show examples")
 _TESTS_KW = ("test", "tests", "what should we test", "next test", "creative test")
 _SIGNAL_HINT_KW = ("work", "works", "avoid", "should")
+_ABOUT_KW = ("learn about", "learnings about", "learned about", "tell me about",
+             "what did we learn")
+_SUMMARY_KW = ("summarize the brain", "summarize", "summary", "brain dump",
+               "give me an overview", "overview")
 
 
 def _has_any(text: str, keywords) -> bool:
@@ -69,13 +86,21 @@ def _route(text: str) -> str:
     # A pasted link is unambiguous — always a specific-row lookup.
     if _URL_RE.search(text):
         return "feedback"
+    if _has_any(t, _SUMMARY_KW):
+        return "summary"
     if _has_any(t, _EXAMPLES_KW):
         return "examples"
-    # "what hooks work for parents?" / "what formats should we avoid?" —
-    # a taxonomy-layer word plus a filtering verb means a filtered signal
-    # breakdown, not a generic ideas/learnings answer.
     layer = social_retrieval.detect_layer(t)
+    filters = social_retrieval.extract_filters(t)
+    segment = filters.get("icp") or filters.get("product")
+    # "what hooks work for parents?" / "what formats should we avoid?" — a
+    # taxonomy-layer word plus a filtering verb means a filtered signal
+    # breakdown. "what did we learn about ExoShield?" — a recognized product/
+    # ICP plus "learn about" phrasing, with no layer, means the same mode but
+    # unfiltered by layer (general product/ICP learnings).
     if layer and _has_any(t, _SIGNAL_HINT_KW):
+        return "signals"
+    if segment and _has_any(t, _ABOUT_KW):
         return "signals"
     if _has_any(t, _IDEAS_KW):
         return "ideas"
@@ -119,29 +144,29 @@ def _load_all_rows() -> Optional[list[dict]]:
         return None
 
 
-def _sources_line(used: dict) -> str:
-    """Render only the sources that were actually consulted this call."""
-    parts = []
-    if used.get("sheet_rows"):
-        rows = ", ".join(str(r) for r in used["sheet_rows"][:5])
-        parts.append(f"[S1] Sheet rows: {rows}")
-    if used.get("learnings"):
-        parts.append("[S2] data/latest_learnings.md")
-    if used.get("guidelines"):
-        gs = ", ".join(used["guidelines"][:3])
-        parts.append(f"[S3] guidelines: {gs}")
-    if used.get("notion"):
-        ns = ", ".join(used["notion"][:2])
-        parts.append(f"[S4] Notion Brain: {ns}")
-    return ("\n\n_Sources:_ " + " · ".join(parts)) if parts else ""
+def _cite_notion(chunk: dict) -> str:
+    label = chunk.get("title") or chunk.get("database")
+    db = chunk.get("database", "Notion")
+    if chunk.get("url"):
+        return f"Notion: {db} — {label} ({chunk['url']})"
+    return f"Notion: {db} — {label}"
 
 
-def _maybe_notion(used: dict) -> None:
-    """Best-effort: attach a Notion Brain citation if configured and reachable.
-    Mutates `used` in place; never raises, never blocks on failure."""
-    items = social_retrieval.notion_learnings()
-    if items:
-        used["notion"] = [i["title"] for i in items]
+def _render_sources(notion_chunks=(), learnings_used: bool = False,
+                    sheet_rows=(), guideline_names=()) -> str:
+    """Priority-ordered, dynamically numbered Sources line — Notion first,
+    then latest_learnings.md, then Sheet rows, then guidelines. Only ever
+    cites what was actually retrieved this call; never invents a source."""
+    parts = [_cite_notion(c) for c in notion_chunks]
+    if learnings_used:
+        parts.append("latest_learnings.md")
+    if sheet_rows:
+        parts.append("Sheet rows: " + ", ".join(str(r) for r in list(sheet_rows)[:5]))
+    if guideline_names:
+        parts.append("guidelines: " + ", ".join(list(guideline_names)[:3]))
+    if not parts:
+        return ""
+    return "\n\n_Sources:_ " + " · ".join(f"[S{i}] {p}" for i, p in enumerate(parts, 1))
 
 
 def _guideline_names(ctx: dict) -> list[str]:
@@ -210,7 +235,19 @@ def _mode_ideas(user_text: str) -> str:
         question=user_text, rows=rows, findings=results, context=ctx, limit=5)
     if not ideas:
         return _NO_DATA_MSG
-    return _render_ideas(ideas, analyzed, buckets)
+    body = _render_ideas(ideas, analyzed, buckets)
+
+    # Best-effort Notion supplement (informational, not a numbered citation —
+    # this mode already has its own tested S1/S2 source registry above).
+    product = interpretation.detect_product(user_text)
+    icp = interpretation.detect_icp(user_text)
+    if product or icp:
+        notion_matches = (notion_retrieval.query("Product Learnings", product=product, limit=5)
+                          + notion_retrieval.query("Generated Social Ideas", product=product, icp=icp, limit=5))
+        if notion_matches:
+            c = notion_matches[0]
+            body += f"\n\n_Also in Notion Brain:_ {c.get('database')} — {c.get('title')}"
+    return body
 
 
 def _find_row_by_link(analyzed: list[dict], link: str) -> Optional[dict]:
@@ -242,7 +279,7 @@ def _row_signals(row: dict) -> list[str]:
 def _mode_feedback(user_text: str) -> str:
     m = _URL_RE.search(user_text)
     ctx = gather_context()
-    used = {"guidelines": _guideline_names(ctx)}
+    guideline_names = _guideline_names(ctx)
 
     if not m:
         return ("Paste an Instagram link with the word *feedback* and I'll look "
@@ -253,7 +290,7 @@ def _mode_feedback(user_text: str) -> str:
     if not state:
         return ("I can't reach the analyzed Sheet right now, so I can't look "
                 "up that link. Try again once Sheets is configured."
-                + _sources_line(used))
+                + _render_sources(guideline_names=guideline_names))
 
     analyzed, buckets, results = state
     row = _find_row_by_link(analyzed, link)
@@ -262,7 +299,7 @@ def _mode_feedback(user_text: str) -> str:
                 "Add it to the sheet with a PERFORMANCE value and run "
                 "*Run Social Media Learning* to analyze it — then ask me again.")
 
-    used["sheet_rows"] = [row["_row"]]
+    sheet_rows = [row["_row"]]
     perf = str(row.get("PERFORMANCE", "")).strip() or "(none)"
     product = str(row.get("Product", "")).strip() or "(unspecified)"
     icp = str(row.get("ICP", "")).strip() or "(unspecified)"
@@ -305,26 +342,74 @@ def _mode_feedback(user_text: str) -> str:
         f"  • Diagnosis: {diagnosis}",
         f"  • Next: {next_rec}",
     ]
-    return "\n".join(lines) + _sources_line(used)
+    return "\n".join(lines) + _render_sources(sheet_rows=sheet_rows, guideline_names=guideline_names)
+
+
+def _signal_library_split(chunks: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split Notion 'Signal Library' chunks into (winning, weak) by which
+    field ('Works Best For' vs 'Weak For') notion_brain.py populated at sync
+    time — that already encodes the win/weak classification, no recomputation."""
+    win, weak = [], []
+    for c in chunks:
+        extra = c.get("extra", {})
+        if str(extra.get("Works Best For", "")).strip():
+            win.append(c)
+        elif str(extra.get("Weak For", "")).strip():
+            weak.append(c)
+    return win, weak
+
+
+def _fmt_notion_signal(c: dict) -> str:
+    extra = c.get("extra", {})
+    bits = []
+    if extra.get("Evidence Count"):
+        bits.append(f"n={extra['Evidence Count']}")
+    if c.get("confidence"):
+        bits.append(f"{c['confidence']} confidence")
+    tail = " · ".join(bits)
+    layer = extra.get("Layer", "")
+    return f"  • *{c.get('title', '')}*{f' ({layer})' if layer else ''}{' — ' + tail if tail else ''}"
 
 
 def _mode_learnings() -> str:
     ctx = gather_context()
-    used = {"guidelines": _guideline_names(ctx),
-            "learnings": bool(ctx["learnings"])}
+    guideline_names = _guideline_names(ctx)
+    learnings_used = bool(ctx.get("learnings"))
 
+    # Notion-first: Signal Library already encodes the win/weak split from
+    # the last notion-sync, so no recomputation is needed if it's populated.
+    notion_win, notion_weak = _signal_library_split(notion_retrieval.query("Signal Library", limit=40))
+    if notion_win or notion_weak:
+        top_win, top_weak = notion_win[:3], notion_weak[:2]
+        lines = ["*Current learnings* (Notion Brain) — correlation, not causation."]
+        lines.append("\n*Winning — scale these:*")
+        lines += [_fmt_notion_signal(c) for c in top_win] or ["  • (none yet)"]
+        lines.append("\n*Weak — avoid/de-prioritize:*")
+        lines += [_fmt_notion_signal(c) for c in top_weak] or ["  • (none yet)"]
+        cited = top_win + top_weak
+        return "\n".join(lines) + _render_sources(notion_chunks=cited, learnings_used=learnings_used)
+
+    # Fallback: Notion not configured / not synced yet / empty -> live Sheet +
+    # correlation computation (same underlying data, computed on the spot).
     if not ctx["learnings"]:
-        return ("No learnings synthesized yet — run *Generate Learnings* "
-                "on the dashboard, then ask me again.")
+        state = _load_sheet_state()
+        if not state or not state[0]:
+            return _NO_DATA_MSG
 
     state = _load_sheet_state()
     if not state:
+        if not ctx["learnings"]:
+            return _NO_DATA_MSG
         # Have learnings.md but no live sheet — return the file's summary anyway.
-        return ctx["learnings"][:3500] + _sources_line(used)
+        return ("_Notion Brain has no synced signals yet — showing "
+                "latest_learnings.md._\n\n" + ctx["learnings"][:3500]
+                + _render_sources(learnings_used=learnings_used))
 
     analyzed, buckets, results = state
-    win = corr.winning(results)[:5]
-    weak = corr.weak(results)[:5]
+    if not analyzed:
+        return _NO_DATA_MSG
+    win = corr.winning(results)[:3]
+    weak = corr.weak(results)[:2]
 
     def _fmt(r):
         return (f"  • *{r['label']}* ({r['layer']}) — lift {corr.fmt_lift(r['lift'])} · "
@@ -335,44 +420,84 @@ def _mode_learnings() -> str:
     if note:
         lines.append(note)
 
-    lines.append("\n*Top winning signals — scale these:*")
+    lines.append("\n*Winning — scale these:*")
     lines += [_fmt(r) for r in win] or ["  • (none yet)"]
 
-    lines.append("\n*Top weak signals — avoid or de-prioritize:*")
+    lines.append("\n*Weak — avoid/de-prioritize:*")
     lines += [_fmt(r) for r in weak] or ["  • (none yet)"]
 
-    if win:
-        first = win[0]
-        lines.append(f"\n*Scale:* {first['label']} ({first['layer']}) — "
-                     f"associated with a +{corr.fmt_lift(first['lift'])[1:]} lift on Great rate.")
-    if weak:
-        w = weak[0]
-        lines.append(f"*Avoid:* {w['label']} ({w['layer']}) — associated with "
-                     f"a {corr.fmt_lift(w['lift'])} lift on Great rate.")
-
-    used["sheet_rows"] = [r["_row"] for r in analyzed[:5]]
-    _maybe_notion(used)
-    return "\n".join(lines) + _sources_line(used)
+    sheet_rows = [r["_row"] for r in analyzed[:5]]
+    return "\n".join(lines) + _render_sources(learnings_used=learnings_used,
+                                              sheet_rows=sheet_rows,
+                                              guideline_names=guideline_names)
 
 
 def _mode_signals(user_text: str) -> str:
     """Filtered signal breakdown for questions like 'what hooks work for
-    parents?' or 'what formats should we avoid?'. Recomputes lift within a
-    Product/ICP subgroup when one is detected and there's enough data."""
+    parents?', 'what formats should we avoid?', or 'what did we learn about
+    ExoShield?'. Notion-first: a detected Product/ICP checks the matching
+    'Product Learnings' / 'ICP Learnings' Notion entry (which already stores
+    per-segment best hooks/formats from the last sync); a layer with no
+    segment checks Notion 'Signal Library'. Falls back to a live Sheet +
+    correlation computation — recomputed within the Product/ICP subgroup when
+    Notion has nothing for that specific segment."""
+    layer = social_retrieval.detect_layer(user_text)
+    filters = social_retrieval.extract_filters(user_text)
+    icp, product = filters.get("icp"), filters.get("product")
+
+    if icp or product:
+        db = "ICP Learnings" if icp else "Product Learnings"
+        seg = icp or product
+        matches = notion_retrieval.query(db, icp=icp, product=product, limit=25)
+        if matches:
+            c = matches[0]
+            extra = c.get("extra", {})
+            layer_label = layer.replace("_", " ").title() if layer else "What we know"
+            lines = [f"*{layer_label} for {seg}* (Notion Brain) — associated with "
+                     "performance, not causal."]
+            if not layer or layer == "hook":
+                lines.append(f"  • Best hooks: {c.get('hook') or 'n/a'}")
+            if not layer or layer == "format":
+                lines.append(f"  • Best formats: {c.get('format') or 'n/a'}")
+            direction = extra.get("Next Direction") or extra.get("Recommended Messaging")
+            if direction:
+                lines.append(f"  • {direction}")
+            if extra.get("Weak Angles"):
+                lines.append(f"  • Weak angles: {extra['Weak Angles']}")
+            if extra.get("Core Motivation"):
+                lines.append(f"  • Core motivation: {extra['Core Motivation']}")
+            if c.get("confidence"):
+                lines.append(f"  • Confidence: {c['confidence']}")
+            return "\n".join(lines) + _render_sources(notion_chunks=[c])
+
+    if layer and not (icp or product):
+        layer_chunks = [c for c in notion_retrieval.query("Signal Library", limit=40)
+                        if c.get("extra", {}).get("Layer", "").lower() == layer]
+        if layer_chunks:
+            win, weak = _signal_library_split(layer_chunks)
+            top_win, top_weak = win[:3], weak[:2]
+            layer_label = layer.replace("_", " ").title()
+            lines = [f"*{layer_label}* (Notion Brain) — associated with performance, not causal."]
+            lines.append("\n*Work well:*")
+            lines += [_fmt_notion_signal(c) for c in top_win] or ["  • (none yet)"]
+            lines.append("\n*Avoid / weak:*")
+            lines += [_fmt_notion_signal(c) for c in top_weak] or ["  • (none yet)"]
+            return "\n".join(lines) + _render_sources(notion_chunks=(top_win + top_weak))
+
+    # Fallback: Notion has nothing for this specific slice (not configured,
+    # not synced, or this segment/layer combo wasn't in the last sync) -> a
+    # live Sheet computation, segmented the same way, is more accurate anyway.
     ctx = gather_context()
-    used = {"guidelines": _guideline_names(ctx)}
+    guideline_names = _guideline_names(ctx)
     state = _load_sheet_state()
     if not state:
         return ("I can't reach the analyzed Sheet right now, so I can't "
-                "answer that." + _sources_line(used))
+                "answer that." + _render_sources(guideline_names=guideline_names))
     analyzed, buckets, results = state
     if not analyzed:
         return _NO_DATA_MSG
 
-    layer = social_retrieval.detect_layer(user_text)
-    filters = social_retrieval.extract_filters(user_text)
     seg_results, seg_note = social_retrieval.segment_results(analyzed, buckets, results, filters)
-
     win = social_retrieval.signals_for_layer(seg_results, layer, winning=True) if layer \
         else corr.winning(seg_results)
     weak = social_retrieval.signals_for_layer(seg_results, layer, winning=False) if layer \
@@ -388,25 +513,26 @@ def _mode_signals(user_text: str) -> str:
     if note:
         lines.append(note)
     lines.append("\n*Work well:*")
-    lines += [_fmt(r) for r in win[:5]] or ["  • (none yet)"]
+    lines += [_fmt(r) for r in win[:3]] or ["  • (none yet)"]
     lines.append("\n*Avoid / weak:*")
-    lines += [_fmt(r) for r in weak[:5]] or ["  • (none yet)"]
+    lines += [_fmt(r) for r in weak[:2]] or ["  • (none yet)"]
 
-    used["sheet_rows"] = [r["_row"] for r in analyzed[:5]]
-    used["learnings"] = bool(ctx.get("learnings"))
-    _maybe_notion(used)
-    return "\n".join(lines) + _sources_line(used)
+    sheet_rows = [r["_row"] for r in analyzed[:5]]
+    return "\n".join(lines) + _render_sources(learnings_used=bool(ctx.get("learnings")),
+                                              sheet_rows=sheet_rows,
+                                              guideline_names=guideline_names)
 
 
 def _mode_examples(user_text: str) -> str:
     """Show concrete example rows, optionally filtered by performance bucket /
-    product / ICP (e.g. 'show me examples of Great videos')."""
+    product / ICP (e.g. 'show me examples of Great videos'). Notion Brain
+    doesn't store per-video rows, so this mode is Sheet-only by nature."""
     ctx = gather_context()
-    used = {"guidelines": _guideline_names(ctx)}
+    guideline_names = _guideline_names(ctx)
     state = _load_sheet_state()
     if not state:
         return ("I can't reach the analyzed Sheet right now, so I can't pull "
-                "examples." + _sources_line(used))
+                "examples." + _render_sources(guideline_names=guideline_names))
     analyzed, buckets, _results = state
     if not analyzed:
         return _NO_DATA_MSG
@@ -415,7 +541,7 @@ def _mode_examples(user_text: str) -> str:
     pool = social_retrieval.filter_rows(analyzed, filters)
     if not pool:
         seg = filters.get("performance") or filters.get("product") or filters.get("icp") or "that"
-        return f"No tagged rows match {seg} yet." + _sources_line(used)
+        return f"No tagged rows match {seg} yet." + _render_sources(guideline_names=guideline_names)
 
     examples = social_retrieval.example_rows(pool, limit=3)
     heading = "*Examples"
@@ -433,18 +559,35 @@ def _mode_examples(user_text: str) -> str:
         sig_str = ", ".join(signals[:4]) if signals else "(none tagged)"
         lines.append(f"  • row {r['_row']} — *{perf}* — {link}\n    Signals: {sig_str}")
 
-    used["sheet_rows"] = [r["_row"] for r in examples]
-    return "\n".join(lines) + _sources_line(used)
+    sheet_rows = [r["_row"] for r in examples]
+    return "\n".join(lines) + _render_sources(sheet_rows=sheet_rows, guideline_names=guideline_names)
 
 
 def _mode_tests() -> str:
+    # Notion-first: the 'Next Creative Tests' DB already stores the last
+    # synthesizer output, plus any operator edits to Status/Result.
+    notion_tests = notion_retrieval.query("Next Creative Tests", limit=10)
+    if notion_tests:
+        tests = notion_tests[:3]
+        lines = ["*Next creative tests* (Notion Brain) — grounded in current signals."]
+        for i, t in enumerate(tests, 1):
+            extra = t.get("extra", {})
+            lines.append(
+                f"\n*{i}. {t.get('hook', 'n/a')} × {t.get('format', 'n/a')}* — "
+                f"{t.get('icp', 'n/a')} / {t.get('product', 'n/a')}\n"
+                f"  • Hypothesis: {t.get('title', '')}\n"
+                f"  • Priority: {extra.get('Priority', 'n/a')}"
+                + (f" · Status: {extra.get('Status')}" if extra.get("Status") else "")
+            )
+        return "\n".join(lines) + _render_sources(notion_chunks=tests)
+
+    # Fallback: Notion not configured / no tests synced yet -> compute live.
     ctx = gather_context()
-    used = {"guidelines": _guideline_names(ctx),
-            "learnings": bool(ctx["learnings"])}
+    guideline_names = _guideline_names(ctx)
     state = _load_sheet_state()
     if not state:
         return ("I can't reach the analyzed Sheet right now, so I can't "
-                "propose grounded tests." + _sources_line(used))
+                "propose grounded tests." + _render_sources(guideline_names=guideline_names))
 
     analyzed, buckets, results = state
     if not analyzed:
@@ -453,7 +596,7 @@ def _mode_tests() -> str:
 
     import synthesizer
     s = synthesizer.synthesize(analyzed, buckets, results)
-    used["sheet_rows"] = [r["_row"] for r in analyzed[:5]]
+    sheet_rows = [r["_row"] for r in analyzed[:5]]
 
     tests = s["tests"][:3]
     if not tests:
@@ -471,7 +614,77 @@ def _mode_tests() -> str:
             f"  • Execution: {t['execution']}\n"
             f"  • Confidence: {t.get('confidence', 'Directional')}"
         )
-    return "\n".join(lines) + _sources_line(used)
+    return "\n".join(lines) + _render_sources(learnings_used=bool(ctx.get("learnings")),
+                                              sheet_rows=sheet_rows,
+                                              guideline_names=guideline_names)
+
+
+def _mode_summary() -> str:
+    """Broad, compact overview across everything synced ('summarize the
+    brain'). Notion-first, falls back to a live Sheet + learnings summary."""
+    all_dbs = notion_retrieval.fetch_all(limit_per_db=25)
+    if all_dbs:
+        lines = ["*Storelli Marketing Brain — summary* (Notion Brain) — "
+                 "correlation, not causation."]
+        win, weak = _signal_library_split(all_dbs.get("Signal Library", []))
+        cited = []
+        if win:
+            lines.append(f"  • Top winning signal: *{win[0]['title']}*")
+            cited.append(win[0])
+        if weak:
+            lines.append(f"  • Top weak signal: *{weak[0]['title']}*")
+            cited.append(weak[0])
+        ml = all_dbs.get("Marketing Learnings", [])
+        if ml:
+            lines.append(f"  • {len(ml)} marketing learning(s) synced")
+        tests = all_dbs.get("Next Creative Tests", [])
+        if tests:
+            lines.append(f"  • Next test queued: {tests[0].get('title', '')}")
+            cited.append(tests[0])
+        covered = []
+        if all_dbs.get("Product Learnings"):
+            covered.append(f"{len(all_dbs['Product Learnings'])} product(s)")
+        if all_dbs.get("ICP Learnings"):
+            covered.append(f"{len(all_dbs['ICP Learnings'])} ICP(s)")
+        if all_dbs.get("Generated Social Ideas"):
+            covered.append(f"{len(all_dbs['Generated Social Ideas'])} generated idea(s)")
+        if covered:
+            lines.append("  • Also covering: " + ", ".join(covered))
+        if len(lines) == 1:
+            lines.append("  • Notion Brain databases exist but are empty — "
+                         "run *notion-sync* after tagging more videos.")
+        return "\n".join(lines) + _render_sources(notion_chunks=cited)
+
+    # Fallback: Notion not configured / not synced yet -> summarize live.
+    ctx = gather_context()
+    guideline_names = _guideline_names(ctx)
+    state = _load_sheet_state()
+    if not state and not ctx.get("learnings"):
+        return _NO_DATA_MSG
+
+    lines = ["*Storelli Marketing Brain — summary* — correlation, not causation."]
+    sheet_rows = []
+    if state:
+        analyzed, buckets, results = state
+        if not analyzed:
+            return _NO_DATA_MSG
+        win = corr.winning(results)
+        weak = corr.weak(results)
+        lines.append(f"  • {len(analyzed)} tagged video(s) analyzed")
+        if win:
+            lines.append(f"  • Top winning signal: *{win[0]['label']}* ({win[0]['layer']})")
+        if weak:
+            lines.append(f"  • Top weak signal: *{weak[0]['label']}* ({weak[0]['layer']})")
+        note = _thin_data_note(analyzed, buckets)
+        if note:
+            lines.append(note)
+        sheet_rows = [r["_row"] for r in analyzed[:5]]
+    else:
+        lines.append("  • Live Sheet unreachable — summarizing from latest_learnings.md.")
+
+    return "\n".join(lines) + _render_sources(learnings_used=bool(ctx.get("learnings")),
+                                              sheet_rows=sheet_rows,
+                                              guideline_names=guideline_names)
 
 
 # --- public ---------------------------------------------------------------
@@ -493,6 +706,8 @@ def answer_question(user_text: str) -> str:
             return _mode_signals(text)
         if mode == "examples":
             return _mode_examples(text)
+        if mode == "summary":
+            return _mode_summary()
         return _HELP
     except Exception as e:  # noqa: BLE001 - Slack should never see a stack trace
         log.exception("social_brain: mode %s failed", mode)

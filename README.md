@@ -293,33 +293,47 @@ videos needed."*; above it, each test includes Product, ICP and a concrete
 Execution line. The dashboard also auto-posts after a successful social run when
 the webhook is set.
 
-### Slack chat (interactive Marketing Brain)
+### Slack chat (interactive Marketing Brain — Notion-first)
 
 An optional Slack app turns the brain into a **chat interface**: mention the
-bot in any channel and it replies in-thread. It's read/synthesize only — never
-writes to the Sheet, never triggers video analysis. Backed by
-`data/latest_learnings.md`, the analyzed Sheet, `data/guidelines/*.md`, and
-(best-effort, when configured) a couple of Notion Brain entries.
+bot in any channel and it replies in-thread. It's read-only throughout — never
+writes to the Sheet, never writes to Notion, never triggers video analysis,
+never posts anywhere on its own.
 
-Six modes (deterministic routing on the message text — a lightweight retrieval
-layer in `src/social_retrieval.py` parses Product/ICP/taxonomy-layer/
-performance-bucket filters out of free text; `social_brain.py` routes and
-renders):
+**Notion Brain is the primary memory layer.** `src/notion_retrieval.py` reads
+the same six databases `notion-sync` writes (Marketing Learnings, Signal
+Library, Next Creative Tests, Product Learnings, ICP Learnings, Generated
+Social Ideas) and normalizes rows into simple chunks. Learnings/signal/test
+questions try Notion first — it's a synced snapshot of the same underlying
+data, so answering from it is fast and doesn't need live Sheets access.
+**`data/latest_learnings.md`, the analyzed Sheet, and `data/guidelines/*.md`
+are the fallback/source layers** — used automatically whenever Notion isn't
+configured, a database hasn't been synced yet, or the specific segment asked
+about (e.g. an ICP with too few tagged videos) has no Notion entry. Either
+way the underlying computation is the same correlation engine; Notion just
+lets the bot skip recomputing it live when a synced answer already exists.
+
+Modes (deterministic routing on the message text — `src/social_retrieval.py`
+parses Product/ICP/taxonomy-layer/performance-bucket filters out of free
+text; `social_brain.py` routes, queries Notion-first, and renders):
 
 | Ask… | You get |
 |---|---|
-| `ideas` / *what should we post* / *ideas for BodyShield* / *ideas for parents* | 3–5 grounded Storelli video ideas — title, hook, storytelling structure, product/ICP, story blocks, visual beats, why, confidence, sources |
+| `ideas` / *what should we post* / *ideas for BodyShield* / *ideas for parents* | 3–5 grounded Storelli video ideas — title, hook, storytelling structure, product/ICP, story blocks, visual beats, why, confidence, sources (plus a Notion Brain note when a related Product/ICP Learning or prior Generated Idea exists) |
 | `feedback <IG link>` | Sheet lookup: performance bucket, Product, ICP, signals, diagnosis, next recommendation |
-| `learnings` / *what's working* / *why did this perform well?* | Top winning + weak signals, what to scale, what to avoid, thin-data warning |
-| *what hooks work for parents?* / *what formats should we avoid?* | Filtered signal breakdown for that taxonomy layer, recomputed within the Product/ICP subgroup when there's enough tagged data, else falls back to sheet-wide with a note |
-| *show me examples* / *examples of Great videos* | Concrete example rows (link + signals), optionally filtered by performance bucket / product / ICP |
-| `tests` / *what should we test* | 3 next creative tests from the synthesizer |
+| `learnings` / *what's working* / *what should we avoid* / *why did this perform well?* | Winning + weak signals from Notion Signal Library, falling back to a live Sheet computation |
+| *what hooks work for parents?* / *what formats should we avoid?* / *what did we learn about ExoShield?* | Notion ICP/Product Learnings or Signal Library for that segment/layer, falling back to a live Sheet computation segmented the same way |
+| *show me examples* / *examples of Great videos* | Concrete example rows (link + signals) from the Sheet — Notion doesn't store per-video rows, so this mode is always Sheet-based |
+| `tests` / *what are the next creative tests* | Notion's Next Creative Tests DB (including any operator-set Status), falling back to the synthesizer |
+| *summarize the brain* | A compact cross-database overview: top winning/weak signal, learnings synced, next test, products/ICPs/ideas covered |
 
 All modes only ever use "associated with" / "correlated with" language, cite
-exactly the sources they retrieved (`[S1]` Sheet rows, `[S2]` learnings file,
-`[S3]` guidelines, `[S4]` Notion Brain), and never invent a row, link, metric,
-or conclusion — an unmatched IG link or a segment with too little tagged data
-says so plainly instead of guessing.
+exactly the sources they retrieved — dynamically numbered `[S1]`, `[S2]`... in
+retrieval-priority order (Notion Brain entries first, then
+`latest_learnings.md`, then Sheet rows, then guidelines) — and never invent a
+row, link, metric, or conclusion. An unmatched IG link, an empty Notion
+database, or a segment with too little tagged data says so plainly instead of
+guessing, and answers stay compact (a handful of bullets, not a data dump).
 
 **Idea interpretation layer** (`src/interpretation.py`). The `ideas` mode is
 backed by a small deterministic layer that joins winning signals × formats ×
