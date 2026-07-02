@@ -379,9 +379,16 @@ def run_generate_social_ideas(background: BackgroundTasks,
 # scopes), then falls back to the lightweight in-memory per-thread cache in
 # slack_bot.py. Either way, read/synthesize only — never writes to the Sheet
 # or Notion, never triggers video analysis.
-def _converse(channel: str, thread_ts: str, user_text: str) -> None:
+def _converse(channel: str, thread_ts: str, user_text: str, user_id: str = "") -> None:
     """Shared background worker for app_mention, DMs, and active-thread
-    replies: build a grounded, thread-aware answer and post it back."""
+    replies: build a grounded, thread-aware answer and post it back.
+
+    Routes to Dev Brain (backend self-awareness / build-request handoff) when
+    the message looks like a backend/build question, else to the marketing
+    strategist — both are read-only with respect to the Sheet and Notion; the
+    one exception (an explicitly-configured build-request GitHub handoff) is
+    itself gated to approved user_id's inside dev_brain.py, never blind."""
+    import dev_brain
     import slack_bot
     import social_brain
     try:
@@ -389,7 +396,10 @@ def _converse(channel: str, thread_ts: str, user_text: str) -> None:
         context = slack_bot.fetch_thread_context(channel, thread_ts)
         if context is None:
             context = slack_bot.cached_context(channel, thread_ts)
-        answer = social_brain.answer_conversation(clean, context)
+        if dev_brain.is_dev_question(clean):
+            answer = dev_brain.handle(clean, context, requesting_user_id=user_id)
+        else:
+            answer = social_brain.answer_conversation(clean, context)
         slack_bot.remember(channel, thread_ts, "user", clean)
         slack_bot.remember(channel, thread_ts, "assistant", answer)
         slack_bot.post_message(channel, answer, thread_ts=thread_ts or None)
@@ -440,8 +450,9 @@ async def slack_events(request: Request, background: BackgroundTasks):
             channel = event.get("channel", "")
             thread_ts = event.get("thread_ts") or event.get("ts") or ""
             user_text = event.get("text", "") or ""
+            user_id = event.get("user", "") or ""
             if channel:
-                background.add_task(_converse, channel, thread_ts, user_text)
+                background.add_task(_converse, channel, thread_ts, user_text, user_id)
             return {"ok": True}
 
         if etype == "message":
@@ -462,7 +473,8 @@ async def slack_events(request: Request, background: BackgroundTasks):
             # already replied in this process's lifetime.
             is_active_reply = bool(thread_ts) and slack_bot.is_active_thread(channel, thread_ts)
             if is_dm or is_active_reply:
-                background.add_task(_converse, channel, thread_ts, user_text)
+                user_id = event.get("user", "") or ""
+                background.add_task(_converse, channel, thread_ts, user_text, user_id)
             return {"ok": True}
     return {"ok": True}
 

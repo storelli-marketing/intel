@@ -488,6 +488,53 @@ Trigger via `POST /run/generate-social-ideas` (requires `X-Run-Secret`) or by
 importing `notion_brain.sync_or_persist_ideas(ideas, date_str)` directly.
 Slack chat never writes to the Sheet and does not auto-persist ideas.
 
+### Dev Brain mode (backend self-awareness + Slack-to-code handoff)
+
+The same Slack bot can also explain its own architecture and draft (never
+apply) implementation plans — `src/dev_brain.py`, routed to automatically
+whenever a message looks like a backend/build question (`is_dev_question()`
+checks for words like "backend", "architecture", "repo", capitalized "BE",
+"where is X implemented/handled", "how would you add/build", "what files",
+or the build-request trigger phrases below) rather than a marketing one;
+everything else still goes to `social_brain`/`social_strategist`.
+
+Grounded in two files kept in sync with the real repo:
+- `data/backend_context.md` — curated: what things mean, safety rules, env
+  var *names* (never values).
+- `data/backend_map.json` — generated via `python scripts/build_backend_map.py`
+  (introspects `src/*.py` for functions/classes via `ast`, routes, CLI
+  commands, and `os.getenv(...)` names — regenerate after structural
+  changes). Includes a curated `do_not_call_from_slack` list.
+
+Backend answers cite files like `[src/web.py]` — validated against the
+actual file list in the map (either `[bracket]` or `` `backtick` `` style;
+citing a file that doesn't exist there is treated the same as an invented
+fact and discards the answer in favor of a deterministic one built directly
+from the same two files). Also checked: no secret-shaped strings (an
+extra net — the context these prompts see never contains a real value, only
+names, so this should never actually trigger).
+
+**"push to code"** (or "create build request" / "tell claude code") never
+edits this repo. It drafts a structured build request — title, user goal,
+current system context, proposed implementation, files likely to change
+(only ever real ones), safety constraints, tests, deployment notes, and a
+complete Claude Code prompt — and returns it as Slack text prefixed "Build
+request prepared. Paste this into Claude Code:". Gated to
+`SLACK_DEV_ALLOWED_USER_IDS` (**empty by default = no one is authorized**);
+an unauthorized request gets exactly: *"I can explain the backend, but I'm
+not allowed to create build requests from your account."* Non-sensitive
+backend Q&A stays open to any Slack user regardless.
+
+`BUILD_REQUEST_TARGET` controls what happens beyond the Slack reply —
+default `slack_only` does nothing else. `github_issue` also files a GitHub
+issue (still just a ticket, never a PR or commit) via `GITHUB_TOKEN` +
+`GITHUB_REPO`. `github_dispatch` also fires a `repository_dispatch` event
+(`GITHUB_DISPATCH_EVENT`) — this only notifies an external workflow; **no
+such workflow is implemented here**, and whoever wires one up must make it
+open a branch/PR requiring human review, never push to main directly. Both
+GitHub paths fail cleanly (the Slack reply still shows the build request)
+if misconfigured or the API call errors.
+
 ## Upload Guidelines
 
 The dashboard's **Upload Guidelines** section lets the operator paste

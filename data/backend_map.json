@@ -1,0 +1,531 @@
+{
+  "generated_by": "scripts/build_backend_map.py",
+  "note": "env_vars lists NAMES only, never values. Regenerate after adding/removing files, routes, or CLI commands.",
+  "layers": [
+    {
+      "name": "Slack interface",
+      "files": [
+        "src/web.py",
+        "src/slack_bot.py"
+      ],
+      "role": "Receives Slack events (app_mention / message), verifies the request signature, ACKs immediately, and hands off to a background worker. Read-only: never writes to the Sheet or Notion, never triggers video analysis."
+    },
+    {
+      "name": "Strategy brain",
+      "files": [
+        "src/social_brain.py",
+        "src/social_strategist.py",
+        "src/social_retrieval.py",
+        "src/interpretation.py"
+      ],
+      "role": "Routes a question to a topic, retrieves evidence via the layers below, and composes a strategist-voice answer (Gemini, validated) with a deterministic fallback."
+    },
+    {
+      "name": "Dev Brain",
+      "files": [
+        "src/dev_brain.py"
+      ],
+      "role": "Backend self-awareness and build-request handoff \u2014 answers questions about this codebase and drafts (never applies) implementation plans, gated to approved Slack users."
+    },
+    {
+      "name": "Retrieval",
+      "files": [
+        "src/notion_retrieval.py",
+        "src/content_context.py",
+        "src/sheets_client.py",
+        "src/correlations.py",
+        "src/performance.py"
+      ],
+      "role": "Notion Brain (primary), latest_learnings.md + Storelli brand context + guidelines, and a live Sheet + correlation computation as fallback."
+    },
+    {
+      "name": "Analysis pipeline",
+      "files": [
+        "src/main.py",
+        "src/analyzer.py",
+        "src/gemini_client.py",
+        "src/taxonomy.py",
+        "src/synthesizer.py"
+      ],
+      "role": "CLI-triggered only (never from Slack): downloads a reel, tags it via Gemini against the taxonomy, writes results back to the Sheet, and synthesizes learnings."
+    },
+    {
+      "name": "Publishing / sync",
+      "files": [
+        "src/notion_brain.py",
+        "src/slack_report.py"
+      ],
+      "role": "Pushes synthesized learnings into the 6 Notion Brain databases and posts an outbound Slack run summary. CLI/dashboard-triggered only, never from the Slack chat path."
+    }
+  ],
+  "files": {
+    "src/analyzer.py": {
+      "functions": [
+        "render_taxonomy",
+        "parse_model_json",
+        "_match_label",
+        "_as_list",
+        "to_signal_columns",
+        "_parse_with_retry",
+        "analyze_and_compile"
+      ],
+      "classes": []
+    },
+    "src/config.py": {
+      "functions": [
+        "_require",
+        "clean_notion_id",
+        "require_sheets",
+        "require_gemini",
+        "require_notion",
+        "require_slack_bot"
+      ],
+      "classes": []
+    },
+    "src/content_context.py": {
+      "functions": [
+        "gather_context"
+      ],
+      "classes": []
+    },
+    "src/correlations.py": {
+      "functions": [
+        "_confidence",
+        "compute",
+        "winning",
+        "weak",
+        "fmt_pct",
+        "fmt_lift"
+      ],
+      "classes": []
+    },
+    "src/dev_brain.py": {
+      "functions": [
+        "_load_backend_context",
+        "_load_backend_map",
+        "_known_files",
+        "_render_map_summary",
+        "is_dev_question",
+        "wants_build_request",
+        "_extract_file_citations",
+        "_citations_valid",
+        "_looks_like_secret",
+        "_deterministic_backend_answer",
+        "answer_backend_question",
+        "_is_authorized",
+        "_deterministic_build_request",
+        "create_build_request",
+        "_file_github_issue",
+        "_fire_github_dispatch",
+        "deliver_build_request",
+        "handle"
+      ],
+      "classes": [
+        "BuildRequest"
+      ]
+    },
+    "src/gemini_client.py": {
+      "functions": [
+        "_is_unavailable",
+        "_needs_cookies",
+        "_is_quota"
+      ],
+      "classes": [
+        "VideoDownloadError",
+        "QuotaExhaustedError",
+        "GeminiClient"
+      ]
+    },
+    "src/interpretation.py": {
+      "functions": [
+        "_idea_confidence",
+        "_detect_bias",
+        "detect_product",
+        "detect_icp",
+        "storytelling_structure",
+        "_story_blocks",
+        "_visual_beats",
+        "_top_group",
+        "_first_by_layer",
+        "_example_row",
+        "_inspiration_row",
+        "build_idea_candidates",
+        "collect_sources"
+      ],
+      "classes": [
+        "_SourceRegistry"
+      ]
+    },
+    "src/logger.py": {
+      "functions": [
+        "get_logger"
+      ],
+      "classes": []
+    },
+    "src/main.py": {
+      "functions": [
+        "_valid_icp",
+        "_drop_layers",
+        "_to_int",
+        "_row_value_ci",
+        "_determine_performance",
+        "cmd_analyze",
+        "cmd_analyze_all",
+        "print_tagging_summary",
+        "compute_findings",
+        "cmd_correlations",
+        "_templated_finding",
+        "build_findings",
+        "_group_counts",
+        "cmd_synthesize",
+        "cmd_reset_incomplete",
+        "notion_sync",
+        "_fmt_notion_summary",
+        "cmd_notion_sync",
+        "_example_link",
+        "gather_slack_inputs",
+        "cmd_slack_report",
+        "print_run_summary",
+        "main"
+      ],
+      "classes": []
+    },
+    "src/notion_brain.py": {
+      "functions": [
+        "_is_transient",
+        "_finding",
+        "_action",
+        "_top_in_layer",
+        "_group_conf",
+        "build_entries",
+        "_source_line",
+        "generated_ideas_entries",
+        "_persist_ideas_jsonl",
+        "sync_or_persist_ideas",
+        "_schema_properties"
+      ],
+      "classes": [
+        "NotionBrain"
+      ]
+    },
+    "src/notion_client.py": {
+      "functions": [
+        "_load_notion_sdk",
+        "_text",
+        "_heading",
+        "_table",
+        "_para"
+      ],
+      "classes": [
+        "NotionDashboard"
+      ]
+    },
+    "src/notion_retrieval.py": {
+      "functions": [
+        "available",
+        "_prop_text",
+        "_normalize",
+        "_word_overlap_match",
+        "filter_chunks",
+        "query",
+        "fetch_all"
+      ],
+      "classes": [
+        "NotionRetrieval"
+      ]
+    },
+    "src/performance.py": {
+      "functions": [
+        "source_type",
+        "is_reference_row",
+        "is_internal_row",
+        "bucket_from_performance",
+        "buckets_for_rows",
+        "is_positive",
+        "ratio_to_performance"
+      ],
+      "classes": []
+    },
+    "src/sheets_client.py": {
+      "functions": [],
+      "classes": [
+        "SheetsClient"
+      ]
+    },
+    "src/slack_bot.py": {
+      "functions": [
+        "get_bot_user_id",
+        "_mem_key",
+        "is_active_thread",
+        "remember",
+        "cached_context",
+        "fetch_thread_context",
+        "verify_request",
+        "is_retry",
+        "strip_mention",
+        "post_message"
+      ],
+      "classes": []
+    },
+    "src/slack_report.py": {
+      "functions": [
+        "build_message",
+        "post"
+      ],
+      "classes": []
+    },
+    "src/social_brain.py": {
+      "functions": [
+        "_has_any",
+        "_route",
+        "_load_sheet_state",
+        "_load_all_rows",
+        "_cite_notion",
+        "_render_sources",
+        "_guideline_names",
+        "_thin_data_note",
+        "_render_ideas",
+        "_mode_ideas",
+        "_find_row_by_link",
+        "_row_signals",
+        "_mode_feedback",
+        "_signal_library_split",
+        "_fmt_notion_signal",
+        "_mode_learnings",
+        "_mode_signals",
+        "_mode_examples",
+        "_mode_tests",
+        "_mode_summary",
+        "answer_question",
+        "_classify_followup",
+        "_extract_sources_block",
+        "_split_numbered_items",
+        "_detect_last_mode",
+        "_followup_sources",
+        "_followup_expand",
+        "_followup_make_for",
+        "_followup_brief",
+        "_followup_risky",
+        "_followup_shorter",
+        "_followup_why",
+        "_followup_more",
+        "_has_causal_language",
+        "_citations_preserved",
+        "_introduced_new_numbers",
+        "_maybe_llm_polish",
+        "_finish_conversational",
+        "_deterministic_conversation_answer",
+        "answer_conversation"
+      ],
+      "classes": []
+    },
+    "src/social_retrieval.py": {
+      "functions": [
+        "detect_layer",
+        "detect_performance_bucket",
+        "extract_filters",
+        "filter_rows",
+        "signals_for_layer",
+        "segment_results",
+        "example_rows",
+        "notion_learnings"
+      ],
+      "classes": []
+    },
+    "src/social_strategist.py": {
+      "functions": [
+        "_run_mode",
+        "_parse_sources",
+        "_resolve_topic_and_evidence",
+        "_wants_concise",
+        "build_context_pack",
+        "_has_causal_language",
+        "_citations_valid",
+        "_numbers_grounded",
+        "_has_backend_language",
+        "_has_markdown_table",
+        "_append_sources_if_missing",
+        "_cap_sources_line",
+        "_fix_empty_next_action",
+        "_cap_bullets",
+        "compose_strategic_answer"
+      ],
+      "classes": []
+    },
+    "src/synthesizer.py": {
+      "functions": [
+        "_great_count",
+        "_group",
+        "_top_signals_in",
+        "_first_label",
+        "_best_group",
+        "_test_confidence",
+        "_execution",
+        "_next_tests",
+        "synthesize",
+        "_pattern_lines",
+        "_group_lines",
+        "render_markdown",
+        "write_learnings"
+      ],
+      "classes": []
+    },
+    "src/taxonomy.py": {
+      "functions": [
+        "slug",
+        "column_for",
+        "all_signal_columns",
+        "signal_index",
+        "all_output_columns",
+        "category_to_layer"
+      ],
+      "classes": []
+    },
+    "src/web.py": {
+      "functions": [
+        "_slug",
+        "_now",
+        "_short",
+        "_check_secret",
+        "_parse_limit",
+        "_begin",
+        "_finish",
+        "_fail",
+        "_refresh_correlations",
+        "_maybe_slack",
+        "_do_social",
+        "_do_analyze_all",
+        "_do_notion_sync",
+        "_do_slack",
+        "_do_correlations",
+        "_do_generate_social_ideas",
+        "_do_synthesize",
+        "_guarded",
+        "index",
+        "status",
+        "learnings",
+        "run_social",
+        "run_analyze_all",
+        "run_correlations",
+        "run_synthesize",
+        "run_notion_sync",
+        "run_slack_report",
+        "run_generate_social_ideas",
+        "_converse",
+        "slack_events",
+        "list_guidelines",
+        "save_guideline"
+      ],
+      "classes": [
+        "SocialReq",
+        "GuidelineReq"
+      ]
+    }
+  },
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/"
+    },
+    {
+      "method": "GET",
+      "path": "/status"
+    },
+    {
+      "method": "GET",
+      "path": "/learnings"
+    },
+    {
+      "method": "POST",
+      "path": "/run/social"
+    },
+    {
+      "method": "POST",
+      "path": "/run/analyze-all"
+    },
+    {
+      "method": "POST",
+      "path": "/run/correlations"
+    },
+    {
+      "method": "POST",
+      "path": "/run/synthesize"
+    },
+    {
+      "method": "POST",
+      "path": "/run/notion-sync"
+    },
+    {
+      "method": "POST",
+      "path": "/run/slack-report"
+    },
+    {
+      "method": "POST",
+      "path": "/run/generate-social-ideas"
+    },
+    {
+      "method": "POST",
+      "path": "/slack/events"
+    },
+    {
+      "method": "GET",
+      "path": "/guidelines"
+    },
+    {
+      "method": "POST",
+      "path": "/guidelines"
+    }
+  ],
+  "cli_commands": [
+    "analyze",
+    "analyze-all",
+    "correlations",
+    "synthesize",
+    "notion-sync",
+    "slack-report",
+    "run-all",
+    "reset-incomplete"
+  ],
+  "env_vars": [
+    "BUILD_REQUEST_TARGET",
+    "DASHBOARD_URL",
+    "GEMINI_API_KEY",
+    "GEMINI_MODEL",
+    "GITHUB_DISPATCH_EVENT",
+    "GITHUB_REPO",
+    "GITHUB_TOKEN",
+    "GOOGLE_SERVICE_ACCOUNT_JSON_B64",
+    "GOOGLE_SERVICE_ACCOUNT_JSON_PATH",
+    "GOOGLE_SHEET_ID",
+    "GOOGLE_WORKSHEET_NAME",
+    "NOTION_API_KEY",
+    "NOTION_DASHBOARD_URL",
+    "NOTION_PARENT_PAGE_ID",
+    "QA_COMPILER_ENABLED",
+    "RUN_SECRET",
+    "SLACK_BOT_TOKEN",
+    "SLACK_DEV_ALLOWED_USER_IDS",
+    "SLACK_DEV_MODE_ENABLED",
+    "SLACK_LLM_POLISH_ENABLED",
+    "SLACK_SIGNING_SECRET",
+    "SLACK_STRATEGIST_MODE_ENABLED",
+    "SLACK_WEBHOOK_URL",
+    "STORELLI_IG_FOLLOWER_COUNT",
+    "YTDLP_COOKIES_B64",
+    "YTDLP_COOKIES_PATH"
+  ],
+  "do_not_call_from_slack": [
+    "analyzer.analyze_and_compile",
+    "gemini_client.GeminiClient.analyze",
+    "sheets_client.SheetsClient.write_row",
+    "sheets_client.SheetsClient.set_status",
+    "sheets_client.SheetsClient.reset_statuses",
+    "notion_brain.NotionBrain.sync",
+    "notion_brain.NotionBrain.sync_generated_ideas",
+    "notion_brain.NotionBrain._upsert",
+    "notion_brain.NotionBrain._ensure_db",
+    "main.cmd_analyze",
+    "main.cmd_analyze_all",
+    "main.cmd_reset_incomplete"
+  ]
+}

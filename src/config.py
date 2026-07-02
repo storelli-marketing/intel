@@ -139,6 +139,36 @@ try:
 except ValueError:
     STORELLI_IG_FOLLOWER_COUNT = 170000
 
+# Dev Brain (src/dev_brain.py) — backend self-awareness + build-request
+# handoff from Slack. On by default: explaining the backend read-only is
+# safe for any Slack user. The dangerous action ("push to code") is gated
+# separately below and is DENIED by default (empty allowlist = no one is
+# authorized) rather than allowed by default.
+SLACK_DEV_MODE_ENABLED = os.getenv("SLACK_DEV_MODE_ENABLED", "true").strip().lower() \
+    not in ("false", "0", "no", "off")
+
+# Comma-separated Slack user ids (e.g. "U0123ABC,U0456DEF") allowed to trigger
+# a build-request handoff. Empty (default) means NO ONE is authorized —
+# secure-by-default, since this is the one Dev Brain action that can write to
+# GitHub/Notion depending on BUILD_REQUEST_TARGET below.
+SLACK_DEV_ALLOWED_USER_IDS = {
+    u.strip() for u in os.getenv("SLACK_DEV_ALLOWED_USER_IDS", "").split(",") if u.strip()
+}
+
+# Where a "push to code" build request goes. slack_only (default): render the
+# build request + a ready-to-paste Claude Code prompt in Slack, nothing else
+# touched. github_issue: also file a GitHub issue (never a PR, never a commit).
+# github_dispatch: also fire a repository_dispatch event — this only notifies
+# a workflow; it never commits to main itself, and no such workflow is
+# implemented by this app (whoever wires one up must make it open a branch/PR
+# requiring human review, never push to main directly).
+BUILD_REQUEST_TARGET = os.getenv("BUILD_REQUEST_TARGET", "slack_only").strip().lower()
+
+# Only needed for BUILD_REQUEST_TARGET in (github_issue, github_dispatch).
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
+GITHUB_REPO = os.getenv("GITHUB_REPO", "").strip()  # "owner/repo"
+GITHUB_DISPATCH_EVENT = os.getenv("GITHUB_DISPATCH_EVENT", "storelli_build_request").strip()
+
 
 def require_sheets() -> None:
     _require("GOOGLE_SHEET_ID")

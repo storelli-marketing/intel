@@ -39,6 +39,12 @@ The app is a single FastAPI service (`web:app`). No database. Deploys from
 | `YTDLP_COOKIES_PATH` | no | path to a `cookies.txt` file directly; if `YTDLP_COOKIES_B64` is also set, it's decoded into this path (overwriting it) at startup |
 | `SLACK_LLM_POLISH_ENABLED` | no | `true` = let Gemini reword Slack conversational replies (validated, discarded if it breaks grounding); default **off**, and only used when strategist mode (below) is off |
 | `SLACK_STRATEGIST_MODE_ENABLED` | no | `false` to disable; default **on** whenever `GEMINI_API_KEY` is set. Bot answers with real judgment (a recommendation, tradeoffs, a "why") composed from an already-retrieved, already-cited evidence pack — never raw retrieval dumped as-is. Validated (citations/numbers/no causal language) and falls back to the deterministic engine on any failure. Spends one Gemini call per Slack reply — shares the ~20/day free-tier quota with video tagging |
+| `SLACK_DEV_MODE_ENABLED` | no | `false` to disable; default **on**. Lets the bot explain its own backend (read-only, safe for any Slack user) — see §5 |
+| `SLACK_DEV_ALLOWED_USER_IDS` | no | comma-separated Slack user ids (e.g. `U0123ABC,U0456DEF`) authorized to trigger "push to code". **Empty by default = no one is authorized** — this is deny-by-default, not allow-by-default |
+| `BUILD_REQUEST_TARGET` | no | `slack_only` (default) / `github_issue` / `github_dispatch` — what happens beyond showing the build request in Slack. See §5 |
+| `GITHUB_TOKEN` | no | only needed for `github_issue` / `github_dispatch` |
+| `GITHUB_REPO` | no | `owner/repo`; only needed for `github_issue` / `github_dispatch` |
+| `GITHUB_DISPATCH_EVENT` | no | default `storelli_build_request`; only used for `github_dispatch` |
 
 ## 4. Slack chat app (interactive Marketing Brain — threaded, conversational)
 
@@ -139,6 +145,35 @@ at all continue to work exactly as before.
 
 Success = Generate Learnings → Update Notion Brain → Send Slack Report works
 end-to-end from the deployed dashboard.
+
+## 6. Dev Brain — backend self-awareness + push-to-code
+
+Optional, on by default (`SLACK_DEV_MODE_ENABLED`). The same Slack bot
+answers backend/architecture questions (routed automatically — see
+README "Dev Brain mode") grounded in `data/backend_context.md` +
+`data/backend_map.json`. This part is read-only and safe for any Slack user.
+
+**"push to code" is Slack-only by default and does not edit this repo.**
+It drafts a build request and shows it in Slack — that's the entire effect
+unless you explicitly configure otherwise:
+
+1. To let *anyone* actually use "push to code", set
+   `SLACK_DEV_ALLOWED_USER_IDS` to the Slack user id(s) you trust with it
+   (find a user's id via their Slack profile → "Copy member ID"). Leaving
+   this unset means the feature is present but denies everyone — deliberate,
+   secure-by-default.
+2. To also file a GitHub issue (a ticket, never a PR or a commit), set
+   `BUILD_REQUEST_TARGET=github_issue` plus `GITHUB_TOKEN` (a token with
+   `issues:write` on the target repo) and `GITHUB_REPO` (`owner/repo`).
+3. To instead fire a `repository_dispatch` event, set
+   `BUILD_REQUEST_TARGET=github_dispatch` plus the same `GITHUB_TOKEN` /
+   `GITHUB_REPO`. **This app does not include a workflow that listens for
+   that event** — a dispatch with nothing subscribed to it is a no-op.
+   Anyone wiring one up must make it open a branch/PR requiring human
+   review; it must never push to main directly.
+
+Regenerate `data/backend_map.json` after adding/removing files, routes, or
+CLI commands: `python scripts/build_backend_map.py`.
 
 ## Notes / known constraints
 
