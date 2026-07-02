@@ -790,7 +790,10 @@ def _split_numbered_items(text: str) -> list[str]:
 
 def _detect_last_mode(last_assistant: str) -> str:
     """Best-effort classification of which mode produced the previous answer,
-    from its rendering — used to decide how to re-run it for a follow-up."""
+    from its rendering — used to decide how to re-run it for a follow-up.
+    Checks both the deterministic-mode renderings AND the strategist's own
+    contract shapes (a strategist-composed message won't contain the
+    deterministic modes' exact markup, e.g. "*Ideas grounded")."""
     if "*Ideas grounded" in last_assistant:
         return "ideas"
     if "Next creative tests" in last_assistant:
@@ -799,12 +802,17 @@ def _detect_last_mode(last_assistant: str) -> str:
         return "summary"
     if last_assistant.startswith("*Examples"):
         return "examples"
-    if last_assistant.startswith("*Feedback on:"):
+    if last_assistant.startswith("*Feedback on:") or last_assistant.startswith("Diagnosis:"):
         return "feedback"
     if "*Current learnings*" in last_assistant or "Winning —" in last_assistant:
         return "learnings"
     if "Work well:" in last_assistant or "associated with performance" in last_assistant:
         return "signals"
+    # Strategist contract shapes (see social_strategist.py's prompt template).
+    if re.search(r"^Ideas:\s*$", last_assistant, re.MULTILINE):
+        return "ideas"
+    if "Biggest learnings:" in last_assistant:
+        return "learnings"
     return "ideas"
 
 

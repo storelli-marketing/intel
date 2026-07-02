@@ -393,7 +393,11 @@ wins). Every answer is validated before it's ever shown:
   source list — an invented or unknown id discards the answer;
 - every number/percentage it states must already appear in the evidence —
   an invented metric discards the answer;
-- causal language ("causes", "leads to", ...) discards the answer.
+- causal language ("causes", "leads to", ...) discards the answer;
+- any leaked implementation language ("Notion row", "database", "retrieved
+  context", raw JSON) discards the answer — the user should only ever see a
+  strategist, never a description of the backend;
+- a markdown table discards the answer (Slack renders those badly).
 
 Any failure — disabled, Gemini errors, or a validation check above — falls
 straight through to the fully deterministic engine (the same
@@ -401,6 +405,25 @@ expand/sources/shorter/brief/risky transforms and Notion-first modes this
 bot already had), which is itself a complete, correctly-cited answer on its
 own. Gemini only ever **words** an answer here; it never re-retrieves or
 invents the underlying facts.
+
+**Storelli brand context** (`data/storelli_context.md`) — plain-text brand
+and strategy grounding (what Storelli makes, positioning, ICPs, content
+goals, tone, claims discipline) that's fed into every strategist prompt so
+it can explain *why* a signal matters for Storelli specifically ("lean into
+BodyShield protection-proof content for parents"), not just restate the
+signal name. Edit this file directly to sharpen that judgment — it loads
+gracefully as empty if missing, so it's optional but recommended.
+
+**Answer shape and conciseness are enforced, not just requested.** Each
+question type gets a fixed contract (a "My read: ... / ranked learnings with
+a reason each / next action / confidence" shape for strategy questions, a
+numbered-ideas shape, or a "Diagnosis: ..." shape for feedback), the model is
+told to collapse evidence into at most 3-5 ranked conclusions and cite only
+the 1-3 strongest sources, and the reply is post-processed to cap it at 5
+bullets / 5 cited sources (3 bullets when the user says "concise" / "short" /
+"tl;dr" / "quick" / "top 3") regardless of what the model produced — a
+targeted trim that preserves the closing sources/confidence lines rather
+than a hard truncation.
 
 **Optional plain LLM polish** (`config.SLACK_LLM_POLISH_ENABLED`, default
 **off**, only used when strategist mode is off): a simpler, older mode where

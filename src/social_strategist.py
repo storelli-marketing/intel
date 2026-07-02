@@ -125,21 +125,40 @@ def _resolve_topic_and_evidence(user_text: str, conversation_context: list) -> t
     return evidence, _parse_sources(evidence), mode
 
 
+_CONCISE_KW = ("concise", "short", "tl;dr", "tldr", "quick", "top 3")
+
+
+def _wants_concise(text: str) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in _CONCISE_KW)
+
+
 def build_context_pack(user_text: str, conversation_context: list | None = None) -> dict:
     """Compact context pack: the user's question, a short thread summary, the
-    already-retrieved (and already-cited) evidence for the resolved topic, and
-    the canonical source id->description map used for citation validation."""
+    already-retrieved (and already-cited) evidence for the resolved topic, the
+    canonical source id->description map used for citation validation, the
+    Storelli brand/strategy context, and whether the user asked for brevity."""
+    import content_context
+
     context = conversation_context or []
     evidence, sources, mode = _resolve_topic_and_evidence(user_text, context)
     thread_summary = "\n".join(
         f"{m.get('role', 'user')}: {str(m.get('text', ''))[:300]}" for m in context[-6:]
     )
+    brand_context = ""
+    try:
+        brand_context = content_context.gather_context().get("brand_context", "") or ""
+    except Exception as e:  # noqa: BLE001 - brand context is a nice-to-have, never fatal
+        log.warning("social_strategist: brand context unavailable: %s", e)
+
     return {
         "question": user_text,
         "mode": mode,
         "thread_summary": thread_summary,
         "evidence": evidence,
         "sources": sources,
+        "brand_context": brand_context,
+        "concise": _wants_concise(user_text),
     }
 
 
@@ -160,6 +179,24 @@ def _numbers_grounded(text: str, evidence: str) -> bool:
     return out_nums.issubset(ev_nums)
 
 
+# Implementation details that must never leak into a user-facing answer —
+# catching these is what keeps the bot feeling like a strategist rather than
+# a retrieval tool describing its own backend.
+_BACKEND_LEAK_PATTERNS = (
+    r"notion\s+row", r"\bdatabase\b", r"retrieved\s+context",
+    r"\bcontext\s+pack\b", r"\brow\s+\d+\b", r'\{\s*"',
+)
+
+
+def _has_backend_language(text: str) -> bool:
+    t = text.lower()
+    return any(re.search(p, t) for p in _BACKEND_LEAK_PATTERNS)
+
+
+def _has_markdown_table(text: str) -> bool:
+    return bool(re.search(r"^\s*\|.+\|.+\|", text, re.MULTILINE))
+
+
 def _append_sources_if_missing(text: str, sources: dict) -> str:
     """Requirement: if the LLM drops all citations for what's otherwise a
     substantive, evidence-backed answer, append the source list manually
@@ -170,42 +207,146 @@ def _append_sources_if_missing(text: str, sources: dict) -> str:
     return text.rstrip() + "\n\nSources: " + ", ".join(f"[{sid}]" for sid, _ in top)
 
 
+def _cap_sources_line(text: str, max_sources: int = 5) -> str:
+    """Never show more than max_sources ids in a Sources line, even if more
+    were legitimately cited inline — keeps the tail of the answer scannable."""
+    def _cap(m: re.Match) -> str:
+        ids = re.findall(r"\[S\d+\]", m.group(0))
+        if len(ids) <= max_sources:
+            return m.group(0)
+        prefix = re.match(r"^(?:_Sources:_|Sources:)\s*", m.group(0)).group(0)
+        return prefix + ", ".join(ids[:max_sources])
+
+    return re.sub(r"(?:_Sources:_|Sources:)\s*\[S\d+\](?:\s*[,·]\s*\[S\d+\])*", _cap, text)
+
+
+def _fix_empty_next_action(text: str) -> str:
+    """Safety net: the prompt requires 'What I'd do next:' / 'Next move:' to
+    always carry at least one action, but if a header ever slips through
+    empty (e.g. the bullet budget left nothing for it), drop the bare header
+    line rather than showing a blank section."""
+    lines = text.splitlines()
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        if re.match(r"^(?:What I'd do next|Next move):\s*$", line.strip()):
+            j = i + 1
+            while j < len(lines) and lines[j].strip() == "":
+                j += 1
+            has_bullet = j < len(lines) and re.match(r"^\s*(?:[-•]|\d+\.)\s", lines[j])
+            if not has_bullet:
+                i += 1
+                continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
+
+
+def _cap_bullets(text: str, max_bullets: int) -> str:
+    """Drop excess bullet/numbered-list lines beyond max_bullets, keeping
+    every non-bullet line (headers, Sources, Confidence, the follow-up
+    question) exactly where it is — a targeted trim, not a hard truncation
+    that could cut off citations or the confidence line."""
+    out, bullet_count = [], 0
+    for line in text.splitlines():
+        if re.match(r"^\s*(?:[-•]|\d+\.)\s", line):
+            bullet_count += 1
+            if bullet_count > max_bullets:
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
 # --- public -------------------------------------------------------------------
 _PROMPT_TEMPLATE = """\
 You are a senior marketing strategist working inside Storelli's internal \
-Marketing Brain, a Slack bot for a goalkeeper-protective-gear brand. Answer \
-the user's message using ONLY the evidence pack below — give real judgment \
-and tradeoffs, not a list of database rows. Never invent a fact, link, \
-metric, or source.
+Marketing Brain, a Slack bot. Answer the user's message using ONLY the \
+evidence pack below — give real judgment, ranked conclusions, and tradeoffs, \
+not a data dump. Never invent a fact, link, metric, or source. Never mention \
+implementation details (Notion, databases, "retrieved context", row numbers, \
+JSON) — the user only ever sees you as a strategist, not a retrieval tool.
 
-Rules:
+Storelli brand & strategy context (use this to explain WHY something matters \
+for Storelli specifically — product/ICP/positioning implications, not just \
+signal names):
+{brand_context}
+
+Inference requirements:
+- Collapse the evidence into at most 3-5 conclusions — rank them by how \
+useful they are to act on, most useful first. Don't just list every signal.
+- Every conclusion needs a "because" grounded in an actual source from the \
+list below.
+- Prefer product/ICP/action implications over raw signal names (e.g. "lean \
+into BodyShield protection-proof content for parents" beats "Curiosity Gap \
+hook, format Demo").
+- If the sample is thin, call the conclusion directional, not a rule.
+- If the evidence genuinely doesn't support a conclusion the user is asking \
+for, say plainly "I don't have enough evidence for that yet" instead of \
+stretching a thin signal into a confident claim.
+
+Answer format — pick the one that matches the question:
+
+For "biggest learnings" / "what's working" / "summarize" / general strategy \
+questions, use exactly this shape:
+My read: [one clear sentence]
+
+Biggest learnings:
+1. [Learning] — [why it matters for Storelli]. Source: [Sx]
+2. [Learning] — [why it matters for Storelli]. Source: [Sy]
+3. [Learning] — [why it matters for Storelli]. Source: [Sz]
+
+What I'd do next:
+- [action]
+- [action]
+
+Confidence: [Strong / Medium / Directional / Thin data] — [short reason]
+
+"What I'd do next" must NEVER be left empty or header-only — if the bullet \
+budget is tight, cut a learning before you cut the next action; there must \
+always be at least one concrete action listed.
+
+For an ideas question, use exactly this shape:
+My read: [strategy in one sentence]
+Ideas:
+1. [Title] — Hook: ... Format: ... Why (ONE short sentence): ... Source: [Sx]
+2. [Title] — Hook: ... Format: ... Why (ONE short sentence): ... Source: [Sy]
+(3 ideas normally, up to 5 only if the user asked for more — numbered \
+exactly like "1. Title" so a later "expand #2" keeps working; keep each \
+idea to 2-3 lines total, this is a Slack message, not a brief)
+Next move: ask me which one to expand.
+
+For a feedback-on-a-specific-video question, use exactly this shape:
+Diagnosis: [one sentence]
+What worked / didn't:
+- ...
+What I'd change:
+- ...
+Confidence: [Strong / Medium / Directional / Thin data]
+Sources: [Sx]
+
+For any other follow-up ("why?", "expand #N", "make it for X", "what would \
+you do if you were me?", "what are you least sure about?", "show me \
+sources", etc.), resolve "that" / "this" / "#N" using the thread context \
+below and answer conversationally in the SAME voice, using whichever shape \
+above fits best — don't re-explain the whole prior answer from scratch.
+
+Hard limits on every answer:
 - Never say a signal "causes" or "leads to" performance — only "associated \
 with" / "correlated with".
-- If the evidence is thin (small sample, low confidence), say so explicitly \
-and call the recommendation directional, not a rule.
 - Cite ONLY the exact [S#] ids listed in "Available sources" below — never \
-invent a new id, never cite one not listed. If you make a substantive claim, \
-back it with a citation from that list.
-- Do not invent any number, percentage, or metric that isn't already present \
-in the evidence below.
-- Use Slack mrkdwn: *single asterisks* for bold (never **double asterisks**), \
-no markdown tables, no essay-length answers, 2-5 bullets typically.
-- For a strategic/recommendation question, structure the answer as: "My \
-read: ..." then 2-4 bullets covering what I'd do / why / what to avoid / \
-next action, then "Sources: [S#], [S#]", then one short natural follow-up \
-question.
-- For a feedback-on-a-specific-video question, structure as: "Diagnosis: \
-..." then bullets covering what worked/didn't, which signals it matched, \
-what to change next time, and confidence level, then sources.
-- For an ideas question, give 3-5 ideas max, each numbered exactly like \
-"*1. Title*" followed by its hook / format / product-ICP / why-it-maps-to-\
-the-evidence (this exact numbering is required so a later "expand #2" keeps \
-working), then ask if they want one expanded.
-- If the user's message is a follow-up ("why?", "expand #N", "make it for \
-X", "what would you do if you were me?", "what are you least sure about?", \
-etc.), resolve "that" / "this" / "#N" using the thread context below and \
-answer conversationally in the same voice — don't re-explain the whole \
-prior answer from scratch.
+invent one, never cite one not listed. Cite the 1-3 STRONGEST sources that \
+actually support the answer — do not cite every source available. Prefer, \
+in this order: a Great-performing internal video example, Signal Library / \
+Marketing Learnings, Product/ICP Learnings, latest_learnings.md, guidelines \
+(only when directly relevant).
+- Do not invent any number, percentage, or metric not already in the \
+evidence below.
+- Under ~1500 characters unless the user explicitly asked for depth/detail.
+- No markdown tables. Use Slack mrkdwn: *single asterisks* for bold (never \
+**double asterisks**).
+- At most 5 bullets and at most 5 cited sources, {concise_limit}
+- One short natural follow-up question at the end, unless the shape above \
+already ends with one ("Next move: ...").
 
 Available sources (cite ONLY these ids):
 {source_list}
@@ -220,12 +361,21 @@ User's message: {question}
 
 Write only the reply text, no commentary about these instructions."""
 
+_CONCISE_DIRECTIVE = (
+    "and the user explicitly asked for brevity — give AT MOST 2 learning/idea "
+    "bullets (not 3+), skip long explanation, but the 'What I'd do next' / "
+    "'Next move' section still always needs exactly one concrete action — "
+    "cut a learning bullet before you ever cut that action."
+)
+_NORMAL_LIMIT = "whichever is fewer."
+
 
 def compose_strategic_answer(user_text: str, conversation_context: list | None,
                              retrieved_context: dict) -> str | None:
     """Compose a strategist-voice answer from an already-built context pack.
     Returns None (caller uses the deterministic fallback) when disabled, on
-    any failure, or when the output fails citation/number/causal validation."""
+    any failure, or when the output fails citation/number/causal/backend-
+    language/table validation."""
     import config
     if not (config.SLACK_STRATEGIST_MODE_ENABLED and config.GEMINI_API_KEY):
         return None
@@ -235,11 +385,14 @@ def compose_strategic_answer(user_text: str, conversation_context: list | None,
         return None
     sources = (retrieved_context or {}).get("sources", {}) or {}
     thread_summary = (retrieved_context or {}).get("thread_summary", "") or "(none)"
+    brand_context = (retrieved_context or {}).get("brand_context", "") or "(none)"
+    concise = bool((retrieved_context or {}).get("concise"))
     source_list = "\n".join(f"[{sid}] {desc}" for sid, desc in sources.items()) or "(none)"
 
     prompt = _PROMPT_TEMPLATE.format(
-        source_list=source_list, evidence=evidence,
+        brand_context=brand_context, source_list=source_list, evidence=evidence,
         thread_summary=thread_summary, question=user_text,
+        concise_limit=_CONCISE_DIRECTIVE if concise else _NORMAL_LIMIT,
     )
 
     try:
@@ -264,5 +417,14 @@ def compose_strategic_answer(user_text: str, conversation_context: list | None,
     if _has_causal_language(answer):
         log.warning("strategist answer used causal language; using deterministic fallback.")
         return None
+    if _has_backend_language(answer):
+        log.warning("strategist answer leaked backend/implementation language; using deterministic fallback.")
+        return None
+    if _has_markdown_table(answer):
+        log.warning("strategist answer used a markdown table; using deterministic fallback.")
+        return None
 
+    answer = _cap_bullets(answer, 3 if concise else 5)
+    answer = _fix_empty_next_action(answer)
+    answer = _cap_sources_line(answer, 5)
     return _append_sources_if_missing(answer, sources)
