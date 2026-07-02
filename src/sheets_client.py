@@ -153,6 +153,24 @@ class SheetsClient:
         return not SheetsClient.is_processed(row)
 
     @staticmethod
+    def should_tag(row: dict, reprocess: bool = False) -> bool:
+        """Eligibility for the `analyze-all` tagging mode.
+
+        Requires only that LINK is set. PERFORMANCE is NOT required — rows
+        with blank / Non classified / Reference / External / Inspiration
+        performance are still tagged with the 9-layer taxonomy. Whether they
+        later count as evidence for correlations is handled by
+        `performance.buckets_for_rows` (which filters by valid performance
+        AND by `is_reference_row`) — never by the tagger.
+        """
+        link = str(row.get("LINK", "")).strip()
+        if not link:
+            return False
+        if reprocess:
+            return True
+        return not SheetsClient.is_processed(row)
+
+    @staticmethod
     def is_analyzed(row: dict) -> bool:
         """True if the row carries real (1) taxonomy tags — used to select rows
         for correlations (narrower than is_processed)."""

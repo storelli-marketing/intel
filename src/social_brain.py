@@ -35,6 +35,9 @@ _HELP = (
     "• *feedback <link>* — how a specific reel performed and what to do next\n"
     "• *learnings* — current winning + weak patterns and what to scale/avoid\n"
     "• *tests* — next creative tests to run\n"
+    "\n"
+    "_I can only read. To analyze new videos, use the dashboard button "
+    "*Analyze All Untagged Videos* to tag the full Sheet._\n"
 )
 
 # --- routing ---------------------------------------------------------------

@@ -90,16 +90,40 @@ skipped (no performance) · analyzed · needs_review · failed.
 ## Commands
 
 ```bash
-python src/main.py analyze        # analyze eligible rows, write taxonomy tags
-python src/main.py correlations   # print signal/performance findings
-python src/main.py synthesize     # write data/latest_learnings.md (no API calls)
-python src/main.py notion-sync    # upsert synthesized learnings into Notion Brain
-python src/main.py slack-report   # post a run summary to Slack
-python src/main.py run-all        # analyze -> correlations -> synthesize -> notion -> slack
+python src/main.py analyze         # performance-safe learning run (requires PERFORMANCE)
+python src/main.py analyze-all     # taxonomy-tag every LINK, PERFORMANCE not required
+python src/main.py correlations    # print signal/performance findings
+python src/main.py synthesize      # write data/latest_learnings.md (no API calls)
+python src/main.py notion-sync     # upsert synthesized learnings into Notion Brain
+python src/main.py slack-report    # post a run summary to Slack
+python src/main.py run-all         # analyze -> correlations -> synthesize -> notion -> slack
 python src/main.py run-all --reprocess   # re-tag rows (overwrite existing)
 python src/main.py analyze --limit 5     # test mode: at most 5 rows
+python src/main.py analyze-all --limit 18 --no-qa   # tag 18 fresh rows, 1 Gemini call/row
+python src/main.py analyze-all --limit 150 --no-qa  # tag up to 150 fresh rows
 python src/main.py reset-incomplete      # re-queue processed-but-untagged rows
 ```
+
+### `analyze` vs. `analyze-all`
+
+Two tagging modes share the same Gemini video pipeline and the same write
+guardrails (no human-column overwrites, no filled-cell overwrites unless
+`--reprocess`, 429 stops cleanly, failed downloads mark only the row).
+
+- **`analyze`** — the performance-safe learning run. A row is eligible only
+  when LINK is set, PERFORMANCE is set (or auto-computable), and the row
+  isn't already analyzed. Rows with `Non classified` are hard-skipped. Every
+  row it tags is a candidate for correlations. **This mode's behavior is
+  unchanged.**
+- **`analyze-all`** — the full-sheet tagging mode. Every row with a LINK is
+  eligible, regardless of PERFORMANCE. Blank / Non classified / Reference /
+  External / Inspiration rows all get the 9-layer taxonomy. These rows still
+  **do not** enter correlations — the correlation engine filters by valid
+  Storelli performance and by `Source Type` (see below) at the bucket layer,
+  not at the tagging layer. Use it to build up a rich signal library across
+  the whole sheet before / independently of performance labeling.
+
+`--limit N`, `--reprocess`, and `--no-qa` behave the same across both.
 
 ### Learning Synthesizer (`synthesize`)
 

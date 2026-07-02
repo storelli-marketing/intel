@@ -70,7 +70,12 @@ Open the Railway URL, paste `RUN_SECRET`, then:
 4. **Send Slack Report** → Slack receives the update.
 5. **Upload Guidelines** — paste text, pick a type, Save → appears in the list.
 6. **Run Social Media Learning, limit 5 only** → analyzes ≤5 rows (or stops
-   cleanly on a Gemini 429). **Do not run 150 yet.**
+   cleanly on a Gemini 429). **Do not run 150 yet.** *Performance-safe
+   learning run — requires PERFORMANCE on each row.*
+6b. **Analyze All Untagged Videos, limit 5** → tags ≤5 rows regardless of
+   PERFORMANCE. Rows without valid Storelli performance still stay out of
+   correlations. Use this to build up the taxonomy signal library over the
+   full sheet, independently of performance labeling.
 7. **Slack ideas mode** — in a channel where the bot is invited, mention it:
    `@storelli-brain ideas for parents on BodyShield`. It should reply
    in-thread with 3–5 ideas that carry a `Sources: [S1], [S2]` line each and

@@ -215,6 +215,128 @@ def cmd_analyze(reprocess: bool, limit: int | None = None,
 
 
 # ---------------------------------------------------------------------------
+# analyze-all (full-sheet taxonomy tagging, PERFORMANCE not required)
+# ---------------------------------------------------------------------------
+def cmd_analyze_all(reprocess: bool, limit: int | None = None,
+                    qa_enabled: bool = True) -> dict:
+    """Tag every row that has a LINK, regardless of PERFORMANCE.
+
+    Same Gemini video path, same guardrails, same write policy as `analyze` —
+    but PERFORMANCE is *not* required. Blank / Non classified / Reference /
+    External / Inspiration rows all get taxonomy tags. They still do not
+    enter correlations, because `performance.buckets_for_rows()` filters by
+    valid performance AND excludes explicit reference rows.
+    """
+    from analyzer import analyze_and_compile
+    from gemini_client import GeminiClient, QuotaExhaustedError, VideoDownloadError
+
+    sheets = SheetsClient()
+    sheets.validate_columns()
+
+    rows = sheets.read_rows()
+    eligible = [r for r in rows if SheetsClient.should_tag(r, reprocess)]
+
+    skipped_no_link = sum(1 for r in rows if not str(r.get("LINK", "")).strip())
+    skipped_already = 0
+    if not reprocess:
+        skipped_already = sum(
+            1 for r in rows
+            if str(r.get("LINK", "")).strip() and SheetsClient.is_processed(r)
+        )
+
+    targets = eligible
+    if limit is not None and limit >= 0 and len(eligible) > limit:
+        log.info("Limiting analyze-all to %d of %d eligible row(s)", limit, len(eligible))
+        targets = eligible[:limit]
+
+    stats = {
+        "scanned": len(rows),
+        "eligible": len(eligible),
+        "skipped_no_link": skipped_no_link,
+        "skipped_already_analyzed": skipped_already,
+        "analyzed": 0,
+        "needs_review": 0,
+        "failed": 0,
+        "quota_stopped": False,
+    }
+
+    gemini = GeminiClient() if targets else None
+
+    for r in targets:
+        link = str(r.get("LINK", "")).strip()
+        row_idx = r["_row"]
+
+        # Compute a PERFORMANCE value if one can be determined (either the
+        # existing human value or an auto-computed one from views/followers).
+        # Unlike `analyze`, we do NOT skip the row when it can't be
+        # determined — tagging proceeds either way.
+        perf_label, perf_write = _determine_performance(r, reprocess)
+
+        log.info("Tagging row %d (PERFORMANCE=%s): %s",
+                 row_idx, perf_label or "n/a", link)
+        try:
+            cols = analyze_and_compile(
+                gemini, link,
+                product=str(r.get("Product", "")),
+                icp=str(r.get("ICP", "")),
+                notes=str(r.get("Storytelling structure", "")),
+                qa_enabled=qa_enabled,
+            )
+            skip_layers = [layer for layer in _GATED_LAYERS
+                           if cols.get(f"conf_{layer}") == "low"]
+            product_low = cols.get("conf_product") == "low"
+            needs_review = bool(skip_layers) or product_low
+
+            write_values = _drop_layers(cols, skip_layers)
+            sheets.write_row(
+                row_idx, existing_row=r, signal_values=write_values, reprocess=reprocess,
+                icp_fill=_valid_icp(cols.get("icp_suggested", "")),
+                product_fill="" if product_low else str(cols.get("product_suggested", "")).strip(),
+                status_value="needs_review" if needs_review else "completed",
+                performance_value=perf_write,
+            )
+            if perf_label:
+                r["PERFORMANCE"] = perf_label
+            r.update(write_values)
+            if needs_review:
+                stats["needs_review"] += 1
+                log.info("Row %d flagged needs_review (low confidence: %s)",
+                         row_idx, ", ".join(skip_layers + (["product"] if product_low else [])))
+            else:
+                stats["analyzed"] += 1
+        except QuotaExhaustedError as e:
+            # Quota/rate limit — stop cleanly; leave current row unprocessed
+            # so it stays eligible next run.
+            log.error("Gemini quota exhausted at row %d — stopping run. %s", row_idx, e)
+            stats["quota_stopped"] = True
+            break
+        except VideoDownloadError as e:
+            log.error("Download failed row %d: %s", row_idx, e)
+            sheets.set_status(row_idx, "failed")
+            stats["failed"] += 1
+        except Exception as e:  # noqa: BLE001
+            log.error("Analysis failed row %d: %s", row_idx, e)
+            sheets.set_status(row_idx, "failed")
+            stats["failed"] += 1
+
+    return stats
+
+
+def print_tagging_summary(stats: dict) -> None:
+    print("\nAnalyze-all completed.\n")
+    print(f"Eligible rows found:        {stats.get('eligible', 0)}")
+    print(f"Skipped (no LINK):          {stats.get('skipped_no_link', 0)}")
+    print(f"Skipped (already analyzed): {stats.get('skipped_already_analyzed', 0)}")
+    print(f"Analyzed:                   {stats.get('analyzed', 0)}")
+    print(f"Needs review:               {stats.get('needs_review', 0)}")
+    print(f"Failed:                     {stats.get('failed', 0)}")
+    if stats.get("quota_stopped"):
+        print("** Run STOPPED early: Gemini quota exhausted (429). "
+              "Remaining rows left unprocessed. **")
+    print(f"(rows scanned: {stats.get('scanned', 0)})")
+
+
+# ---------------------------------------------------------------------------
 # correlations
 # ---------------------------------------------------------------------------
 def compute_findings(sheets: SheetsClient) -> tuple[list[dict], dict, list[dict]]:
@@ -545,8 +667,8 @@ def print_run_summary(stats: dict, results: list[dict], notion_done: bool) -> No
 def main() -> int:
     parser = argparse.ArgumentParser(description="Storelli intelligence MVP")
     parser.add_argument("command",
-                        choices=["analyze", "correlations", "synthesize", "notion-sync",
-                                 "slack-report", "run-all", "reset-incomplete"])
+                        choices=["analyze", "analyze-all", "correlations", "synthesize",
+                                 "notion-sync", "slack-report", "run-all", "reset-incomplete"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -563,6 +685,10 @@ def main() -> int:
             stats = cmd_analyze(args.reprocess, args.limit, qa_enabled)
             results = cmd_correlations(print_summary=False)
             print_run_summary(stats, results, notion_done=False)
+
+        elif args.command == "analyze-all":
+            stats = cmd_analyze_all(args.reprocess, args.limit, qa_enabled)
+            print_tagging_summary(stats)
 
         elif args.command == "correlations":
             cmd_correlations()

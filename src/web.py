@@ -165,6 +165,21 @@ def _do_social(limit: Optional[int], qa: bool) -> None:
         _fail(str(e))
 
 
+def _do_analyze_all(limit: Optional[int], qa: bool) -> None:
+    """Full-sheet taxonomy tagging. Tags every LINK regardless of PERFORMANCE.
+    Does NOT run correlations, synthesize, Notion, or Slack automatically —
+    those stay behind the existing 'Run Social Media Learning' path."""
+    from main import cmd_analyze_all
+    try:
+        _begin("analyze-all", limit=limit, qa=qa)
+        stats = cmd_analyze_all(reprocess=False, limit=limit, qa_enabled=qa)
+        with _LOCK:
+            STATE["stats"] = stats
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
 def _do_notion_sync() -> None:
     try:
         _begin("notion-sync")
@@ -311,6 +326,15 @@ def run_social(req: SocialReq, background: BackgroundTasks,
     limit = _parse_limit(req.limit)
     qa = bool(req.qa)
     return _guarded(lambda: _do_social(limit, qa), background) | {"limit": limit, "qa": qa}
+
+
+@app.post("/run/analyze-all", status_code=202)
+def run_analyze_all(req: SocialReq, background: BackgroundTasks,
+                    x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    limit = _parse_limit(req.limit)
+    qa = bool(req.qa)
+    return _guarded(lambda: _do_analyze_all(limit, qa), background) | {"limit": limit, "qa": qa}
 
 
 @app.post("/run/correlations", status_code=202)
@@ -559,11 +583,15 @@ _HTML = """<!doctype html>
       </div>
     </div>
     <button class="btn-primary" id="btnSocial" onclick="run('social')">⚡ Run Social Media Learning</button>
+    <button class="btn-secondary" id="btnTagAll" onclick="run('analyze-all')"
+            style="width:100%;height:52px;margin-top:12px">Analyze All Untagged Videos</button>
     <div class="btn-row">
       <button class="btn-secondary" id="btnCorr" onclick="run('correlations')">Run Correlations</button>
       <button class="btn-secondary" id="btnSyn" onclick="run('synthesize')">Generate Learnings</button>
     </div>
-    <div class="hint">QA off = 1 Gemini call/row (stretches free-tier quota). Already-analyzed rows are always skipped.</div>
+    <div class="hint">QA off = 1 Gemini call/row (stretches free-tier quota). Already-analyzed rows are always skipped.
+      <br><b>Run Social Media Learning</b> = performance-safe learning run (requires PERFORMANCE).
+      <b>Analyze All Untagged Videos</b> = taxonomy tags every LINK, no PERFORMANCE required; those rows still stay out of correlations.</div>
   </section>
 
   <!-- 3: Run Status -->
@@ -639,9 +667,9 @@ async function poll(){
     const j = await (await fetch('/status')).json();
     const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
     const busy = (j.status==='queued'||j.status==='running');
-    ['btnSocial','btnCorr','btnSyn','btnNotion','btnSlack'].forEach(b=>$(b).disabled=busy);
+    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack'].forEach(b=>$(b).disabled=busy);
     const s=j.stats||{};
-    const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0);
+    const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0)+(s.skipped_no_link||0);
     $('s_scanned').textContent = s.scanned ?? '–';
     $('s_analyzed').textContent= s.analyzed ?? '–';
     $('s_skipped').textContent = (s.scanned!=null)?skipped:'–';
@@ -680,10 +708,12 @@ async function loadLearnings(){
 async function run(action){
   showErr('');
   const secret=$('secret').value;
-  const paths = {social:'/run/social', correlations:'/run/correlations', synthesize:'/run/synthesize',
+  const paths = {social:'/run/social', 'analyze-all':'/run/analyze-all',
+                 correlations:'/run/correlations', synthesize:'/run/synthesize',
                  'notion-sync':'/run/notion-sync', 'slack-report':'/run/slack-report'};
   const path = paths[action];
-  const body = action==='social' ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';
+  const body = (action==='social' || action==='analyze-all')
+    ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';
   try{
     const r = await fetch(path, {method:'POST',
       headers:{'X-Run-Secret':secret,'Content-Type':'application/json'}, body});
