@@ -21,8 +21,8 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -304,6 +304,68 @@ def run_slack_report(background: BackgroundTasks,
                      x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     return _guarded(_do_slack, background)
+
+
+# ---- Slack chat (app_mention → in-thread reply) ----------------------------
+def _handle_slack_mention(channel: str, thread_ts: str, user_text: str) -> None:
+    """Background worker: build a grounded answer and post it back in-thread.
+    Read/synthesize only — never writes to the Sheet."""
+    import slack_bot
+    import social_brain
+    try:
+        clean = slack_bot.strip_mention(user_text)
+        answer = social_brain.answer_question(clean)
+        slack_bot.post_message(channel, answer, thread_ts=thread_ts)
+    except Exception as e:  # noqa: BLE001 - Slack never sees a stack trace
+        log.exception("slack mention handling failed: %s", e)
+        try:
+            slack_bot.post_message(channel,
+                                   f"Sorry — I hit an error handling that. ({type(e).__name__})",
+                                   thread_ts=thread_ts)
+        except Exception:  # noqa: BLE001
+            log.exception("slack error-reply also failed")
+
+
+@app.post("/slack/events")
+async def slack_events(request: Request, background: BackgroundTasks):
+    import json as _json
+
+    import slack_bot
+
+    if not (config.SLACK_BOT_TOKEN and config.SLACK_SIGNING_SECRET):
+        raise HTTPException(503, "Slack bot not configured (SLACK_BOT_TOKEN / SLACK_SIGNING_SECRET)")
+
+    raw = await request.body()
+    ts = request.headers.get("x-slack-request-timestamp", "")
+    sig = request.headers.get("x-slack-signature", "")
+    if not slack_bot.verify_request(raw, ts, sig):
+        raise HTTPException(401, "invalid slack signature")
+
+    try:
+        payload = _json.loads(raw.decode("utf-8") or "{}")
+    except ValueError:
+        raise HTTPException(400, "invalid json")
+
+    if payload.get("type") == "url_verification":
+        return PlainTextResponse(payload.get("challenge", ""))
+
+    if slack_bot.is_retry(request.headers):
+        return {"ok": True, "skipped": "retry"}
+
+    if payload.get("type") == "event_callback":
+        event = payload.get("event") or {}
+        etype = event.get("type")
+        # Ignore any message the bot itself (or another bot) authored.
+        if event.get("bot_id") or event.get("subtype") == "bot_message":
+            return {"ok": True, "skipped": "bot"}
+        if etype == "app_mention":
+            channel = event.get("channel", "")
+            thread_ts = event.get("thread_ts") or event.get("ts") or ""
+            user_text = event.get("text", "") or ""
+            if channel:
+                background.add_task(_handle_slack_mention, channel, thread_ts, user_text)
+            return {"ok": True}
+    return {"ok": True}
 
 
 # ---- guidelines (operator-uploaded brand/content guidelines) ---------------

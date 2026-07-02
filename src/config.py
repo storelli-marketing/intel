@@ -71,6 +71,12 @@ RUN_SECRET = os.getenv("RUN_SECRET", "").strip()
 # `python src/main.py slack-report` works.
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "").strip()
 
+# Slack bot (optional). When both are set, /slack/events accepts app_mention
+# events from a Slack app and the Marketing Brain replies in-thread. Missing
+# values must not crash startup — /slack/events returns 503 cleanly instead.
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "").strip()
+SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "").strip()
+
 # Public dashboard URL, shown in the Slack report (optional).
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "").strip()
 
@@ -99,3 +105,8 @@ def require_gemini() -> None:
 def require_notion() -> None:
     _require("NOTION_API_KEY")
     _require("NOTION_PARENT_PAGE_ID")
+
+
+def require_slack_bot() -> None:
+    _require("SLACK_BOT_TOKEN")
+    _require("SLACK_SIGNING_SECRET")

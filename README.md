@@ -243,6 +243,35 @@ videos needed."*; above it, each test includes Product, ICP and a concrete
 Execution line. The dashboard also auto-posts after a successful social run when
 the webhook is set.
 
+### Slack chat (interactive Marketing Brain)
+
+An optional Slack app turns the brain into a **chat interface**: mention the
+bot in any channel and it replies in-thread. It's read/synthesize only — never
+writes to the Sheet, never triggers video analysis. Backed by
+`data/latest_learnings.md`, the analyzed Sheet, and `data/guidelines/*.md`.
+
+Four modes (deterministic routing on the message text):
+
+| Ask… | You get |
+|---|---|
+| `ideas` / *what should we post* | 3–5 grounded Storelli video ideas (title, hook, format, product/ICP, why, confidence) |
+| `feedback <IG link>` | Sheet lookup: performance bucket, Product, ICP, signals, diagnosis, next recommendation |
+| `learnings` / *what's working* | Top winning + weak signals, what to scale, what to avoid, thin-data warning |
+| `tests` / *what should we test* | 3 next creative tests from the synthesizer |
+
+Every substantive reply carries **inline sources** — `[S1] Sheet rows: …`,
+`[S2] data/latest_learnings.md`, `[S3] guidelines: …` — and only cites what was
+actually retrieved. Language is always associational ("associated with"),
+never causal. If the Sheet isn't reachable, the bot says so cleanly; if
+learnings haven't been generated yet, it points you to *Generate Learnings*.
+
+Setup: create a Slack app, add bot scope `chat:write`, subscribe to
+`app_mention`, and point the Request URL at
+`https://<host>/slack/events`. Set `SLACK_BOT_TOKEN` (`xoxb-…`) and
+`SLACK_SIGNING_SECRET` — see `DEPLOY.md` §4 for the exact steps.
+`SLACK_WEBHOOK_URL` remains optional and independent (it powers the outbound
+run report above).
+
 ## Upload Guidelines
 
 The dashboard's **Upload Guidelines** section lets the operator paste

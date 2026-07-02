@@ -31,10 +31,36 @@ The app is a single FastAPI service (`web:app`). No database. Deploys from
 | `NOTION_API_KEY` | no | integration token (Notion Brain) |
 | `NOTION_PARENT_PAGE_ID` | no | the **page** URL/id (auto-sanitized to a UUID) |
 | `NOTION_DASHBOARD_URL` | no | page URL for the "Open Notion" button |
-| `SLACK_WEBHOOK_URL` | no | incoming webhook (Slack report) |
+| `SLACK_WEBHOOK_URL` | no | incoming webhook (outbound Slack run report) |
+| `SLACK_BOT_TOKEN` | no | Slack bot token (interactive brain — see §4) |
+| `SLACK_SIGNING_SECRET` | no | Slack signing secret (interactive brain — see §4) |
 | `DASHBOARD_URL` | no | the Railway URL (shown in the Slack footer) |
 
-## 3. Post-deploy smoke test
+## 4. Slack chat app (interactive Marketing Brain)
+
+The interactive brain (mention the bot in a channel → it replies in-thread with
+ideas / feedback / learnings / next tests) is optional and completely separate
+from `SLACK_WEBHOOK_URL` (which stays as the outbound run-report path).
+
+1. https://api.slack.com/apps → **Create New App** → *From scratch*.
+2. **OAuth & Permissions** → *Bot Token Scopes* → add `chat:write`. Install the
+   app to the workspace and copy the **Bot User OAuth Token** (starts with `xoxb-`).
+3. **Basic Information** → copy the **Signing Secret**.
+4. **Event Subscriptions** → *Enable Events* → Request URL:
+   `https://<railway-url>/slack/events` (must return the challenge on save).
+   Under *Subscribe to bot events*, add `app_mention`. Save.
+5. In Railway → Variables, set:
+   - `SLACK_BOT_TOKEN` = the `xoxb-...` token
+   - `SLACK_SIGNING_SECRET` = the signing secret
+6. Invite the bot to a channel (`/invite @<bot>`) and mention it:
+   `@storelli-brain ideas` / `feedback https://...` / `learnings` / `tests`.
+
+The bot never writes to the Sheet or triggers video analysis — it reads the
+existing Sheet + `latest_learnings.md` + `data/guidelines/` and replies in the
+same thread. `/slack/events` returns **503** cleanly when the two Slack env
+vars are missing; existing dashboard endpoints are unaffected.
+
+## 5. Post-deploy smoke test
 
 Open the Railway URL, paste `RUN_SECRET`, then:
 
