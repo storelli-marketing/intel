@@ -194,14 +194,19 @@ def _deterministic_backend_answer(map_data: dict) -> str:
     return "\n".join(lines)
 
 
-def answer_backend_question(user_text: str, conversation_context: list | None = None) -> str:
+def answer_backend_question(user_text: str, conversation_context: list | None = None,
+                            progress_cb=None) -> str:
     """Answer a backend/architecture question. Uses Gemini (validated) when
     Dev Brain mode + Gemini are both configured; otherwise (or on any
     validation failure) falls back to a deterministic answer built directly
-    from data/backend_context.md + data/backend_map.json."""
+    from data/backend_context.md + data/backend_map.json. progress_cb(str),
+    if given, is called with short public stage names — never private
+    chain-of-thought — right before each real phase of work."""
     import config
 
     context = conversation_context or []
+    if progress_cb:
+        progress_cb("backend_context")
     map_data = _load_backend_map()
 
     if not (config.SLACK_DEV_MODE_ENABLED and config.GEMINI_API_KEY):
@@ -218,6 +223,9 @@ def answer_backend_question(user_text: str, conversation_context: list | None = 
         map_summary=_render_map_summary(map_data),
         thread_summary=thread_summary, question=user_text,
     )
+
+    if progress_cb:
+        progress_cb("writing")
 
     try:
         from gemini_client import GeminiClient
@@ -362,17 +370,20 @@ def _deterministic_build_request(user_text: str, context: list) -> BuildRequest:
 
 
 def create_build_request(user_text: str, conversation_context: list | None = None,
-                         requesting_user_id: str = "") -> BuildRequest | None:
+                         requesting_user_id: str = "", progress_cb=None) -> BuildRequest | None:
     """Returns None when the requesting Slack user isn't in
     config.SLACK_DEV_ALLOWED_USER_IDS — caller shows the unauthorized message.
     Never writes anywhere itself; see deliver_build_request for the (also
-    gated, also optional) GitHub handoff."""
+    gated, also optional) GitHub handoff. progress_cb(str), if given,
+    surfaces short public stage names to the Slack progress indicator."""
     import config
 
     if not _is_authorized(requesting_user_id):
         return None
 
     context = conversation_context or []
+    if progress_cb:
+        progress_cb("backend_context")
     map_data = _load_backend_map()
 
     if not (config.SLACK_DEV_MODE_ENABLED and config.GEMINI_API_KEY):
@@ -389,6 +400,9 @@ def create_build_request(user_text: str, conversation_context: list | None = Non
         map_summary=_render_map_summary(map_data),
         thread_summary=thread_summary, question=user_text,
     )
+
+    if progress_cb:
+        progress_cb("writing")
 
     try:
         from gemini_client import GeminiClient
@@ -484,15 +498,16 @@ def deliver_build_request(br: BuildRequest) -> str:
 
 # --- public: top-level entrypoint -----------------------------------------------
 def handle(user_text: str, conversation_context: list | None = None,
-          requesting_user_id: str = "") -> str:
+          requesting_user_id: str = "", progress_cb=None) -> str:
     """Top-level Dev Brain entrypoint used by web.py. Backend Q&A is
     read-only and open to any Slack user; the build-request handoff is
     gated to config.SLACK_DEV_ALLOWED_USER_IDS (empty by default = no one
-    authorized)."""
+    authorized). progress_cb(str), if given, surfaces short public stage
+    names to the Slack progress indicator."""
     context = conversation_context or []
     if wants_build_request(user_text):
-        br = create_build_request(user_text, context, requesting_user_id)
+        br = create_build_request(user_text, context, requesting_user_id, progress_cb=progress_cb)
         if br is None:
             return _UNAUTHORIZED_MSG
         return deliver_build_request(br)
-    return answer_backend_question(user_text, context)
+    return answer_backend_question(user_text, context, progress_cb=progress_cb)

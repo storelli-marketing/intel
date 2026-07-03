@@ -21,12 +21,204 @@ to fall back to.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from logger import get_logger
 
 log = get_logger()
 
 _CAUSAL_WORDS = ("causes", "caused by", "causing", "leads to", "results in", "because of the")
+
+
+# --- normalized proof-link sources ------------------------------------------
+@dataclass
+class Source:
+    """One piece of evidence, normalized for clean Slack citation regardless
+    of where it came from (a Notion Signal Library row, a Sheet video example,
+    a guideline file, ...). best_url() implements the priority order: a
+    direct video/post URL, else a Notion page URL, else a fallback, else
+    title-only (no fake links, ever)."""
+    source_id: str
+    display_title: str
+    source_type: str = "learning"  # video|learning|signal|test|product_learning|icp_learning|guideline|backend_file
+    source_url: str = ""
+    notion_page_url: str = ""
+    fallback_url: str = ""
+    product: str = ""
+    icp: str = ""
+    confidence: str = ""
+    short_evidence_summary: str = ""
+
+    def best_url(self) -> str:
+        return self.source_url or self.notion_page_url or self.fallback_url or ""
+
+    def render(self) -> str:
+        """Slack mrkdwn: '[S1] <url|title>' when a URL exists, else '[S1] title'
+        — never a fake link."""
+        title = (self.display_title or self.source_id)[:120]
+        url = self.best_url()
+        return f"[{self.source_id}] <{url}|{title}>" if url else f"[{self.source_id}] {title}"
+
+    def debug_line(self) -> str:
+        why = ("has a direct source URL" if self.source_url else
+              "no direct URL — used the Notion page link" if self.notion_page_url else
+              "no URL available — cited by title only")
+        return (f"• {self.source_id} — {self.display_title}\n"
+                f"   type: {self.source_type} | chosen URL: {self.best_url() or '(none)'} | "
+                f"Notion page: {self.notion_page_url or '(none)'}\n"
+                f"   why: {why}")
+
+
+# Notion property names (priority order) that would hold a direct video/post
+# URL if a database schema ever adds one — none of the 6 Marketing Brain
+# databases currently do (see notion_brain.py's SCHEMAS), so today this only
+# ever matches Sheet-sourced citations (which already embed the real IG link)
+# or a future schema change; kept explicit so it Just Works if one is added.
+_DIRECT_URL_PROPS = ("url", "source url", "video url", "link", "ig link",
+                    "instagram url", "post url", "creative url", "posted url")
+
+_TYPE_MAP = {
+    "sheet_row": "video", "generated social ideas": "video",
+    "learnings": "learning", "guideline": "guideline",
+    "signal library": "signal", "marketing learnings": "learning",
+    "next creative tests": "test", "product learnings": "product_learning",
+    "icp learnings": "icp_learning",
+}
+
+
+def _classify_source_type(desc: str) -> str:
+    d = desc.lower()
+    for key, t in _TYPE_MAP.items():
+        if key in d:
+            return t
+    return "learning"
+
+
+_SLACK_LINK_RE = re.compile(r"<(https?://[^|>]+)\|([^>]+)>")
+
+
+def _extract_slack_link(desc: str) -> tuple:
+    """Recognize our OWN Slack mrkdwn '<url|label>' link syntax (what
+    render_proof_section itself produces) so re-parsing a previous
+    strategist answer on a later turn — e.g. for 'why?' or 'source debug' —
+    round-trips cleanly instead of mangling the url/title via the generic
+    URL regex, which doesn't know '|label>' isn't part of the URL."""
+    m = _SLACK_LINK_RE.search(desc)
+    return (m.group(1), m.group(2).strip()) if m else ("", "")
+
+
+def _extract_url(desc: str) -> str:
+    m = re.search(r"https?://\S+", desc)
+    return m.group(0).rstrip(").,]") if m else ""
+
+
+def _clean_title(desc: str) -> str:
+    """Strip the URL and a leading bracketed type tag (e.g. '[sheet_row]')
+    from a raw citation description, leaving a clean human title. A plain
+    .strip() of bracket characters alone would only trim the outer edges and
+    leave a stray ']' behind once the URL in front of it is gone — this
+    removes the whole tag as a unit first."""
+    title = re.sub(r"https?://\S+", "", desc)
+    title = re.sub(r"^\s*\[\w+\]\s*", "", title)
+    return title.strip(" —-()[],") or desc
+
+
+def normalize_sources(sources: dict) -> list:
+    """Turn the {id: description} map (parsed from already-rendered,
+    already-cited evidence text — see _parse_sources) into structured Source
+    objects. A description with an embedded Instagram/Sheet link becomes a
+    direct source_url; one with an embedded notion.com link becomes a
+    notion_page_url instead — priority order 1 (direct) then 3 (Notion page)
+    from a single parse, since that's what the underlying evidence actually
+    carries today (see _DIRECT_URL_PROPS docstring above)."""
+    out = []
+    for sid, desc in sources.items():
+        slack_url, slack_title = _extract_slack_link(desc)
+        if slack_url:
+            url, title = slack_url, slack_title
+        else:
+            url, title = _extract_url(desc), _clean_title(desc)
+        is_notion_page = "notion.com" in url
+        out.append(Source(
+            source_id=sid,
+            display_title=title[:120],
+            source_type=_classify_source_type(desc),
+            source_url="" if is_notion_page else url,
+            notion_page_url=url if is_notion_page else "",
+            short_evidence_summary=desc[:200],
+        ))
+    return out
+
+
+def select_strongest_sources(sources: list, want_more: bool = False) -> list:
+    """Cite the 1-3 strongest by default (5 if the user asked for more) —
+    "strongest" meaning most useful as proof: a direct video/post link first,
+    then a Notion page link, then title-only. Stable otherwise (preserves the
+    order sources were first cited in)."""
+    limit = 5 if want_more else 3
+    ranked = sorted(enumerate(sources),
+                    key=lambda p: (0 if p[1].source_url else 1 if p[1].notion_page_url else 2, p[0]))
+    return [s for _, s in ranked[:limit]]
+
+
+def render_proof_section(sources: list) -> str:
+    if not sources:
+        return ""
+    return "Proof:\n" + "\n".join(f"- {s.render()}" for s in sources)
+
+
+_MORE_SOURCES_KW = ("more sources", "all sources", "show more sources", "more proof", "top 5")
+
+
+def _wants_more_sources(text: str) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in _MORE_SOURCES_KW)
+
+
+def _strip_existing_sources_line(text: str) -> str:
+    """Remove whatever trailing citation line the model rendered (any style)
+    — the caller replaces it with a deterministically-built Proof: block with
+    real, verified links, so the model's own rendering of it is discarded
+    rather than left duplicated alongside the real one."""
+    text = re.sub(r"\n*_Sources:_.*", "", text)
+    text = re.sub(r"\n*Sources:\s*\[S\d+\](?:\s*[,·]\s*\[S\d+\])*\s*$", "", text)
+    return text.rstrip()
+
+
+def _restrict_inline_citations(text: str, allowed_ids: set) -> str:
+    """Keep only the ids in allowed_ids within each inline 'Proof: [Sx], [Sy]'
+    marker, dropping the marker entirely if none of its ids survive. Without
+    this, capping the trailing Proof: block to the top 1-3/5 sources could
+    leave an inline citation (e.g. "Proof: [S4]") with no matching entry at
+    the bottom — a dangling reference the user can't resolve."""
+    def _filter(m: re.Match) -> str:
+        kept = [i for i in re.findall(r"\[S\d+\]", m.group(0))
+               if i.strip("[]") in allowed_ids]
+        return "Proof: " + ", ".join(kept) if kept else ""
+
+    return re.sub(r"Proof:\s*\[S\d+\](?:\s*,\s*\[S\d+\])*", _filter, text)
+
+
+def render_source_debug(user_text: str, conversation_context: list | None) -> str:
+    """'source debug' / 'show me the sources you used' — raw normalized
+    source detail (id, title, chosen URL, Notion page URL, why selected) for
+    whatever was actually cited in the PREVIOUS answer. Deliberately does NOT
+    go through build_context_pack/_resolve_topic_and_evidence — that machinery
+    re-derives fresh evidence for a (possibly different) topic when asked a
+    phrase it doesn't recognize as a specific follow-up, which would debug the
+    wrong thing entirely. This reads directly off the prior message instead.
+    Operator debugging only; normal answers never show this level of detail."""
+    context = conversation_context or []
+    last_assistant = next((m["text"] for m in reversed(context) if m.get("role") == "assistant"), "")
+    if not last_assistant:
+        return "I don't have a previous answer to debug sources from yet."
+    sources = _parse_sources(last_assistant)
+    if not sources:
+        return "I didn't cite any sources in my last message to debug."
+    norm = normalize_sources(sources)
+    lines = ["*Source debug* (for operators — not shown in normal answers):"]
+    lines.extend(s.debug_line() for s in norm)
+    return "\n".join(lines)
 
 
 # --- evidence resolution: reuse the existing deterministic modes -----------
@@ -61,6 +253,12 @@ def _parse_sources(text: str) -> dict:
     NEXT [S#] token (not a greedy till-separator match) as its description —
     a single greedy regex would swallow "[S2]" into "[S1]"'s capture on a
     comma-joined "Sources: [S1], [S2]" line, silently losing S2 as a valid id.
+
+    A given id can appear more than once — once as a bare inline "Proof: [Sx]"
+    citation (no description, right before a newline) and again in the
+    trailing Proof:/Sources: block with the real title/link. Keeps whichever
+    occurrence has the longest (most substantive) description rather than the
+    first one found, so a bare inline mention never shadows the real one.
     """
     out: dict[str, str] = {}
     tokens = list(re.finditer(r"\[S(\d+)\]", text))
@@ -68,7 +266,10 @@ def _parse_sources(text: str) -> dict:
         sid = f"S{m.group(1)}"
         end = tokens[i + 1].start() if i + 1 < len(tokens) else len(text)
         desc = re.split(r"[·\n]", text[m.end():end])[0].strip(" ,:-—")
-        out.setdefault(sid, desc or sid)
+        if desc and len(desc) > len(out.get(sid, "")):
+            out[sid] = desc
+        else:
+            out.setdefault(sid, sid)
     for m in re.finditer(r"^\s*S(\d+)\s+(.+)$", text, re.MULTILINE):
         out.setdefault(f"S{m.group(1)}", m.group(2).strip())
     return out
@@ -133,12 +334,18 @@ def _wants_concise(text: str) -> bool:
     return any(k in t for k in _CONCISE_KW)
 
 
-def build_context_pack(user_text: str, conversation_context: list | None = None) -> dict:
+def build_context_pack(user_text: str, conversation_context: list | None = None,
+                       progress_cb=None) -> dict:
     """Compact context pack: the user's question, a short thread summary, the
     already-retrieved (and already-cited) evidence for the resolved topic, the
     canonical source id->description map used for citation validation, the
-    Storelli brand/strategy context, and whether the user asked for brevity."""
+    Storelli brand/strategy context, and whether the user asked for brevity.
+    progress_cb(str), if given, is called with a short public stage name
+    before the retrieval work — never private chain-of-thought."""
     import content_context
+
+    if progress_cb:
+        progress_cb("notion")
 
     context = conversation_context or []
     evidence, sources, mode = _resolve_topic_and_evidence(user_text, context)
@@ -197,34 +404,14 @@ def _has_markdown_table(text: str) -> bool:
     return bool(re.search(r"^\s*\|.+\|.+\|", text, re.MULTILINE))
 
 
-def _append_sources_if_missing(text: str, sources: dict) -> str:
-    """Requirement: if the LLM drops all citations for what's otherwise a
-    substantive, evidence-backed answer, append the source list manually
-    rather than silently letting an uncited claim stand."""
-    if re.search(r"\[S\d+\]", text) or not sources:
-        return text
-    top = list(sources.items())[:3]
-    return text.rstrip() + "\n\nSources: " + ", ".join(f"[{sid}]" for sid, _ in top)
-
-
-def _cap_sources_line(text: str, max_sources: int = 5) -> str:
-    """Never show more than max_sources ids in a Sources line, even if more
-    were legitimately cited inline — keeps the tail of the answer scannable."""
-    def _cap(m: re.Match) -> str:
-        ids = re.findall(r"\[S\d+\]", m.group(0))
-        if len(ids) <= max_sources:
-            return m.group(0)
-        prefix = re.match(r"^(?:_Sources:_|Sources:)\s*", m.group(0)).group(0)
-        return prefix + ", ".join(ids[:max_sources])
-
-    return re.sub(r"(?:_Sources:_|Sources:)\s*\[S\d+\](?:\s*[,·]\s*\[S\d+\])*", _cap, text)
-
-
 def _fix_empty_next_action(text: str) -> str:
     """Safety net: the prompt requires 'What I'd do next:' / 'Next move:' to
     always carry at least one action, but if a header ever slips through
     empty (e.g. the bullet budget left nothing for it), drop the bare header
-    line rather than showing a blank section."""
+    line rather than showing a blank section. The action itself may be a
+    bullet OR a plain sentence (the contract's own example shows a plain
+    one-line action, no bullet marker) — any non-blank next line counts as
+    content; only truly nothing following the header counts as empty."""
     lines = text.splitlines()
     out, i = [], 0
     while i < len(lines):
@@ -233,13 +420,37 @@ def _fix_empty_next_action(text: str) -> str:
             j = i + 1
             while j < len(lines) and lines[j].strip() == "":
                 j += 1
-            has_bullet = j < len(lines) and re.match(r"^\s*(?:[-•]|\d+\.)\s", lines[j])
-            if not has_bullet:
+            has_content = (j < len(lines) and lines[j].strip() != "" and
+                          not lines[j].strip().startswith(("Confidence:", "Sources:", "Proof:")))
+            if not has_content:
                 i += 1
                 continue
         out.append(line)
         i += 1
     return "\n".join(out)
+
+
+def _ensure_next_action_header(text: str) -> str:
+    """Safety net: the prompt requires the literal 'What I'd do next:' header
+    on its own line before the action, but if the model skips straight to an
+    unlabeled action paragraph anyway, insert the header rather than leaving
+    an orphaned line between the learnings and Confidence."""
+    if re.search(r"(?:What I'd do next|Next move):", text):
+        return text  # header already present somewhere
+    lines = text.splitlines()
+    conf_idx = next((i for i, l in enumerate(lines) if l.strip().startswith("Confidence:")), None)
+    if conf_idx is None:
+        return text
+    j = conf_idx - 1
+    while j >= 0 and lines[j].strip() == "":
+        j -= 1
+    if j < 0:
+        return text
+    candidate = lines[j].strip()
+    if not candidate or re.match(r"^\d+\.\s|^My read:", candidate, re.IGNORECASE):
+        return text  # nothing to label, or it's a learning bullet / opener, not a lone action
+    lines[j] = "What I'd do next:\n" + lines[j]
+    return "\n".join(lines)
 
 
 def _cap_bullets(text: str, max_bullets: int) -> str:
@@ -290,26 +501,26 @@ For "biggest learnings" / "what's working" / "summarize" / general strategy \
 questions, use exactly this shape:
 My read: [one clear sentence]
 
-Biggest learnings:
-1. [Learning] — [why it matters for Storelli]. Source: [Sx]
-2. [Learning] — [why it matters for Storelli]. Source: [Sy]
-3. [Learning] — [why it matters for Storelli]. Source: [Sz]
+1. [Learning] — because [specific evidence]. Proof: [Sx]
+2. [Learning] — because [specific evidence]. Proof: [Sy]
+3. [Learning] — because [specific evidence]. Proof: [Sz]
 
 What I'd do next:
-- [action]
-- [action]
+[one concrete next action]
 
 Confidence: [Strong / Medium / Directional / Thin data] — [short reason]
 
-"What I'd do next" must NEVER be left empty or header-only — if the bullet \
-budget is tight, cut a learning before you cut the next action; there must \
-always be at least one concrete action listed.
+The literal line "What I'd do next:" must always appear on its own line \
+immediately before the action, even in concise mode — never skip straight \
+to the action text without it. It must NEVER be left empty or header-only \
+either — if the bullet budget is tight, cut a learning before you cut the \
+next action; there must always be at least one concrete action listed under it.
 
 For an ideas question, use exactly this shape:
 My read: [strategy in one sentence]
 Ideas:
-1. [Title] — Hook: ... Format: ... Why (ONE short sentence): ... Source: [Sx]
-2. [Title] — Hook: ... Format: ... Why (ONE short sentence): ... Source: [Sy]
+1. [Title] — Hook: ... Format: ... Why (ONE short sentence): ... Proof: [Sx]
+2. [Title] — Hook: ... Format: ... Why (ONE short sentence): ... Proof: [Sy]
 (3 ideas normally, up to 5 only if the user asked for more — numbered \
 exactly like "1. Title" so a later "expand #2" keeps working; keep each \
 idea to 2-3 lines total, this is a Slack message, not a brief)
@@ -322,7 +533,6 @@ What worked / didn't:
 What I'd change:
 - ...
 Confidence: [Strong / Medium / Directional / Thin data]
-Sources: [Sx]
 
 For any other follow-up ("why?", "expand #N", "make it for X", "what would \
 you do if you were me?", "what are you least sure about?", "show me \
@@ -335,16 +545,20 @@ Hard limits on every answer:
 with" / "correlated with".
 - Cite ONLY the exact [S#] ids listed in "Available sources" below — never \
 invent one, never cite one not listed. Cite the 1-3 STRONGEST sources that \
-actually support the answer — do not cite every source available. Prefer, \
-in this order: a Great-performing internal video example, Signal Library / \
-Marketing Learnings, Product/ICP Learnings, latest_learnings.md, guidelines \
-(only when directly relevant).
+actually support the answer inline as "Proof: [Sx]" next to the claim it \
+backs — do not cite every source available. Prefer, in this order: a \
+Great-performing internal video example, Signal Library / Marketing \
+Learnings, Product/ICP Learnings, latest_learnings.md, guidelines (only \
+when directly relevant).
+- Do NOT write a trailing "Sources:" or "Proof:" list at the end of your \
+answer — the system appends a verified, clickable proof-links block \
+automatically after your inline "Proof: [Sx]" citations. Only cite inline.
 - Do not invent any number, percentage, or metric not already in the \
 evidence below.
 - Under ~1500 characters unless the user explicitly asked for depth/detail.
 - No markdown tables. Use Slack mrkdwn: *single asterisks* for bold (never \
 **double asterisks**).
-- At most 5 bullets and at most 5 cited sources, {concise_limit}
+- At most 5 bullets, {concise_limit}
 - One short natural follow-up question at the end, unless the shape above \
 already ends with one ("Next move: ...").
 
@@ -363,19 +577,22 @@ Write only the reply text, no commentary about these instructions."""
 
 _CONCISE_DIRECTIVE = (
     "and the user explicitly asked for brevity — give AT MOST 2 learning/idea "
-    "bullets (not 3+), skip long explanation, but the 'What I'd do next' / "
-    "'Next move' section still always needs exactly one concrete action — "
-    "cut a learning bullet before you ever cut that action."
+    "bullets (not 3+), EACH bullet ONE short sentence (not two or three), "
+    "target well under 800 characters total, skip long explanation, but the "
+    "'What I'd do next' / 'Next move' section still always needs exactly one "
+    "concrete action — cut a learning bullet before you ever cut that action."
 )
 _NORMAL_LIMIT = "whichever is fewer."
 
 
 def compose_strategic_answer(user_text: str, conversation_context: list | None,
-                             retrieved_context: dict) -> str | None:
+                             retrieved_context: dict, progress_cb=None) -> str | None:
     """Compose a strategist-voice answer from an already-built context pack.
     Returns None (caller uses the deterministic fallback) when disabled, on
     any failure, or when the output fails citation/number/causal/backend-
-    language/table validation."""
+    language/table validation. progress_cb(str), if given, is called with
+    short public stage names ("evidence", "writing") — never private
+    chain-of-thought — right before each real phase of work."""
     import config
     if not (config.SLACK_STRATEGIST_MODE_ENABLED and config.GEMINI_API_KEY):
         return None
@@ -389,11 +606,17 @@ def compose_strategic_answer(user_text: str, conversation_context: list | None,
     concise = bool((retrieved_context or {}).get("concise"))
     source_list = "\n".join(f"[{sid}] {desc}" for sid, desc in sources.items()) or "(none)"
 
+    if progress_cb:
+        progress_cb("evidence")
+
     prompt = _PROMPT_TEMPLATE.format(
         brand_context=brand_context, source_list=source_list, evidence=evidence,
         thread_summary=thread_summary, question=user_text,
         concise_limit=_CONCISE_DIRECTIVE if concise else _NORMAL_LIMIT,
     )
+
+    if progress_cb:
+        progress_cb("writing")
 
     try:
         from gemini_client import GeminiClient
@@ -425,6 +648,27 @@ def compose_strategic_answer(user_text: str, conversation_context: list | None,
         return None
 
     answer = _cap_bullets(answer, 3 if concise else 5)
+    answer = _ensure_next_action_header(answer)
     answer = _fix_empty_next_action(answer)
-    answer = _cap_sources_line(answer, 5)
-    return _append_sources_if_missing(answer, sources)
+
+    # Deterministically rebuild the trailing citation block as verified,
+    # clickable proof links — whatever the model wrote for citations stays
+    # only as inline "Proof: [Sx]" markers; the actual link/label text is
+    # never left to the model, so it can never be a fake link. If the model
+    # dropped all inline citations for what's otherwise a substantive,
+    # evidence-backed answer, still show the strongest known sources rather
+    # than leaving the claim uncited.
+    cited_ids = {f"S{n}" for n in re.findall(r"\[S(\d+)\]", answer)}
+    answer = _strip_existing_sources_line(answer)
+    if sources:
+        all_norm = normalize_sources(sources)
+        cited_norm = [s for s in all_norm if s.source_id in cited_ids]
+        chosen = select_strongest_sources(cited_norm or all_norm, _wants_more_sources(user_text))
+        chosen_ids = {s.source_id for s in chosen}
+        # Keep inline "Proof: [Sx]" markers in sync with what's actually
+        # resolved below — no dangling citation to a source that got cut.
+        answer = _restrict_inline_citations(answer, chosen_ids)
+        proof = render_proof_section(chosen)
+        if proof:
+            answer = answer.rstrip() + "\n\n" + proof
+    return answer

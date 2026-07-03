@@ -425,6 +425,39 @@ bullets / 5 cited sources (3 bullets when the user says "concise" / "short" /
 targeted trim that preserves the closing sources/confidence lines rather
 than a hard truncation.
 
+**Proof links, not a source-id dump.** Every citation is resolved into a
+normalized `Source` (`social_strategist.Source`) before it's shown, with a
+strict link priority: a direct video/post URL (Notion property or a
+Sheet-sourced IG link) first, else the Notion page URL, else no link at all
+(title-only — never a fake one). The final answer shows only the **1-3
+strongest** proof links by default (5 if you explicitly ask for "more
+sources" / "all sources"), rendered as real Slack `<url|label>` links:
+```
+Proof:
+- [S1] <https://...|Notion: Signal Library — Prevention>
+- [S2] <https://...|Notion: Product Learnings — BodyShield>
+```
+This block is rebuilt deterministically after the model answers — inline
+`Proof: [Sx]` citations in the model's own text are trimmed to match exactly
+what's resolved at the bottom, so there's never a dangling citation with no
+matching link. Ask **"show me the sources you used"** / **"source debug"**
+for the raw view instead (id, title, chosen URL, Notion page URL, why it was
+selected) — operator debugging only, never shown in normal answers.
+
+**Slack progress UI.** While an answer is being composed, the bot shows
+short, PUBLIC status stages in-thread — never private chain-of-thought, just
+what's actually happening: "🧠 Thinking… reading Storelli context" → "🔎
+Checking Notion Brain" → "🧩 Choosing strongest evidence" → "✍️ Writing
+concise recommendation" → replaced by the final answer. `src/slack_bot.py`'s
+`ProgressReporter` prefers Slack's native `assistant.threads.setStatus`
+(needs the `assistant:write` scope — this app's default scopes don't include
+it, so it probes once and silently falls back) to posting one message and
+editing it in place (`chat.postMessage` + `chat.update`), so a duplicate
+"thinking" message is never left behind — the same message becomes the
+answer. If something fails mid-answer, that message is updated with *"I hit
+an error while answering. The backend is alive, but ..."* instead of
+disappearing silently.
+
 **Optional plain LLM polish** (`config.SLACK_LLM_POLISH_ENABLED`, default
 **off**, only used when strategist mode is off): a simpler, older mode where
 Gemini just rewords the deterministic answer verbatim rather than composing

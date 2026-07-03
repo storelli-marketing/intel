@@ -731,6 +731,7 @@ _EXPAND_RE = re.compile(r"\bexpand\b", re.IGNORECASE)
 _NUMBER_RE = re.compile(r"#\s*(\d+)|\b(\d+)\b")
 _SHOW_SOURCES_KW = ("show me sources", "show sources", "what source", "what sources",
                     "cite your sources", "sources?")
+_SOURCE_DEBUG_KW = ("source debug", "sources you used", "debug sources")
 _BRIEF_KW = ("content brief", "into a brief", "make it a brief")
 _SHORTER_KW = ("shorter", "make it shorter", "tighten", "condense", "trim it")
 _MORE_KW = ("more", "5 more", "few more", "another one", "give me more")
@@ -745,6 +746,8 @@ _FOLLOWUP_NUDGE = "\n\n_Want me to turn this into content briefs, or go deeper o
 
 def _classify_followup(text: str) -> str:
     t = text.lower().strip()
+    if _has_any(t, _SOURCE_DEBUG_KW):
+        return "source_debug"
     if _has_any(t, _SHOW_SOURCES_KW):
         return "sources"
     if _EXPAND_RE.search(t):
@@ -1013,6 +1016,8 @@ def _deterministic_conversation_answer(text: str, context: list, last_assistant:
     if not last_assistant:
         return answer_question(text)
     follow_up = _classify_followup(text)
+    if follow_up == "source_debug":
+        return social_strategist.render_source_debug(text, context)
     if follow_up == "sources":
         return _followup_sources(last_assistant)
     if follow_up == "expand":
@@ -1036,7 +1041,7 @@ def _deterministic_conversation_answer(text: str, context: list, last_assistant:
 
 # --- public: conversational entrypoint --------------------------------------
 def answer_conversation(user_text: str, conversation_context: Optional[list[dict]] = None,
-                        channel_context: Optional[dict] = None) -> str:
+                        channel_context: Optional[dict] = None, progress_cb=None) -> str:
     """Thread-aware, multi-turn variant of answer_question().
 
     conversation_context: chronological (oldest-first) list of
@@ -1052,8 +1057,12 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     the LLM output and falls through to the proven deterministic engine
     (expand/sources/shorter/brief/risky — no new retrieval, so nothing is
     invented — or a fresh re-run of the matching grounded mode).
-    channel_context is reserved for future per-channel metadata and is
-    currently unused.
+
+    progress_cb(str), if given, is called with short PUBLIC stage names
+    ("notion", "evidence", "writing") right before each real phase of work —
+    never private chain-of-thought, just what a Slack progress indicator
+    shows the user is happening. channel_context is reserved for future
+    per-channel metadata and is currently unused.
     """
     text = (user_text or "").strip()
     if not text:
@@ -1062,10 +1071,17 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     context = conversation_context or []
     last_assistant = next((m["text"] for m in reversed(context) if m.get("role") == "assistant"), "")
 
+    # "source debug" / "show me the sources you used" is a deterministic,
+    # mechanical reflection of what was actually cited — never routed through
+    # Gemini (nothing to compose; it's for operators, not the strategist voice).
+    if last_assistant and _classify_followup(text) == "source_debug":
+        return social_strategist.render_source_debug(text, context)
+
     try:
         if config.SLACK_STRATEGIST_MODE_ENABLED and config.GEMINI_API_KEY:
-            pack = social_strategist.build_context_pack(text, context)
-            strategic = social_strategist.compose_strategic_answer(text, context, pack)
+            pack = social_strategist.build_context_pack(text, context, progress_cb=progress_cb)
+            strategic = social_strategist.compose_strategic_answer(text, context, pack,
+                                                                    progress_cb=progress_cb)
             if strategic:
                 return _finish_conversational(strategic, text, skip_polish=True)
 

@@ -94,6 +94,16 @@ a missing scope degrades to single-turn answers rather than failing.
 `/slack/events` returns **503** cleanly when `SLACK_BOT_TOKEN` /
 `SLACK_SIGNING_SECRET` are missing; existing dashboard endpoints are unaffected.
 
+While composing an answer, the bot shows short public progress stages in the
+thread (not private chain-of-thought — see README "Slack progress UI"). It
+tries Slack's native `assistant.threads.setStatus` first (needs the
+`assistant:write` scope; add it + reinstall if you want the native loading
+indicator instead of an edited message) and silently falls back to posting
+one message and editing it in place otherwise — no extra config needed
+either way, and no duplicate "thinking" message is ever left behind. Final
+answers cite only the 1-3 strongest sources as real clickable links
+(`Proof: [S1] <url|label>`), never a raw source-id dump.
+
 ## 5. Post-deploy smoke test
 
 Open the Railway URL, paste `RUN_SECRET`, then:

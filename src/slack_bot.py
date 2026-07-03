@@ -180,3 +180,98 @@ def post_message(channel: str, text: str, thread_ts: str | None = None) -> dict:
     if not data.get("ok"):
         log.warning("slack chat.postMessage not ok: %s", data.get("error"))
     return data
+
+
+def update_message(channel: str, ts: str, text: str) -> bool:
+    """chat.update — replace an existing message's text in place. Used to
+    turn a "thinking..." progress message into the final answer without
+    ever leaving a duplicate message behind. Best-effort: returns False (never
+    raises) on any failure so a progress-UI glitch can't break the real answer."""
+    if not (config.SLACK_BOT_TOKEN and channel and ts):
+        return False
+    try:
+        resp = httpx.post(f"{_SLACK_API}/chat.update",
+                          headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}",
+                                  "Content-Type": "application/json; charset=utf-8"},
+                          json={"channel": channel, "ts": ts, "text": text}, timeout=15)
+        data = resp.json()
+        if not data.get("ok"):
+            log.warning("slack chat.update not ok: %s", data.get("error"))
+        return bool(data.get("ok"))
+    except Exception as e:  # noqa: BLE001 - progress UI is best-effort, never fatal
+        log.warning("slack_bot: update_message failed: %s", e)
+        return False
+
+
+def set_assistant_status(channel: str, thread_ts: str, status: str) -> bool:
+    """Best-effort: Slack's assistant.threads.setStatus — the native
+    "thinking..." indicator for AI apps, needing the assistant:write scope.
+    An empty status clears it. Returns False on any failure/missing scope
+    (this app's default scopes don't include it) so the caller falls back to
+    the message-update approach instead."""
+    if not (config.SLACK_BOT_TOKEN and channel and thread_ts):
+        return False
+    try:
+        resp = httpx.post(f"{_SLACK_API}/assistant.threads.setStatus",
+                          headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}",
+                                  "Content-Type": "application/json; charset=utf-8"},
+                          json={"channel_id": channel, "thread_ts": thread_ts, "status": status},
+                          timeout=10)
+        data = resp.json()
+        if not data.get("ok"):
+            log.info("slack_bot: assistant.threads.setStatus unavailable (%s); "
+                     "using message-update progress fallback.", data.get("error"))
+        return bool(data.get("ok"))
+    except Exception as e:  # noqa: BLE001 - progress UI is best-effort, never fatal
+        log.info("slack_bot: assistant.threads.setStatus unavailable (%s); "
+                 "using message-update progress fallback.", e)
+        return False
+
+
+class ProgressReporter:
+    """Shows the user visible, public progress stages while an answer is
+    being composed — short status summaries only ("checking Notion Brain"),
+    never private chain-of-thought. Prefers Slack's native
+    assistant.threads.setStatus (probed once, on the first call); falls back
+    to posting one message and editing it in place (chat.postMessage +
+    chat.update) so no duplicate "thinking" messages are ever left behind.
+    Entirely best-effort — any Slack API hiccup here degrades silently
+    without affecting whether the real answer gets posted."""
+
+    def __init__(self, channel: str, thread_ts: str):
+        self.channel = channel
+        self.thread_ts = thread_ts
+        self._mode: str | None = None  # "assistant" | "message" | None
+        self._msg_ts: str | None = None
+
+    def start(self, text: str) -> None:
+        if set_assistant_status(self.channel, self.thread_ts, text):
+            self._mode = "assistant"
+            return
+        self._mode = "message"
+        try:
+            data = post_message(self.channel, text, thread_ts=self.thread_ts)
+            if data.get("ok"):
+                self._msg_ts = data.get("ts")
+        except Exception as e:  # noqa: BLE001 - progress UI is best-effort, never fatal
+            log.warning("slack_bot: ProgressReporter.start failed to post: %s", e)
+
+    def update(self, text: str) -> None:
+        if self._mode == "assistant":
+            set_assistant_status(self.channel, self.thread_ts, text)
+        elif self._mode == "message" and self._msg_ts:
+            update_message(self.channel, self._msg_ts, text)
+        # mode is None (start() never got a message posted either) -> skip;
+        # the final answer in finish()/fail() still gets posted as normal.
+
+    def finish(self, final_text: str) -> None:
+        if self._mode == "assistant":
+            set_assistant_status(self.channel, self.thread_ts, "")
+            post_message(self.channel, final_text, thread_ts=self.thread_ts)
+        elif self._mode == "message" and self._msg_ts:
+            update_message(self.channel, self._msg_ts, final_text)
+        else:
+            post_message(self.channel, final_text, thread_ts=self.thread_ts)
+
+    def fail(self, short_reason: str) -> None:
+        self.finish(f"I hit an error while answering. The backend is alive, but {short_reason}.")

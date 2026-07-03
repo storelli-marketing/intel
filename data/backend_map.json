@@ -263,9 +263,13 @@
         "verify_request",
         "is_retry",
         "strip_mention",
-        "post_message"
+        "post_message",
+        "update_message",
+        "set_assistant_status"
       ],
-      "classes": []
+      "classes": [
+        "ProgressReporter"
+      ]
     },
     "src/slack_report.py": {
       "functions": [
@@ -334,6 +338,17 @@
     },
     "src/social_strategist.py": {
       "functions": [
+        "_classify_source_type",
+        "_extract_slack_link",
+        "_extract_url",
+        "_clean_title",
+        "normalize_sources",
+        "select_strongest_sources",
+        "render_proof_section",
+        "_wants_more_sources",
+        "_strip_existing_sources_line",
+        "_restrict_inline_citations",
+        "render_source_debug",
         "_run_mode",
         "_parse_sources",
         "_resolve_topic_and_evidence",
@@ -344,13 +359,14 @@
         "_numbers_grounded",
         "_has_backend_language",
         "_has_markdown_table",
-        "_append_sources_if_missing",
-        "_cap_sources_line",
         "_fix_empty_next_action",
+        "_ensure_next_action_header",
         "_cap_bullets",
         "compose_strategic_answer"
       ],
-      "classes": []
+      "classes": [
+        "Source"
+      ]
     },
     "src/synthesizer.py": {
       "functions": [

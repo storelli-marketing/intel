@@ -379,6 +379,20 @@ def run_generate_social_ideas(background: BackgroundTasks,
 # scopes), then falls back to the lightweight in-memory per-thread cache in
 # slack_bot.py. Either way, read/synthesize only — never writes to the Sheet
 # or Notion, never triggers video analysis.
+#
+# Progress UI: shows short, PUBLIC status stages while the real answer is
+# composed — never private chain-of-thought. Uses slack_bot.ProgressReporter,
+# which prefers Slack's native assistant.threads.setStatus and falls back to
+# posting one message and editing it in place, so no duplicate "thinking"
+# messages are ever left behind.
+_STAGE_TEXT = {
+    "notion": "🔎 Checking Notion Brain",
+    "backend_context": "🔎 Checking backend context",
+    "evidence": "🧩 Choosing strongest evidence",
+    "writing": "✍️ Writing concise recommendation",
+}
+
+
 def _converse(channel: str, thread_ts: str, user_text: str, user_id: str = "") -> None:
     """Shared background worker for app_mention, DMs, and active-thread
     replies: build a grounded, thread-aware answer and post it back.
@@ -391,24 +405,30 @@ def _converse(channel: str, thread_ts: str, user_text: str, user_id: str = "") -
     import dev_brain
     import slack_bot
     import social_brain
+    progress = slack_bot.ProgressReporter(channel, thread_ts)
     try:
+        progress.start("🧠 Thinking… reading Storelli context")
         clean = slack_bot.strip_mention(user_text)
         context = slack_bot.fetch_thread_context(channel, thread_ts)
         if context is None:
             context = slack_bot.cached_context(channel, thread_ts)
+
+        def on_stage(stage: str) -> None:
+            text = _STAGE_TEXT.get(stage)
+            if text:
+                progress.update(text)
+
         if dev_brain.is_dev_question(clean):
-            answer = dev_brain.handle(clean, context, requesting_user_id=user_id)
+            answer = dev_brain.handle(clean, context, requesting_user_id=user_id, progress_cb=on_stage)
         else:
-            answer = social_brain.answer_conversation(clean, context)
+            answer = social_brain.answer_conversation(clean, context, progress_cb=on_stage)
         slack_bot.remember(channel, thread_ts, "user", clean)
         slack_bot.remember(channel, thread_ts, "assistant", answer)
-        slack_bot.post_message(channel, answer, thread_ts=thread_ts or None)
+        progress.finish(answer)
     except Exception as e:  # noqa: BLE001 - Slack never sees a stack trace
         log.exception("slack conversation handling failed: %s", e)
         try:
-            slack_bot.post_message(channel,
-                                   f"Sorry — I hit an error handling that. ({type(e).__name__})",
-                                   thread_ts=thread_ts or None)
+            progress.fail(str(type(e).__name__))
         except Exception:  # noqa: BLE001
             log.exception("slack error-reply also failed")
 

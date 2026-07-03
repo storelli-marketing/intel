@@ -31,6 +31,17 @@ posted via `slack_bot.post_message`. This path never writes to the Sheet,
 never writes to Notion (except an explicitly-configured build-request
 handoff — see below), and never triggers video analysis.
 
+**Slack progress UI**: while an answer is being composed, `_converse`
+(`src/web.py`) shows short PUBLIC status stages via
+`slack_bot.ProgressReporter` — never private chain-of-thought, just what's
+literally happening ("checking Notion Brain", "choosing strongest
+evidence", "writing concise recommendation"). It prefers Slack's native
+`assistant.threads.setStatus` (needs the `assistant:write` scope, which this
+app's default scopes don't include) and falls back to posting one message
+and editing it in place (`chat.postMessage` + `chat.update`) so no duplicate
+"thinking" message is ever left behind — the same message becomes the final
+answer.
+
 **Notion retrieval path**: `src/notion_retrieval.py` connects with
 `NOTION_API_KEY` / `NOTION_PARENT_PAGE_ID`, finds the 6 Marketing Brain
 databases by title under the parent page, queries rows, and normalizes them
@@ -44,7 +55,13 @@ queries anything itself), plus `data/storelli_context.md` brand grounding,
 and asks Gemini to compose a strategist-voice judgment from it — validated
 afterward (citations must exist in the evidence pack, no invented numbers,
 no causal language, no leaked backend language, no markdown tables) and
-discarded in favor of the deterministic answer on any failure.
+discarded in favor of the deterministic answer on any failure. Citations are
+resolved into normalized `Source` objects (`social_strategist.Source`) with a
+priority order for the link shown — a direct video/post URL from Notion
+properties or a Sheet-sourced IG link, else the Notion page URL, else title
+only, never a fake link — and the final answer shows only the 1-3 strongest
+proof links (5 if the user asks for more), each a real, clickable Slack
+`<url|label>` link, never a raw source ID dump.
 
 **Analysis pipeline path** (CLI only, never Slack): `python src/main.py
 analyze` / `analyze-all` → `src/sheets_client.py` reads eligible rows →
