@@ -103,7 +103,8 @@ def is_dev_question(text: str) -> bool:
     return any(re.search(rf"\b{re.escape(w)}\b", t) for w in _DEV_WORD_KW)
 
 
-_PUSH_TO_CODE_KW = ("push to code", "create build request", "tell claude code", "build request")
+_PUSH_TO_CODE_KW = ("push to code", "create build request", "tell claude code", "build request",
+                    "build this", "ship this", "implement this")
 
 
 def wants_build_request(text: str) -> bool:
@@ -497,17 +498,25 @@ def deliver_build_request(br: BuildRequest) -> str:
 
 
 # --- public: top-level entrypoint -----------------------------------------------
+_CANT_PUSH_PREFIX = "I can't push code from Slack, but here's the implementation I'd recommend for Claude Code:\n\n"
+
+
 def handle(user_text: str, conversation_context: list | None = None,
           requesting_user_id: str = "", progress_cb=None) -> str:
-    """Top-level Dev Brain entrypoint used by web.py. Backend Q&A is
-    read-only and open to any Slack user; the build-request handoff is
-    gated to config.SLACK_DEV_ALLOWED_USER_IDS (empty by default = no one
-    authorized). progress_cb(str), if given, surfaces short public stage
-    names to the Slack progress indicator."""
+    """Top-level Dev Brain entrypoint used by web.py. Read-only, open to any
+    Slack user — "push to code" / "build this" / "ship this" never creates or
+    delivers anything (no GitHub issue, no dispatch, no gated permission
+    check); it answers with the same grounded implementation-plan engine as
+    "how would you build X", framed as a recommendation for a human to hand
+    to Claude Code themselves. requesting_user_id is accepted for interface
+    stability but no longer used to gate anything here — there is nothing
+    left to authorize once this path only ever returns advisory text.
+    (create_build_request/BuildRequest/deliver_build_request below are kept
+    as library code for a possible future explicitly-authorized flow, but are
+    no longer reachable from the live Slack path.) progress_cb(str), if
+    given, surfaces short public stage names to the Slack progress indicator."""
     context = conversation_context or []
+    answer = answer_backend_question(user_text, context, progress_cb=progress_cb)
     if wants_build_request(user_text):
-        br = create_build_request(user_text, context, requesting_user_id, progress_cb=progress_cb)
-        if br is None:
-            return _UNAUTHORIZED_MSG
-        return deliver_build_request(br)
-    return answer_backend_question(user_text, context, progress_cb=progress_cb)
+        return _CANT_PUSH_PREFIX + answer
+    return answer

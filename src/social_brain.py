@@ -66,10 +66,17 @@ _IDEAS_KW = ("idea", "ideas", "give me ideas", "what should we post",
 _FEEDBACK_KW = ("feedback", "analyze this", "why did this perform",
                 "how did this do", "review this")
 _LEARNINGS_KW = ("learning", "learnings", "what is working", "what's working",
-                 "winning pattern", "winning patterns", "what works")
+                 "winning pattern", "winning patterns", "what works",
+                 "have we learned", "what have we learned",
+                 "show sources", "show me sources", "sources for", "what sources")
 _AVOID_KW = ("avoid", "should we avoid", "what to avoid", "de-prioritize",
              "stop doing")
-_EXAMPLES_KW = ("example", "examples", "show me", "show examples")
+# Deliberately does NOT include a bare "show me" — a combined message like
+# "...biggest learnings... show me the sources u used" would otherwise match
+# here before the learnings check ever runs, mis-routing a Notion-first
+# learnings question to the Sheet-only examples mode (which has no Notion/
+# latest_learnings.md fallback at all). Requires the word "example(s)".
+_EXAMPLES_KW = ("example", "examples", "show examples", "show me example")
 _TESTS_KW = ("test", "tests", "what should we test", "next test", "creative test")
 _SIGNAL_HINT_KW = ("work", "works", "avoid", "should")
 _ABOUT_KW = ("learn about", "learnings about", "learned about", "tell me about",

@@ -433,7 +433,7 @@ Sheet-sourced IG link) first, else the Notion page URL, else no link at all
 strongest** proof links by default (5 if you explicitly ask for "more
 sources" / "all sources"), rendered as real Slack `<url|label>` links:
 ```
-Proof:
+Sources:
 - [S1] <https://...|Notion: Signal Library — Prevention>
 - [S2] <https://...|Notion: Product Learnings — BodyShield>
 ```

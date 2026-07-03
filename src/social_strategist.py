@@ -164,7 +164,7 @@ def select_strongest_sources(sources: list, want_more: bool = False) -> list:
 def render_proof_section(sources: list) -> str:
     if not sources:
         return ""
-    return "Proof:\n" + "\n".join(f"- {s.render()}" for s in sources)
+    return "Sources:\n" + "\n".join(f"- {s.render()}" for s in sources)
 
 
 _MORE_SOURCES_KW = ("more sources", "all sources", "show more sources", "more proof", "top 5")
@@ -177,11 +177,11 @@ def _wants_more_sources(text: str) -> bool:
 
 def _strip_existing_sources_line(text: str) -> str:
     """Remove whatever trailing citation line the model rendered (any style)
-    — the caller replaces it with a deterministically-built Proof: block with
-    real, verified links, so the model's own rendering of it is discarded
-    rather than left duplicated alongside the real one."""
+    — the caller replaces it with a deterministically-built Sources: block
+    with real, verified links, so the model's own rendering of it is
+    discarded rather than left duplicated alongside the real one."""
     text = re.sub(r"\n*_Sources:_.*", "", text)
-    text = re.sub(r"\n*Sources:\s*\[S\d+\](?:\s*[,·]\s*\[S\d+\])*\s*$", "", text)
+    text = re.sub(r"\n*(?:Sources|Proof):\s*\[S\d+\](?:\s*[,·]\s*\[S\d+\])*\s*$", "", text)
     return text.rstrip()
 
 

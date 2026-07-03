@@ -101,8 +101,8 @@ tries Slack's native `assistant.threads.setStatus` first (needs the
 indicator instead of an edited message) and silently falls back to posting
 one message and editing it in place otherwise — no extra config needed
 either way, and no duplicate "thinking" message is ever left behind. Final
-answers cite only the 1-3 strongest sources as real clickable links
-(`Proof: [S1] <url|label>`), never a raw source-id dump.
+answers cite only the 1-3 strongest sources as real clickable links in a
+trailing `Sources:` block (`[S1] <url|label>`), never a raw source-id dump.
 
 ## 5. Post-deploy smoke test
 
