@@ -18,6 +18,9 @@ Guardrails:
 """
 from __future__ import annotations
 
+import json
+import os
+
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -28,6 +31,33 @@ from logger import get_logger
 log = get_logger()
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+# Rows whose failure is content-side and permanent (reel deleted/private/
+# unavailable at source — e.g. HTTP 400 with valid cookies). They stay marked
+# 'failed' and are NEVER requeued by reset-incomplete, because a retry can
+# never succeed. Keyed by LINK (stable across row shifts). See
+# data/permanent_failures.json.
+_PERMANENT_FAILURES_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "data", "permanent_failures.json")
+
+
+def load_permanent_failure_links() -> set[str]:
+    """Return the set of LINKs classified as permanent content-side failures.
+
+    Fail-soft: a missing/invalid file yields an empty set (no rows excluded).
+    """
+    try:
+        with open(_PERMANENT_FAILURES_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return set()
+    except (OSError, ValueError) as e:
+        log.warning("Could not read permanent-failures list (%s); "
+                    "treating none as permanent.", e)
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    return {str(k).strip() for k in data if str(k).strip()}
 
 # Required metadata columns (row 2, no category in row 1).
 REQUIRED_META = ["LINK", "PERFORMANCE", "Status"]

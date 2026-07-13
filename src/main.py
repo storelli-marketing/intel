@@ -24,7 +24,8 @@ import correlations as corr
 import performance
 import taxonomy
 from logger import get_logger
-from sheets_client import PROCESSED_STATUSES, SheetsClient
+from sheets_client import (PROCESSED_STATUSES, SheetsClient,
+                           load_permanent_failure_links)
 
 log = get_logger()
 
@@ -489,17 +490,40 @@ def cmd_reset_incomplete() -> int:
     sheets = SheetsClient()
     sheets.validate_columns()
     rows = sheets.read_rows()
+
+    # Rows classified as permanent content-side failures (deleted/private/
+    # unavailable reels) are kept 'failed' and never requeued — retrying can
+    # never succeed. See data/permanent_failures.json.
+    permanent = load_permanent_failure_links()
+
+    def _is_incomplete(r: dict) -> bool:
+        return (str(r.get("Status", "")).strip().lower() in PROCESSED_STATUSES
+                and not SheetsClient.is_analyzed(r))
+
     broken = [r["_row"] for r in rows
-              if str(r.get("Status", "")).strip().lower() in PROCESSED_STATUSES
-              and not SheetsClient.is_analyzed(r)]
+              if _is_incomplete(r)
+              and str(r.get("LINK", "")).strip() not in permanent]
+    skipped_permanent = [r["_row"] for r in rows
+                         if _is_incomplete(r)
+                         and str(r.get("LINK", "")).strip() in permanent]
+    if skipped_permanent:
+        log.info("Skipping %d permanent content-side failure(s): %s",
+                 len(skipped_permanent), skipped_permanent)
     if not broken:
-        print("No incomplete rows found (processed but untagged). Nothing to reset.")
+        msg = "No incomplete rows found (processed but untagged). Nothing to reset."
+        if skipped_permanent:
+            msg += (f" ({len(skipped_permanent)} permanent content-side "
+                    f"failure(s) left untouched: rows {skipped_permanent})")
+        print(msg)
         return 0
     sheets.reset_statuses(broken)
     log.info("Reset Status on %d incomplete row(s): %s", len(broken), broken)
     print(f"Reset Status to blank on {len(broken)} incomplete row(s) "
           f"(processed but no taxonomy) — they are eligible again.")
     print(f"Rows: {broken}")
+    if skipped_permanent:
+        print(f"Left {len(skipped_permanent)} permanent content-side failure(s) "
+              f"marked failed (not requeued): rows {skipped_permanent}")
     return 0
 
 
