@@ -54,6 +54,11 @@ class FakeQueueSheets:
         self.ensured = True
         return False
 
+    def ensure_content_columns(self, columns):
+        # In-memory fake stores full dicts, so no header to extend; record intent.
+        self.ensured_columns = list(columns)
+        return []
+
     def read_queued_urls(self):
         return list(self._queued)
 
@@ -79,6 +84,12 @@ def _qrow(row, url, handle="@acct", **extra):
          "MACRO_INDUSTRY": "Sports", "SUBCATEGORY": "Goalkeeper", "STATUS": ""}
     d.update(extra)
     return d
+
+
+def _curated_qrow(row, url):
+    return _qrow(row, url, QUEUE_ID="q42", ADDED_BY="jane@storelli",
+                 REASON_FOR_ADDING="strong hook", TARGET_PRODUCT="ExoShield",
+                 TARGET_ICP="Competitive keeper")
 
 
 def _post(pid, url):
@@ -164,6 +175,46 @@ class TestQueueProcessing(unittest.TestCase):
         scan.process_queue(sheets=sheets, provider=prov)
         self.assertEqual(len(sheets.runs), 1)
         self.assertEqual(sheets.runs[0]["RUN_TYPE"], "Queue")
+
+
+class TestQueueContextPreserved(unittest.TestCase):
+    def test_curation_context_copied_to_content(self):
+        q = [_curated_qrow(2, "https://ig/reel/A/")]
+        prov = FakeQueueProvider({"https://ig/reel/A/": _post("A", "https://ig/reel/A/")})
+        sheets = FakeQueueSheets(q)
+        scan.process_queue(sheets=sheets, provider=prov)
+        self.assertEqual(len(sheets.appended), 1)
+        row = sheets.appended[0]
+        self.assertEqual(row["QUEUE_ID"], "q42")
+        self.assertEqual(row["ADDED_BY"], "jane@storelli")
+        self.assertEqual(row["REASON_FOR_ADDING"], "strong hook")
+        self.assertEqual(row["TARGET_PRODUCT"], "ExoShield")
+        self.assertEqual(row["TARGET_ICP"], "Competitive keeper")
+        # Curation columns were ensured on the content tab.
+        self.assertEqual(sheets.ensured_columns,
+                         ["QUEUE_ID", "ADDED_BY", "REASON_FOR_ADDING",
+                          "TARGET_PRODUCT", "TARGET_ICP"])
+
+    def test_missing_optional_context_does_not_crash(self):
+        # A bare queue row (no QUEUE_ID/ADDED_BY/TARGET_*): must process cleanly
+        # with the curation fields simply blank.
+        q = [_qrow(2, "https://ig/reel/A/")]
+        prov = FakeQueueProvider({"https://ig/reel/A/": _post("A", "https://ig/reel/A/")})
+        sheets = FakeQueueSheets(q)
+        run = scan.process_queue(sheets=sheets, provider=prov)
+        self.assertEqual(run["POSTS_ADDED"], 1)
+        row = sheets.appended[0]
+        for k in ("QUEUE_ID", "ADDED_BY", "REASON_FOR_ADDING",
+                  "TARGET_PRODUCT", "TARGET_ICP"):
+            self.assertEqual(row[k], "")
+        self.assertEqual(row["SOURCE_TYPE"], SOURCE_TYPE_EXTERNAL)
+
+    def test_source_type_still_external_with_context(self):
+        q = [_curated_qrow(2, "https://ig/reel/A/")]
+        prov = FakeQueueProvider({"https://ig/reel/A/": _post("A", "https://ig/reel/A/")})
+        sheets = FakeQueueSheets(q)
+        scan.process_queue(sheets=sheets, provider=prov)
+        self.assertEqual(sheets.appended[0]["SOURCE_TYPE"], SOURCE_TYPE_EXTERNAL)
 
 
 class TestQueueContentCannotContaminateInternal(unittest.TestCase):

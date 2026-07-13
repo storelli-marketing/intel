@@ -43,6 +43,12 @@ QUEUE_HEADERS = [
 # Queue rows eligible for processing (case-insensitive).
 QUEUE_PENDING_STATUSES = {"", "queued"}
 
+# Human curation context carried from a queue row onto its INSPIRATION_CONTENT
+# row (appended to that tab's header if absent). Metadata-only — no analysis.
+CONTENT_CURATION_COLUMNS = [
+    "QUEUE_ID", "ADDED_BY", "REASON_FOR_ADDING", "TARGET_PRODUCT", "TARGET_ICP",
+]
+
 # The one immutable invariant: the SOURCE_TYPE every ingested row carries.
 SOURCE_TYPE_EXTERNAL = "EXTERNAL_INSPIRATION"
 
@@ -171,6 +177,24 @@ class InspirationSheets:
                 if v:
                     keys[k].add(v)
         return keys
+
+    def ensure_content_columns(self, columns: list[str]) -> list[str]:
+        """Append any of `columns` that are not already in the INSPIRATION_CONTENT
+        header, at the end (never reorders/overwrites existing columns). Returns
+        the list of columns actually added. Idempotent."""
+        ws = self._ws(INSPIRATION_CONTENT_TAB)
+        headers = [h.strip() for h in ws.row_values(1)]
+        missing = [c for c in columns if c not in headers]
+        if not missing:
+            return []
+        start = len(headers) + 1
+        needed = len(headers) + len(missing)
+        if ws.col_count < needed:
+            ws.add_cols(needed - ws.col_count)
+        updates = [{"range": gspread.utils.rowcol_to_a1(1, start + i),
+                    "values": [[name]]} for i, name in enumerate(missing)]
+        ws.batch_update(updates)
+        return missing
 
     def append_content_rows(self, row_dicts: list[dict]) -> int:
         """Append fully-formed post dicts to INSPIRATION_CONTENT, aligned to the

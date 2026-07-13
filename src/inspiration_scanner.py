@@ -296,6 +296,13 @@ def post_to_row(channel: dict, post: InspirationPost, *, scraped_at: str) -> dic
     milestones."""
     platform = str(channel.get("PLATFORM", "") or "Instagram").strip()
     return {
+        # Human curation context (blank for the channel-scan path; populated by
+        # the URL queue). Written only where the content tab has these columns.
+        "QUEUE_ID": str(channel.get("QUEUE_ID", "")).strip(),
+        "ADDED_BY": str(channel.get("ADDED_BY", "")).strip(),
+        "REASON_FOR_ADDING": str(channel.get("REASON_FOR_ADDING", "")).strip(),
+        "TARGET_PRODUCT": str(channel.get("TARGET_PRODUCT", "")).strip(),
+        "TARGET_ICP": str(channel.get("TARGET_ICP", "")).strip(),
         "SOURCE_ID": make_source_id(platform, post),
         "CHANNEL_ID": str(channel.get("CHANNEL_ID", "")).strip(),
         "PLATFORM": platform,
@@ -455,11 +462,18 @@ def process_queue(sheets: Optional[InspirationSheets] = None,
     sheets = sheets or InspirationSheets()
     provider = provider or get_provider()
 
-    # Make sure the tab exists so a first run never crashes.
+    # Make sure the tab and curation columns exist so a first run never crashes.
     try:
         sheets.ensure_queue_tab()
     except Exception as e:  # noqa: BLE001
         log.warning("ensure_queue_tab failed (continuing): %s", e)
+    try:
+        from inspiration_sheets import CONTENT_CURATION_COLUMNS
+        added = sheets.ensure_content_columns(CONTENT_CURATION_COLUMNS)
+        if added:
+            log.info("Added curation columns to INSPIRATION_CONTENT: %s", added)
+    except Exception as e:  # noqa: BLE001
+        log.warning("ensure_content_columns failed (continuing): %s", e)
 
     run = _new_run("Queue", provider.name)
     queued = sheets.read_queued_urls()
@@ -524,6 +538,12 @@ def _queue_channel(q: dict) -> dict:
         "HANDLE": handle,
         "MACRO_INDUSTRY": str(q.get("MACRO_INDUSTRY", "")).strip(),
         "SUBCATEGORY": str(q.get("SUBCATEGORY", "")).strip(),
+        # Human curation context preserved onto the content row.
+        "QUEUE_ID": str(q.get("QUEUE_ID", "")).strip(),
+        "ADDED_BY": str(q.get("ADDED_BY", "")).strip(),
+        "REASON_FOR_ADDING": str(q.get("REASON_FOR_ADDING", "")).strip(),
+        "TARGET_PRODUCT": str(q.get("TARGET_PRODUCT", "")).strip(),
+        "TARGET_ICP": str(q.get("TARGET_ICP", "")).strip(),
     }
 
 
