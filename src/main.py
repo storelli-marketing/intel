@@ -19,6 +19,11 @@ import json
 import os
 import sys
 
+# Support both `python src/main.py ...` and `python -m src.main ...`: the
+# modules in src/ use flat imports (import config), so ensure src/ is importable
+# regardless of how the CLI is launched.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import config
 import correlations as corr
 import performance
@@ -528,6 +533,21 @@ def cmd_reset_incomplete() -> int:
 
 
 # ---------------------------------------------------------------------------
+# scan-inspiration (Inspiration Layer — external competitor/creator monitoring)
+# ---------------------------------------------------------------------------
+def cmd_scan_inspiration() -> int:
+    """Ingest recent external post metadata from ACTIVE monitored channels into
+    the INSPIRATION_CONTENT tab. Read-only w.r.t. the internal Storelli sheet;
+    external rows never enter correlations/learnings (separate worksheet +
+    SOURCE_TYPE=EXTERNAL_INSPIRATION)."""
+    import inspiration_scanner
+
+    run = inspiration_scanner.scan_channels()
+    inspiration_scanner.print_scan_summary(run)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # notion-sync (Notion Brain — structured synthesized intelligence only)
 # ---------------------------------------------------------------------------
 def notion_sync(sheets: SheetsClient | None = None) -> dict:
@@ -692,7 +712,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Storelli intelligence MVP")
     parser.add_argument("command",
                         choices=["analyze", "analyze-all", "correlations", "synthesize",
-                                 "notion-sync", "slack-report", "run-all", "reset-incomplete"])
+                                 "notion-sync", "slack-report", "run-all", "reset-incomplete",
+                                 "scan-inspiration"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -722,6 +743,9 @@ def main() -> int:
 
         elif args.command == "reset-incomplete":
             return cmd_reset_incomplete()
+
+        elif args.command == "scan-inspiration":
+            return cmd_scan_inspiration()
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

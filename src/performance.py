@@ -38,8 +38,12 @@ PERF_LABELS = ("Great", "Good", "Underdog")
 # lifts). They can still be shown as inspiration by the idea interpreter.
 # Sheets without this column behave exactly as before.
 _SOURCE_TYPE_ALIASES = ("source type", "source_type", "source")
+# EXTERNAL_INSPIRATION is the SOURCE_TYPE stamped on every row the Inspiration
+# Layer writes to the INSPIRATION_CONTENT tab. It is listed here so that even if
+# such a row were ever fed into the internal learning functions, it is treated
+# as reference-only and can never become Storelli performance evidence.
 _EXTERNAL_SOURCE_VALUES = {"external", "inspiration", "reference",
-                           "competitor", "creator"}
+                           "competitor", "creator", "external_inspiration"}
 _INTERNAL_SOURCE_VALUES = {"internal", "storelli", "owned"}
 
 

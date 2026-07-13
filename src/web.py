@@ -65,6 +65,7 @@ STATE: dict = {
     "notion_summary": {},
     "notion_url": config.NOTION_DASHBOARD_URL,
     "slack": "not_run",      # not_run | posted | failed
+    "inspiration": {},       # last inspiration scan run summary (isolated layer)
     "error": "",
 }
 _LOCK = threading.Lock()
@@ -175,6 +176,22 @@ def _do_analyze_all(limit: Optional[int], qa: bool) -> None:
         stats = cmd_analyze_all(reprocess=False, limit=limit, qa_enabled=qa)
         with _LOCK:
             STATE["stats"] = stats
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
+def _do_scan_inspiration() -> None:
+    """Inspiration Layer ingestion. Reads ACTIVE monitored channels and appends
+    external post metadata to INSPIRATION_CONTENT. Structurally isolated from
+    the internal learning pipeline — never touches correlations/synthesis/
+    Notion/Slack, and writes to a different worksheet entirely."""
+    import inspiration_scanner
+    try:
+        _begin("scan-inspiration")
+        run = inspiration_scanner.scan_channels()
+        with _LOCK:
+            STATE["inspiration"] = run
         _finish()
     except Exception as e:  # noqa: BLE001
         _fail(str(e))
@@ -349,6 +366,13 @@ def run_synthesize(background: BackgroundTasks,
                    x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     return _guarded(_do_synthesize, background)
+
+
+@app.post("/run/scan-inspiration", status_code=202)
+def run_scan_inspiration(background: BackgroundTasks,
+                         x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_scan_inspiration, background)
 
 
 @app.post("/run/notion-sync", status_code=202)
@@ -690,6 +714,17 @@ _HTML = """<!doctype html>
     <a id="notion" class="notion off" target="_blank" rel="noopener" style="margin-top:14px">Open Notion Dashboard</a>
   </section>
 
+  <!-- 5b: Inspiration Layer (external monitoring — isolated) -->
+  <section>
+    <h2><span class="pin">+</span>Inspiration Layer</h2>
+    <button class="btn-secondary" id="btnScanInsp" onclick="run('scan-inspiration')"
+            style="width:100%;height:52px">Scan Monitored Channels</button>
+    <div class="meta" id="inspSummary"></div>
+    <div class="hint">Reads ACTIVE rows from <b>MONITORED CHANNELS</b> and stores external post
+      metadata in <b>INSPIRATION_CONTENT</b> (SOURCE_TYPE = EXTERNAL_INSPIRATION). External
+      inspiration is kept fully separate from Storelli performance, correlations, and learnings.</div>
+  </section>
+
   <!-- 6: Upload Guidelines -->
   <section>
     <h2><span class="pin">+</span>Upload Guidelines</h2>
@@ -732,7 +767,7 @@ async function poll(){
     const j = await (await fetch('/status')).json();
     const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
     const busy = (j.status==='queued'||j.status==='running');
-    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack'].forEach(b=>$(b).disabled=busy);
+    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
     const s=j.stats||{};
     const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0)+(s.skipped_no_link||0);
     $('s_scanned').textContent = s.scanned ?? '–';
@@ -759,6 +794,14 @@ async function poll(){
     } else {
       $('notionSummary').textContent = 'Notion: '+(j.notion||'not run')+(j.slack&&j.slack!=='not_run'?(' · Slack: '+j.slack):'');
     }
+    // Inspiration Layer — last scan summary (isolated from internal learning)
+    const ins=j.inspiration||{};
+    if(ins && ins.RUN_ID){
+      $('inspSummary').textContent = 'Last scan ('+ins.STATUS+') — channels: '
+        +(ins.CHANNELS_SCANNED||0)+' · discovered: '+(ins.POSTS_DISCOVERED||0)
+        +' · added: '+(ins.POSTS_ADDED||0)+' · skipped: '+(ins.POSTS_SKIPPED_EXISTING||0)
+        +(ins.CHANNELS_FAILED?(' · failed: '+ins.CHANNELS_FAILED):'');
+    }
     showErr(j.error);
   }catch(e){ showErr('status fetch failed: '+e); }
 }
@@ -775,7 +818,8 @@ async function run(action){
   const secret=$('secret').value;
   const paths = {social:'/run/social', 'analyze-all':'/run/analyze-all',
                  correlations:'/run/correlations', synthesize:'/run/synthesize',
-                 'notion-sync':'/run/notion-sync', 'slack-report':'/run/slack-report'};
+                 'notion-sync':'/run/notion-sync', 'slack-report':'/run/slack-report',
+                 'scan-inspiration':'/run/scan-inspiration'};
   const path = paths[action];
   const body = (action==='social' || action==='analyze-all')
     ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';

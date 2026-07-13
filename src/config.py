@@ -127,6 +127,15 @@ SLACK_LLM_POLISH_ENABLED = os.getenv("SLACK_LLM_POLISH_ENABLED", "false").strip(
 # Public dashboard URL, shown in the Slack report (optional).
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "").strip()
 
+# Inspiration Layer (external competitor/creator monitoring). The scanner reads
+# ACTIVE rows from the MONITORED CHANNELS tab and writes external post metadata
+# to the INSPIRATION_CONTENT tab — always a DIFFERENT worksheet from the
+# internal POC sheet (GOOGLE_WORKSHEET_NAME), so external inspiration can never
+# enter Storelli correlations / learnings. This is only a provider selector;
+# per-channel LOOKBACK_DAYS / MAX_POSTS_PER_SCAN live in the sheet, and the
+# scraper reuses the already-configured YTDLP cookies. No new secret required.
+INSPIRATION_PROVIDER = os.getenv("INSPIRATION_PROVIDER", "ytdlp").strip().lower() or "ytdlp"
+
 # QA compiler pass. On by default (2 Gemini calls/row). Set false to skip it
 # (1 call/row) — useful to stretch a limited free-tier quota.
 QA_COMPILER_ENABLED = os.getenv("QA_COMPILER_ENABLED", "true").strip().lower() \
