@@ -130,6 +130,7 @@ python src/main.py analyze-all --limit 150 --no-qa  # tag up to 150 fresh rows
 python src/main.py reset-incomplete      # re-queue processed-but-untagged rows
 python src/main.py scan-inspiration              # scan ACTIVE MONITORED CHANNELS (metadata)
 python src/main.py process-inspiration-queue     # ingest pasted URLs from INSPIRATION_URL_QUEUE
+python src/main.py analyze-inspiration            # tag EXTERNAL_INSPIRATION rows with the taxonomy
 ```
 
 (`python -m src.main <command>` works too.)
@@ -549,8 +550,25 @@ queue row is then marked **Processed**, **Duplicate**, or **Failed** with
 is currently unreliable on Instagram, so the URL queue above is the recommended
 ingestion path until a hosted provider is added.
 
-Not built yet (later milestones): external taxonomy analysis, matching to
-internal learnings, idea generation, idea scoring.
+### External inspiration analysis (tagging)
+
+`python src/main.py analyze-inspiration` (or **Analyze Inspiration Content** on
+the dashboard) tags eligible `EXTERNAL_INSPIRATION` rows with the Storelli
+creative taxonomy so they can *later* be matched against internal winning
+formats. Inputs, in order: caption + thumbnail + structural metadata + human
+queue context (`REASON_FOR_ADDING` / `TARGET_PRODUCT` / `TARGET_ICP`, used as
+hints only). Set `INSPIRATION_FULL_VIDEO_ANALYSIS=true` to also download the reel
+for richer analysis (off by default). Writes `*_TAGS`, `TAXONOMY_VERSION`,
+`ANALYSIS_CONFIDENCE`, `ANALYSIS_STATUS`, `ERROR_MESSAGE`, `LAST_UPDATED_AT`;
+logged to `INSPIRATION_RUNS` (`RUN_TYPE = Analyze`).
+
+Confidence: **LOW** (caption/limited metadata → flagged `Needs Review`),
+**MEDIUM** (caption + thumbnail + useful metadata), **HIGH** (only when full
+video was analyzed). External engagement (likes/views/comments) is stored as
+metadata only — it never influences confidence and is never Storelli proof.
+
+Not built yet (later milestones): matching to internal learnings, winning-format
+profiles, idea generation, idea scoring.
 
 ### Generated Social Ideas (Notion / jsonl)
 

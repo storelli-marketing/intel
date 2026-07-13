@@ -136,6 +136,14 @@ DASHBOARD_URL = os.getenv("DASHBOARD_URL", "").strip()
 # scraper reuses the already-configured YTDLP cookies. No new secret required.
 INSPIRATION_PROVIDER = os.getenv("INSPIRATION_PROVIDER", "ytdlp").strip().lower() or "ytdlp"
 
+# External inspiration analysis (Milestone 2). By default we tag external posts
+# from caption + thumbnail + metadata + queue context ONLY (cheap, no download).
+# Set true to also download the individual reel via yt-dlp/cookies for richer
+# (HIGH-confidence) analysis — off by default to conserve quota and avoid
+# unnecessary downloads. This never affects internal Storelli analysis.
+INSPIRATION_FULL_VIDEO_ANALYSIS = os.getenv(
+    "INSPIRATION_FULL_VIDEO_ANALYSIS", "false").strip().lower() in ("true", "1", "yes", "on")
+
 # QA compiler pass. On by default (2 Gemini calls/row). Set false to skip it
 # (1 call/row) — useful to stretch a limited free-tier quota.
 QA_COMPILER_ENABLED = os.getenv("QA_COMPILER_ENABLED", "true").strip().lower() \

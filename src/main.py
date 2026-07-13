@@ -559,6 +559,19 @@ def cmd_process_inspiration_queue() -> int:
     return 0
 
 
+def cmd_analyze_inspiration() -> int:
+    """Tag eligible EXTERNAL_INSPIRATION rows in INSPIRATION_CONTENT with the
+    creative taxonomy (metadata-first; full-video only if
+    INSPIRATION_FULL_VIDEO_ANALYSIS=true). External inspiration is never Storelli
+    proof — separate worksheet + SOURCE_TYPE guard keep it out of correlations
+    and learnings."""
+    import inspiration_analyzer
+
+    run = inspiration_analyzer.analyze_inspiration()
+    inspiration_analyzer.print_analyze_summary(run)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # notion-sync (Notion Brain — structured synthesized intelligence only)
 # ---------------------------------------------------------------------------
@@ -725,7 +738,8 @@ def main() -> int:
     parser.add_argument("command",
                         choices=["analyze", "analyze-all", "correlations", "synthesize",
                                  "notion-sync", "slack-report", "run-all", "reset-incomplete",
-                                 "scan-inspiration", "process-inspiration-queue"])
+                                 "scan-inspiration", "process-inspiration-queue",
+                                 "analyze-inspiration"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -761,6 +775,9 @@ def main() -> int:
 
         elif args.command == "process-inspiration-queue":
             return cmd_process_inspiration_queue()
+
+        elif args.command == "analyze-inspiration":
+            return cmd_analyze_inspiration()
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

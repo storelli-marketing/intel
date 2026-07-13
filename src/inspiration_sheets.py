@@ -196,6 +196,26 @@ class InspirationSheets:
         ws.batch_update(updates)
         return missing
 
+    def read_content_rows(self) -> list[dict]:
+        """All INSPIRATION_CONTENT data rows (dicts keyed by header + `_row`)."""
+        _, rows = self._read_table(self._ws(INSPIRATION_CONTENT_TAB))
+        return rows
+
+    def update_content_cells(self, row_index: int, values: dict) -> None:
+        """Write specific named cells on one INSPIRATION_CONTENT row (aligned to
+        the live header). Unknown column names are ignored. Used by the external
+        inspiration analyzer to write tags/status — never touches other tabs."""
+        if not values:
+            return
+        ws = self._ws(INSPIRATION_CONTENT_TAB)
+        headers = [h.strip() for h in ws.row_values(1)]
+        col = {name: i + 1 for i, name in enumerate(headers) if name}
+        updates = [{"range": gspread.utils.rowcol_to_a1(row_index, col[name]),
+                    "values": [[val]]}
+                   for name, val in values.items() if name in col]
+        if updates:
+            ws.batch_update(updates)
+
     def append_content_rows(self, row_dicts: list[dict]) -> int:
         """Append fully-formed post dicts to INSPIRATION_CONTENT, aligned to the
         live header order. Every row MUST carry SOURCE_TYPE=EXTERNAL_INSPIRATION
