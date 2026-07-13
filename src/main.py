@@ -547,6 +547,18 @@ def cmd_scan_inspiration() -> int:
     return 0
 
 
+def cmd_process_inspiration_queue() -> int:
+    """Process pending INSPIRATION_URL_QUEUE rows: fetch each individual post's
+    metadata (yt-dlp + cookies, no profile enumeration) and append it to
+    INSPIRATION_CONTENT. Human-in-the-loop, no Apify. External rows never enter
+    correlations/learnings (separate worksheet + SOURCE_TYPE=EXTERNAL_INSPIRATION)."""
+    import inspiration_scanner
+
+    run = inspiration_scanner.process_queue()
+    inspiration_scanner.print_queue_summary(run)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # notion-sync (Notion Brain — structured synthesized intelligence only)
 # ---------------------------------------------------------------------------
@@ -713,7 +725,7 @@ def main() -> int:
     parser.add_argument("command",
                         choices=["analyze", "analyze-all", "correlations", "synthesize",
                                  "notion-sync", "slack-report", "run-all", "reset-incomplete",
-                                 "scan-inspiration"])
+                                 "scan-inspiration", "process-inspiration-queue"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -746,6 +758,9 @@ def main() -> int:
 
         elif args.command == "scan-inspiration":
             return cmd_scan_inspiration()
+
+        elif args.command == "process-inspiration-queue":
+            return cmd_process_inspiration_queue()
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

@@ -156,6 +156,34 @@ at all continue to work exactly as before.
 Success = Generate Learnings → Update Notion Brain → Send Slack Report works
 end-to-end from the deployed dashboard.
 
+### Inspiration Layer — human-in-the-loop URL queue (no Apify)
+
+External inspiration is ingested **without any scraper/Apify**. yt-dlp reliably
+fetches metadata for an *individual* Instagram reel/post URL using the existing
+cookies (the same `YTDLP_COOKIES_B64` used for internal downloads), but cannot
+reliably enumerate a whole profile — so promising URLs are added by hand.
+
+To ingest inspiration:
+
+1. Open the **`INSPIRATION_URL_QUEUE`** tab (auto-created on first run).
+2. Paste one reel/post URL per row (`POST_URL` required) with context:
+   `CHANNEL_HANDLE`, `MACRO_INDUSTRY`, `SUBCATEGORY`, `REASON_FOR_ADDING`,
+   `TARGET_PRODUCT`, `TARGET_ICP`. Leave `STATUS` blank or `Queued`.
+3. Click **Process Inspiration URL Queue** on the dashboard (or
+   `POST /run/process-inspiration-queue` with `X-Run-Secret`; CLI:
+   `python -m src.main process-inspiration-queue`).
+
+Each URL's metadata is fetched via yt-dlp + cookies, deduplicated by
+`SOURCE_ID` / `POST_ID` / `POST_URL`, and written to `INSPIRATION_CONTENT` with
+`SOURCE_TYPE = EXTERNAL_INSPIRATION`; the queue row is marked
+Processed/Duplicate/Failed. Runs are logged to `INSPIRATION_RUNS`
+(`RUN_TYPE = Queue`).
+
+**No new secret required** (optional `INSPIRATION_PROVIDER`, default `ytdlp`).
+**External inspiration is not Storelli proof** — it lives in separate worksheets
+the internal learning pipeline never reads and can never enter performance
+buckets, correlations, the Signal Library, or Marketing Learnings.
+
 ## 6. Dev Brain — backend self-awareness + push-to-code
 
 Optional, on by default (`SLACK_DEV_MODE_ENABLED`). The same Slack bot

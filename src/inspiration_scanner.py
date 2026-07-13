@@ -57,6 +57,17 @@ class InspirationPost:
     published_ts: Optional[float] = field(default=None, repr=False)  # epoch, internal
 
 
+def _post_type_from_url(url: str) -> str:
+    u = str(url or "")
+    if "/reel/" in u:
+        return "Reel"
+    if "/tv/" in u:
+        return "Video"
+    if "/p/" in u:
+        return "Carousel"
+    return "Unknown"
+
+
 def make_source_id(platform: str, post: InspirationPost) -> str:
     """Stable primary key for a post. Prefers platform:post_id, falls back to
     the post URL so a post is never keyless."""
@@ -80,6 +91,12 @@ class InspirationProvider(abc.ABC):
                            lookback_days: int, max_posts: int) -> list[InspirationPost]:
         ...
 
+    def fetch_post(self, url: str) -> InspirationPost:
+        """Fetch metadata for a SINGLE post/reel URL (no profile enumeration).
+        Providers that support the human-in-the-loop URL queue implement this."""
+        raise NotImplementedError(
+            f"{self.name} provider cannot fetch an individual post URL")
+
 
 class YtDlpInstagramProvider(InspirationProvider):
     """MVP provider: yt-dlp flat metadata extraction over a profile URL, using
@@ -102,11 +119,49 @@ class YtDlpInstagramProvider(InspirationProvider):
     @staticmethod
     def _post_type(entry: dict) -> str:
         url = str(entry.get("url") or entry.get("webpage_url") or "")
-        if "/reel/" in url:
-            return "Reel"
-        if "/tv/" in url:
-            return "Video"
-        return "Unknown"
+        return _post_type_from_url(url)
+
+    def fetch_post(self, url: str) -> InspirationPost:
+        """Single-URL metadata extraction (NOT flat, NOT profile enumeration).
+        This is the reliable Instagram path with authenticated cookies."""
+        try:
+            import yt_dlp
+        except ImportError as e:  # pragma: no cover - yt-dlp is a hard dep
+            raise RuntimeError("yt-dlp not installed") from e
+
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+            "skip_download": True,
+        }
+        if config.YTDLP_COOKIES_PATH:
+            opts["cookiefile"] = config.YTDLP_COOKIES_PATH
+
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url.strip(), download=False)
+        if not isinstance(info, dict):
+            raise RuntimeError(f"no metadata returned for {url}")
+
+        ts = info.get("timestamp")
+        published = ""
+        if isinstance(ts, (int, float)):
+            published = datetime.fromtimestamp(ts, timezone.utc).isoformat()
+        webpage = str(info.get("webpage_url") or url).strip()
+        return InspirationPost(
+            post_id=str(info.get("id") or "").strip(),
+            post_url=webpage,
+            post_type=_post_type_from_url(webpage or url),
+            published_at=published,
+            caption=str(info.get("description") or info.get("title") or "").strip(),
+            thumbnail_url=str(info.get("thumbnail") or "").strip(),
+            duration_seconds=str(info.get("duration") or "").strip(),
+            view_count=str(info.get("view_count") or "").strip(),
+            like_count=str(info.get("like_count") or "").strip(),
+            comment_count=str(info.get("comment_count") or "").strip(),
+            scrape_status="Success",
+            published_ts=float(ts) if isinstance(ts, (int, float)) else None,
+        )
 
     def fetch_recent_posts(self, *, handle: str, profile_url: str,
                            lookback_days: int, max_posts: int) -> list[InspirationPost]:
@@ -197,29 +252,41 @@ def resolve_limits(channel: dict, cfg: dict) -> tuple[int, int]:
     return lookback, max_posts
 
 
+def post_is_duplicate(platform: str, post: InspirationPost,
+                      existing: dict[str, set]) -> bool:
+    """True if the post's SOURCE_ID, POST_ID, or POST_URL is already known."""
+    sid = make_source_id(platform, post)
+    pid = (post.post_id or "").strip()
+    url = (post.post_url or "").strip()
+    return bool((sid and sid in existing.get("SOURCE_ID", set()))
+                or (pid and pid in existing.get("POST_ID", set()))
+                or (url and url in existing.get("POST_URL", set())))
+
+
+def remember_post(platform: str, post: InspirationPost,
+                  existing: dict[str, set]) -> None:
+    """Fold a post's dedup keys into the running `existing` snapshot in place."""
+    sid = make_source_id(platform, post)
+    if sid:
+        existing.setdefault("SOURCE_ID", set()).add(sid)
+    if (post.post_id or "").strip():
+        existing.setdefault("POST_ID", set()).add(post.post_id.strip())
+    if (post.post_url or "").strip():
+        existing.setdefault("POST_URL", set()).add(post.post_url.strip())
+
+
 def dedup_posts(platform: str, posts: list[InspirationPost],
                 existing: dict[str, set]) -> tuple[list[InspirationPost], int]:
     """Drop posts whose SOURCE_ID, POST_ID, or POST_URL already exists (in the
     sheet OR earlier in this same batch). Returns (fresh_posts, skipped_count)."""
-    seen_sid = set(existing.get("SOURCE_ID", set()))
-    seen_pid = set(existing.get("POST_ID", set()))
-    seen_url = set(existing.get("POST_URL", set()))
+    seen = {k: set(v) for k, v in existing.items()}
     fresh, skipped = [], 0
     for p in posts:
-        sid = make_source_id(platform, p)
-        pid = (p.post_id or "").strip()
-        url = (p.post_url or "").strip()
-        if (sid and sid in seen_sid) or (pid and pid in seen_pid) \
-                or (url and url in seen_url):
+        if post_is_duplicate(platform, p, seen):
             skipped += 1
             continue
         fresh.append(p)
-        if sid:
-            seen_sid.add(sid)
-        if pid:
-            seen_pid.add(pid)
-        if url:
-            seen_url.add(url)
+        remember_post(platform, p, seen)
     return fresh, skipped
 
 
@@ -265,26 +332,16 @@ def _run_id() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator
+# Orchestrators
 # ---------------------------------------------------------------------------
-def scan_channels(sheets: Optional[InspirationSheets] = None,
-                  provider: Optional[InspirationProvider] = None) -> dict:
-    """Scan every ACTIVE monitored channel and append new external posts.
-
-    Returns a run-summary dict (also written to INSPIRATION_RUNS).
-    """
-    sheets = sheets or InspirationSheets()
-    provider = provider or get_provider()
-    cfg = sheets.read_config()
-
-    started = _now_iso()
-    run = {
+def _new_run(run_type: str, provider_name: str) -> dict:
+    return {
         "RUN_ID": _run_id(),
-        "RUN_TYPE": "Scan",
-        "STARTED_AT": started,
+        "RUN_TYPE": run_type,
+        "STARTED_AT": _now_iso(),
         "FINISHED_AT": "",
         "STATUS": "Running",
-        "PROVIDER": provider.name,
+        "PROVIDER": provider_name,
         "CHANNELS_SCANNED": 0,
         "CHANNELS_FAILED": 0,
         "POSTS_DISCOVERED": 0,
@@ -296,6 +353,36 @@ def scan_channels(sheets: Optional[InspirationSheets] = None,
         "NOTION_PAGES_CREATED": 0,  # not this milestone
         "ERROR_SUMMARY": "",
     }
+
+
+def _finalize_and_log_run(sheets, run: dict, errors: list[str],
+                          failed: int, total: int) -> dict:
+    run["FINISHED_AT"] = _now_iso()
+    if not failed:
+        run["STATUS"] = "Completed"
+    elif total and failed >= total:
+        run["STATUS"] = "Failed"
+    else:
+        run["STATUS"] = "Partial"
+    run["ERROR_SUMMARY"] = " | ".join(errors)[:1000]
+    try:
+        sheets.append_run(run)
+    except Exception as e:  # noqa: BLE001 - logging the run must not break the run
+        log.warning("Could not write INSPIRATION_RUNS row: %s", e)
+    return run
+
+
+def scan_channels(sheets: Optional[InspirationSheets] = None,
+                  provider: Optional[InspirationProvider] = None) -> dict:
+    """Scan every ACTIVE monitored channel and append new external posts.
+
+    Returns a run-summary dict (also written to INSPIRATION_RUNS).
+    """
+    sheets = sheets or InspirationSheets()
+    provider = provider or get_provider()
+    cfg = sheets.read_config()
+
+    run = _new_run("Scan", provider.name)
 
     channels = sheets.read_active_channels()
     log.info("Inspiration scan: %d active channel(s), provider=%s",
@@ -329,13 +416,7 @@ def scan_channels(sheets: Optional[InspirationSheets] = None,
             # Fold this channel's new keys into the running snapshot so a later
             # channel in the same run cannot re-add the same post.
             for p in fresh:
-                sid = make_source_id(platform, p)
-                if sid:
-                    existing["SOURCE_ID"].add(sid)
-                if p.post_id:
-                    existing["POST_ID"].add(p.post_id)
-                if p.post_url:
-                    existing["POST_URL"].add(p.post_url)
+                remember_post(platform, p, existing)
 
             last_pid = fresh[-1].post_id if fresh else str(ch.get("LAST_POST_ID", ""))
             sheets.update_channel_status(
@@ -356,18 +437,94 @@ def scan_channels(sheets: Optional[InspirationSheets] = None,
             except Exception:  # noqa: BLE001
                 pass
 
-    run["FINISHED_AT"] = _now_iso()
-    run["STATUS"] = "Completed" if not run["CHANNELS_FAILED"] else (
-        "Failed" if run["CHANNELS_FAILED"] == run["CHANNELS_SCANNED"] and channels
-        else "Partial")
-    run["ERROR_SUMMARY"] = " | ".join(errors)[:1000]
+    return _finalize_and_log_run(sheets, run, errors,
+                                 failed=run["CHANNELS_FAILED"],
+                                 total=run["CHANNELS_SCANNED"])
 
+
+def process_queue(sheets: Optional[InspirationSheets] = None,
+                  provider: Optional[InspirationProvider] = None) -> dict:
+    """Human-in-the-loop URL queue: process each pending INSPIRATION_URL_QUEUE
+    row by fetching that single post's metadata (yt-dlp + cookies, no profile
+    enumeration) and appending it to INSPIRATION_CONTENT.
+
+    Each queue row is marked Processed / Duplicate / Failed with PROCESSED_AT,
+    SOURCE_ID and ERROR_MESSAGE. Returns a run-summary dict (also logged to
+    INSPIRATION_RUNS with RUN_TYPE=Queue).
+    """
+    sheets = sheets or InspirationSheets()
+    provider = provider or get_provider()
+
+    # Make sure the tab exists so a first run never crashes.
     try:
-        sheets.append_run(run)
-    except Exception as e:  # noqa: BLE001 - logging the run must not break the run
-        log.warning("Could not write INSPIRATION_RUNS row: %s", e)
+        sheets.ensure_queue_tab()
+    except Exception as e:  # noqa: BLE001
+        log.warning("ensure_queue_tab failed (continuing): %s", e)
 
-    return run
+    run = _new_run("Queue", provider.name)
+    queued = sheets.read_queued_urls()
+    log.info("Inspiration queue: %d pending URL(s), provider=%s",
+             len(queued), provider.name)
+    errors: list[str] = []
+    existing = sheets.existing_content_keys()
+
+    for q in queued:
+        url = str(q.get("POST_URL", "")).strip()
+        platform = "Instagram"
+        run["POSTS_DISCOVERED"] += 1
+        try:
+            post = provider.fetch_post(url)
+            if not (post.post_id or post.post_url):
+                raise RuntimeError(f"no usable metadata for {url}")
+            sid = make_source_id(platform, post)
+
+            if post_is_duplicate(platform, post, existing):
+                run["POSTS_SKIPPED_EXISTING"] += 1
+                sheets.update_queue_row(
+                    q["_row"], status="Duplicate", processed_at=_now_iso(),
+                    source_id=sid, error_message="")
+                log.info("  duplicate: %s (%s)", url, sid)
+                continue
+
+            row = post_to_row(_queue_channel(q), post, scraped_at=_now_iso())
+            sheets.append_content_rows([row])
+            remember_post(platform, post, existing)
+            run["POSTS_ADDED"] += 1
+            sheets.update_queue_row(
+                q["_row"], status="Processed", processed_at=_now_iso(),
+                source_id=sid, error_message="")
+            log.info("  processed: %s -> %s", url, sid)
+        except Exception as e:  # noqa: BLE001 - one bad URL must not abort the run
+            run["POSTS_FAILED"] += 1
+            msg = f"{url}: {type(e).__name__}: {e}"
+            errors.append(msg)
+            log.error("  queue item failed: %s", msg)
+            try:
+                sheets.update_queue_row(
+                    q["_row"], status="Failed", processed_at=_now_iso(),
+                    error_message=str(e)[:400])
+            except Exception:  # noqa: BLE001
+                pass
+
+    return _finalize_and_log_run(sheets, run, errors,
+                                 failed=run["POSTS_FAILED"],
+                                 total=len(queued))
+
+
+def _queue_channel(q: dict) -> dict:
+    """Adapt a queue row into the pseudo-'channel' dict post_to_row expects.
+    CHANNEL_HANDLE / MACRO_INDUSTRY / SUBCATEGORY are preserved onto the content
+    row; TARGET_PRODUCT / TARGET_ICP / REASON_FOR_ADDING have no INSPIRATION_
+    CONTENT column yet, so they stay on the queue row (linked by SOURCE_ID) for
+    later milestones — nothing is lost."""
+    handle = str(q.get("CHANNEL_HANDLE", "")).strip()
+    return {
+        "CHANNEL_ID": handle,
+        "PLATFORM": "Instagram",
+        "HANDLE": handle,
+        "MACRO_INDUSTRY": str(q.get("MACRO_INDUSTRY", "")).strip(),
+        "SUBCATEGORY": str(q.get("SUBCATEGORY", "")).strip(),
+    }
 
 
 def print_scan_summary(run: dict) -> None:
@@ -380,5 +537,18 @@ def print_scan_summary(run: dict) -> None:
     print(f"Posts discovered:       {run.get('POSTS_DISCOVERED')}")
     print(f"Posts added:            {run.get('POSTS_ADDED')}")
     print(f"Posts skipped (dupes):  {run.get('POSTS_SKIPPED_EXISTING')}")
+    if run.get("ERROR_SUMMARY"):
+        print(f"Errors:                 {run.get('ERROR_SUMMARY')}")
+
+
+def print_queue_summary(run: dict) -> None:
+    print("\nInspiration URL queue processed.\n")
+    print(f"Run ID:                 {run.get('RUN_ID')}")
+    print(f"Provider:               {run.get('PROVIDER')}")
+    print(f"Status:                 {run.get('STATUS')}")
+    print(f"URLs seen:              {run.get('POSTS_DISCOVERED')}")
+    print(f"Added to content:       {run.get('POSTS_ADDED')}")
+    print(f"Duplicates skipped:     {run.get('POSTS_SKIPPED_EXISTING')}")
+    print(f"Failed:                 {run.get('POSTS_FAILED')}")
     if run.get("ERROR_SUMMARY"):
         print(f"Errors:                 {run.get('ERROR_SUMMARY')}")

@@ -30,6 +30,18 @@ MONITORED_CHANNELS_TAB = "MONITORED CHANNELS"
 INSPIRATION_CONTENT_TAB = "INSPIRATION_CONTENT"
 INSPIRATION_RUNS_TAB = "INSPIRATION_RUNS"
 INSPIRATION_CONFIG_TAB = "INSPIRATION_CONFIG"
+INSPIRATION_URL_QUEUE_TAB = "INSPIRATION_URL_QUEUE"
+
+# Human-in-the-loop queue: paste promising individual reel/post URLs here and
+# process-inspiration-queue ingests each one via yt-dlp (single-URL, cookie
+# auth) — no profile enumeration, no Apify.
+QUEUE_HEADERS = [
+    "QUEUE_ID", "ADDED_AT", "ADDED_BY", "CHANNEL_HANDLE", "POST_URL",
+    "MACRO_INDUSTRY", "SUBCATEGORY", "REASON_FOR_ADDING", "TARGET_PRODUCT",
+    "TARGET_ICP", "STATUS", "PROCESSED_AT", "SOURCE_ID", "ERROR_MESSAGE",
+]
+# Queue rows eligible for processing (case-insensitive).
+QUEUE_PENDING_STATUSES = {"", "queued"}
 
 # The one immutable invariant: the SOURCE_TYPE every ingested row carries.
 SOURCE_TYPE_EXTERNAL = "EXTERNAL_INSPIRATION"
@@ -177,6 +189,60 @@ class InspirationSheets:
             matrix.append([str(d.get(h, "")) for h in headers])
         ws.append_rows(matrix, value_input_option="RAW")
         return len(matrix)
+
+    # ---- inspiration URL queue (human-in-the-loop) ------------------------
+    def ensure_queue_tab(self) -> bool:
+        """Create INSPIRATION_URL_QUEUE with the canonical header if it does not
+        exist. Returns True if it was created, False if it already existed.
+        Never modifies an existing tab's contents."""
+        titles = [ws.title for ws in self._sh.worksheets()]
+        if INSPIRATION_URL_QUEUE_TAB in titles:
+            return False
+        ws = self._sh.add_worksheet(
+            title=INSPIRATION_URL_QUEUE_TAB, rows=1000, cols=len(QUEUE_HEADERS))
+        ws.update(range_name="A1", values=[QUEUE_HEADERS], value_input_option="RAW")
+        self._ws_cache[INSPIRATION_URL_QUEUE_TAB] = ws
+        return True
+
+    def read_queued_urls(self) -> list[dict]:
+        """Queue rows whose STATUS is blank or 'Queued' and that carry a URL."""
+        try:
+            _, rows = self._read_table(self._ws(INSPIRATION_URL_QUEUE_TAB))
+        except gspread.WorksheetNotFound:
+            return []
+        out = []
+        for r in rows:
+            status = str(r.get("STATUS", "")).strip().lower()
+            if status not in QUEUE_PENDING_STATUSES:
+                continue
+            if not str(r.get("POST_URL", "")).strip():
+                continue
+            out.append(r)
+        return out
+
+    def update_queue_row(self, row_index: int, *, status: str = "",
+                         processed_at: str = "", source_id: str = "",
+                         error_message: str = "") -> None:
+        ws = self._ws(INSPIRATION_URL_QUEUE_TAB)
+        headers = [h.strip() for h in ws.row_values(1)]
+        col = {name: i + 1 for i, name in enumerate(headers) if name}
+        updates = []
+
+        def _set(name, val):
+            if name in col:
+                updates.append({
+                    "range": gspread.utils.rowcol_to_a1(row_index, col[name]),
+                    "values": [[val]]})
+
+        if status:
+            _set("STATUS", status)
+        if processed_at:
+            _set("PROCESSED_AT", processed_at)
+        if source_id:
+            _set("SOURCE_ID", source_id)
+        _set("ERROR_MESSAGE", error_message)  # always written (clears on success)
+        if updates:
+            ws.batch_update(updates)
 
     # ---- run log ----------------------------------------------------------
     def append_run(self, run: dict) -> None:

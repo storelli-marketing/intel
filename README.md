@@ -128,7 +128,11 @@ python src/main.py analyze --limit 5     # test mode: at most 5 rows
 python src/main.py analyze-all --limit 18 --no-qa   # tag 18 fresh rows, 1 Gemini call/row
 python src/main.py analyze-all --limit 150 --no-qa  # tag up to 150 fresh rows
 python src/main.py reset-incomplete      # re-queue processed-but-untagged rows
+python src/main.py scan-inspiration              # scan ACTIVE MONITORED CHANNELS (metadata)
+python src/main.py process-inspiration-queue     # ingest pasted URLs from INSPIRATION_URL_QUEUE
 ```
+
+(`python -m src.main <command>` works too.)
 
 ### `analyze` vs. `analyze-all`
 
@@ -501,6 +505,52 @@ inspiration source (never as evidence). Rows marked *Internal / Storelli /
 Owned* — and rows in sheets that don't have the column at all — behave
 exactly as before. This is the only change to correlation behavior, and it
 protects the learning layer against explicit external contamination.
+
+## Inspiration Layer (external monitoring — no Apify)
+
+External competitor/creator content lives in a **separate set of worksheets**
+and is **never** Storelli proof: it can't enter performance buckets,
+correlations, the Signal Library, Marketing Learnings, or any "what works for
+Storelli" calculation. Isolation is structural (the internal pipeline only ever
+reads the POC worksheet, `GOOGLE_WORKSHEET_NAME`) plus a defensive
+`SOURCE_TYPE = EXTERNAL_INSPIRATION` guard on every row.
+
+**Why no Apify:** yt-dlp reliably fetches metadata for an *individual* reel/post
+URL (with cookies) but cannot reliably enumerate a profile's recent posts. So
+instead of a scraper, we use a **human-in-the-loop URL queue**.
+
+### Inspiration URL Queue (recommended path)
+
+1. Open the **`INSPIRATION_URL_QUEUE`** tab (auto-created on first run if
+   missing).
+2. Paste one promising reel/post URL per row and fill the context columns:
+   `CHANNEL_HANDLE`, `POST_URL` (required), `MACRO_INDUSTRY`, `SUBCATEGORY`,
+   `REASON_FOR_ADDING`, `TARGET_PRODUCT`, `TARGET_ICP`. Leave `STATUS` blank or
+   set it to `Queued`.
+3. Run `python src/main.py process-inspiration-queue` (or click **Process
+   Inspiration URL Queue** on the dashboard).
+
+For each pending row the system fetches that single post's metadata via
+**yt-dlp + the existing cookie config** (no profile enumeration, no Apify),
+normalizes it, deduplicates by `SOURCE_ID` / `POST_ID` / `POST_URL`, and appends
+a row to **`INSPIRATION_CONTENT`** with `SOURCE_TYPE = EXTERNAL_INSPIRATION`. The
+queue row is then marked **Processed**, **Duplicate**, or **Failed** with
+`PROCESSED_AT`, `SOURCE_ID`, and `ERROR_MESSAGE`. `CHANNEL_HANDLE`,
+`MACRO_INDUSTRY`, and `SUBCATEGORY` are copied onto the content row;
+`TARGET_PRODUCT` / `TARGET_ICP` / `REASON_FOR_ADDING` stay on the queue row
+(linked by `SOURCE_ID`) for later milestones. Every run is logged to
+`INSPIRATION_RUNS` with `RUN_TYPE = Queue`. One bad URL never aborts the run.
+
+### Channel scan (metadata only)
+
+`python src/main.py scan-inspiration` reads **ACTIVE** rows from the
+**`MONITORED CHANNELS`** tab and appends new external posts to
+`INSPIRATION_CONTENT` (`RUN_TYPE = Scan`). Note: profile enumeration via yt-dlp
+is currently unreliable on Instagram, so the URL queue above is the recommended
+ingestion path until a hosted provider is added.
+
+Not built yet (later milestones): external taxonomy analysis, matching to
+internal learnings, idea generation, idea scoring.
 
 ### Generated Social Ideas (Notion / jsonl)
 

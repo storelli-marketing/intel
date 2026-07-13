@@ -197,6 +197,22 @@ def _do_scan_inspiration() -> None:
         _fail(str(e))
 
 
+def _do_process_inspiration_queue() -> None:
+    """Human-in-the-loop URL queue ingestion. Fetches metadata for each pending
+    INSPIRATION_URL_QUEUE URL and appends it to INSPIRATION_CONTENT. Same
+    isolation guarantees as the channel scan — separate worksheet, never touches
+    correlations/synthesis/Notion/Slack."""
+    import inspiration_scanner
+    try:
+        _begin("process-inspiration-queue")
+        run = inspiration_scanner.process_queue()
+        with _LOCK:
+            STATE["inspiration"] = run
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
 def _do_notion_sync() -> None:
     try:
         _begin("notion-sync")
@@ -373,6 +389,13 @@ def run_scan_inspiration(background: BackgroundTasks,
                          x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     return _guarded(_do_scan_inspiration, background)
+
+
+@app.post("/run/process-inspiration-queue", status_code=202)
+def run_process_inspiration_queue(background: BackgroundTasks,
+                                  x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_process_inspiration_queue, background)
 
 
 @app.post("/run/notion-sync", status_code=202)
@@ -717,12 +740,16 @@ _HTML = """<!doctype html>
   <!-- 5b: Inspiration Layer (external monitoring — isolated) -->
   <section>
     <h2><span class="pin">+</span>Inspiration Layer</h2>
+    <button class="btn-secondary" id="btnQueue" onclick="run('process-inspiration-queue')"
+            style="width:100%;height:52px">Process Inspiration URL Queue</button>
     <button class="btn-secondary" id="btnScanInsp" onclick="run('scan-inspiration')"
-            style="width:100%;height:52px">Scan Monitored Channels</button>
+            style="width:100%;height:52px;margin-top:12px">Scan Monitored Channels</button>
     <div class="meta" id="inspSummary"></div>
-    <div class="hint">Reads ACTIVE rows from <b>MONITORED CHANNELS</b> and stores external post
-      metadata in <b>INSPIRATION_CONTENT</b> (SOURCE_TYPE = EXTERNAL_INSPIRATION). External
-      inspiration is kept fully separate from Storelli performance, correlations, and learnings.</div>
+    <div class="hint">Paste promising reel/post URLs into <b>INSPIRATION_URL_QUEUE</b> and click
+      <b>Process Inspiration URL Queue</b> — each URL's metadata is fetched via yt-dlp + cookies
+      (no profile enumeration, no Apify) and stored in <b>INSPIRATION_CONTENT</b>
+      (SOURCE_TYPE = EXTERNAL_INSPIRATION). External inspiration is kept fully separate from
+      Storelli performance, correlations, and learnings — it is never Storelli proof.</div>
   </section>
 
   <!-- 6: Upload Guidelines -->
@@ -767,7 +794,7 @@ async function poll(){
     const j = await (await fetch('/status')).json();
     const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
     const busy = (j.status==='queued'||j.status==='running');
-    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
+    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
     const s=j.stats||{};
     const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0)+(s.skipped_no_link||0);
     $('s_scanned').textContent = s.scanned ?? '–';
@@ -797,10 +824,14 @@ async function poll(){
     // Inspiration Layer — last scan summary (isolated from internal learning)
     const ins=j.inspiration||{};
     if(ins && ins.RUN_ID){
-      $('inspSummary').textContent = 'Last scan ('+ins.STATUS+') — channels: '
-        +(ins.CHANNELS_SCANNED||0)+' · discovered: '+(ins.POSTS_DISCOVERED||0)
-        +' · added: '+(ins.POSTS_ADDED||0)+' · skipped: '+(ins.POSTS_SKIPPED_EXISTING||0)
-        +(ins.CHANNELS_FAILED?(' · failed: '+ins.CHANNELS_FAILED):'');
+      const isQueue = (ins.RUN_TYPE==='Queue');
+      const lead = isQueue ? 'Last queue run' : 'Last scan';
+      const unit = isQueue ? ('URLs: '+(ins.POSTS_DISCOVERED||0))
+                           : ('channels: '+(ins.CHANNELS_SCANNED||0));
+      const failed = isQueue ? (ins.POSTS_FAILED||0) : (ins.CHANNELS_FAILED||0);
+      $('inspSummary').textContent = lead+' ('+ins.STATUS+') — '+unit
+        +' · added: '+(ins.POSTS_ADDED||0)+' · dupes: '+(ins.POSTS_SKIPPED_EXISTING||0)
+        +(failed?(' · failed: '+failed):'');
     }
     showErr(j.error);
   }catch(e){ showErr('status fetch failed: '+e); }
@@ -819,7 +850,8 @@ async function run(action){
   const paths = {social:'/run/social', 'analyze-all':'/run/analyze-all',
                  correlations:'/run/correlations', synthesize:'/run/synthesize',
                  'notion-sync':'/run/notion-sync', 'slack-report':'/run/slack-report',
-                 'scan-inspiration':'/run/scan-inspiration'};
+                 'scan-inspiration':'/run/scan-inspiration',
+                 'process-inspiration-queue':'/run/process-inspiration-queue'};
   const path = paths[action];
   const body = (action==='social' || action==='analyze-all')
     ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';
