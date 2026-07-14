@@ -620,6 +620,18 @@ def cmd_quality_review_inspiration() -> int:
     return 0
 
 
+def cmd_generate_ideas() -> int:
+    """Generate + rate Storelli-specific creative ideas by adapting high-quality
+    external mechanisms onto internal winning profiles. Every idea is anchored to
+    internal evidence; external inspiration is execution reference only, never
+    proof. Writes to INSPIRATION_IDEAS. Not idea execution/publishing."""
+    import idea_generator
+
+    run = idea_generator.generate_ideas()
+    idea_generator.print_ideas_summary(run)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # notion-sync (Notion Brain — structured synthesized intelligence only)
 # ---------------------------------------------------------------------------
@@ -789,7 +801,7 @@ def main() -> int:
                                  "scan-inspiration", "process-inspiration-queue",
                                  "analyze-inspiration", "discover-inspiration",
                                  "build-winning-profiles", "match-inspiration",
-                                 "quality-review-inspiration"])
+                                 "quality-review-inspiration", "generate-ideas"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -840,6 +852,9 @@ def main() -> int:
 
         elif args.command == "quality-review-inspiration":
             return cmd_quality_review_inspiration()
+
+        elif args.command == "generate-ideas":
+            return cmd_generate_ideas()
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

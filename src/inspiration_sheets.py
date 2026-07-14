@@ -33,6 +33,18 @@ INSPIRATION_CONFIG_TAB = "INSPIRATION_CONFIG"
 INSPIRATION_URL_QUEUE_TAB = "INSPIRATION_URL_QUEUE"
 APIFY_DISCOVERY_QUERIES_TAB = "APIFY_DISCOVERY_QUERIES"
 WINNING_FORMAT_PROFILES_TAB = "WINNING_FORMAT_PROFILES"
+INSPIRATION_IDEAS_TAB = "INSPIRATION_IDEAS"
+
+# Rated-idea columns appended to INSPIRATION_IDEAS on first idea-gen run (the
+# base idea-structure columns already exist in the template).
+IDEA_SCORE_COLUMNS = [
+    "IDEA_SCORE", "EVIDENCE_FIT_SCORE", "INSPIRATION_FIT_SCORE", "NOVELTY_SCORE",
+    "PRODUCT_FIT_SCORE", "ICP_FIT_SCORE", "EXECUTION_CLARITY_SCORE",
+    "FEASIBILITY_SCORE", "COPYRIGHT_SAFETY_SCORE", "STRATEGIC_PRIORITY_SCORE",
+    "SOURCE_PROFILE_ID", "SOURCE_PROFILE_NAME", "EXTERNAL_SOURCE_IDS",
+    "EXTERNAL_REFERENCE_URLS", "INTERNAL_EVIDENCE_URLS", "IDEA_RATIONALE",
+    "SELF_CRITIQUE", "RISK_NOTES", "RECOMMENDED_SHOOT_PRIORITY",
+]
 
 # Human-in-the-loop queue: paste promising individual reel/post URLs here and
 # process-inspiration-queue ingests each one via yt-dlp (single-URL, cookie
@@ -395,6 +407,36 @@ class InspirationSheets:
         _set("ERROR_MESSAGE", error_message)
         if updates:
             ws.batch_update(updates)
+
+    # ---- winning format profiles (internal evidence only) ----------------
+    # ---- rated creative ideas --------------------------------------------
+    def ensure_idea_columns(self, columns: list[str]) -> list[str]:
+        ws = self._ws(INSPIRATION_IDEAS_TAB)
+        headers = [h.strip() for h in ws.row_values(1)]
+        missing = [c for c in columns if c not in headers]
+        if not missing:
+            return []
+        start = len(headers) + 1
+        needed = len(headers) + len(missing)
+        if ws.col_count < needed:
+            ws.add_cols(needed - ws.col_count)
+        updates = [{"range": gspread.utils.rowcol_to_a1(1, start + i), "values": [[name]]}
+                   for i, name in enumerate(missing)]
+        ws.batch_update(updates)
+        return missing
+
+    def append_ideas(self, idea_dicts: list[dict]) -> int:
+        if not idea_dicts:
+            return 0
+        ws = self._ws(INSPIRATION_IDEAS_TAB)
+        headers = [h.strip() for h in ws.row_values(1)]
+        matrix = [[str(d.get(h, "")) for h in headers] for d in idea_dicts]
+        ws.append_rows(matrix, value_input_option="RAW")
+        return len(matrix)
+
+    def read_ideas(self) -> list[dict]:
+        _, rows = self._read_table(self._ws(INSPIRATION_IDEAS_TAB))
+        return [r for r in rows if str(r.get("IDEA_ID", "")).strip()]
 
     # ---- winning format profiles (internal evidence only) ----------------
     def read_profiles(self) -> list[dict]:

@@ -135,6 +135,7 @@ python src/main.py discover-inspiration           # Apify research discovery -> 
 python src/main.py build-winning-profiles         # Storelli winning format profiles (internal only)
 python src/main.py match-inspiration              # match safe external rows to active profiles
 python src/main.py quality-review-inspiration     # QC external candidates for idea-gen readiness
+python src/main.py generate-ideas                 # rated Storelli creative ideas (internal-anchored)
 ```
 
 (`python -m src.main <command>` works too.)
@@ -674,6 +675,34 @@ external candidates. For each it writes `CREATIVE_MECHANISM`, `ADAPTABILITY_SCOR
   fails the run) or `Metadata Only` otherwise. A metadata-only review never
   claims full-video confidence. Runs log to `INSPIRATION_RUNS`
   (`RUN_TYPE=QualityReview`). Writes only to `INSPIRATION_CONTENT`.
+
+### Rated creative idea generation (Milestone 4A)
+
+`python src/main.py generate-ideas` (or **Generate Rated Creative Ideas**)
+produces Storelli-specific short-form video ideas by **adapting** high-quality
+external creative *mechanisms* onto internal winning profiles — then rates each
+one. Writes to the `INSPIRATION_IDEAS` tab; logs to `INSPIRATION_RUNS`
+(`RUN_TYPE=Ideas`).
+
+- **Every idea is anchored to an active internal winning profile** (the proof
+  the format works for Storelli). An idea with no internal evidence is never
+  written; external inspiration alone cannot produce an idea.
+- Eligible external references only: Safe + Analyzed + `USE_FOR_IDEA_GEN=TRUE` +
+  `INSPIRATION_QUALITY_SCORE ≥ 80` + all risks Low + a clear creative mechanism.
+- **Citations are separated**: internal evidence as `[S#]`, external inspiration
+  as `[E#]`. External views are never claimed as Storelli proof; captions/
+  scripts/footage are never copied; no famous players / match / broadcast / fan
+  edits / off-domain content.
+- **IDEA_SCORE** = 25% evidence-fit + 20% inspiration-fit + 15% product-fit +
+  10% ICP-fit + 10% execution-clarity + 10% novelty + 5% feasibility + 5%
+  copyright-safety. `STRATEGIC_PRIORITY_SCORE` is a separate ranking field (not
+  folded into IDEA_SCORE). Evidence-fit is anchored to the internal profile;
+  copyright-safety is re-checked on the generated text.
+- **Self-critique gate**: the model self-critiques and revises; a deterministic
+  gate then drops generic hooks, copyright hits, missing shot lists, and
+  sub-threshold ideas. Weak ideas are not written.
+
+Not built: idea execution/publishing, Slack changes.
 
 ### External inspiration analysis (tagging)
 
