@@ -585,6 +585,17 @@ def cmd_discover_inspiration() -> int:
     return 0
 
 
+def cmd_build_winning_profiles() -> int:
+    """Build Storelli Winning Format Profiles from internal evidence only
+    (completed/tagged rows + performance buckets). External inspiration never
+    contributes to a profile's sample size, confidence, or proof."""
+    import winning_profiles
+
+    run = winning_profiles.build_winning_profiles()
+    winning_profiles.print_profiles_summary(run)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # notion-sync (Notion Brain — structured synthesized intelligence only)
 # ---------------------------------------------------------------------------
@@ -752,7 +763,8 @@ def main() -> int:
                         choices=["analyze", "analyze-all", "correlations", "synthesize",
                                  "notion-sync", "slack-report", "run-all", "reset-incomplete",
                                  "scan-inspiration", "process-inspiration-queue",
-                                 "analyze-inspiration", "discover-inspiration"])
+                                 "analyze-inspiration", "discover-inspiration",
+                                 "build-winning-profiles"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -794,6 +806,9 @@ def main() -> int:
 
         elif args.command == "discover-inspiration":
             return cmd_discover_inspiration()
+
+        elif args.command == "build-winning-profiles":
+            return cmd_build_winning_profiles()
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

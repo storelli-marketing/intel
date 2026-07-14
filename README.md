@@ -132,6 +132,7 @@ python src/main.py scan-inspiration              # scan ACTIVE MONITORED CHANNEL
 python src/main.py process-inspiration-queue     # ingest pasted URLs from INSPIRATION_URL_QUEUE
 python src/main.py analyze-inspiration            # tag EXTERNAL_INSPIRATION rows with the taxonomy
 python src/main.py discover-inspiration           # Apify research discovery -> INSPIRATION_CONTENT
+python src/main.py build-winning-profiles         # Storelli winning format profiles (internal only)
 ```
 
 (`python -m src.main <command>` works too.)
@@ -605,6 +606,24 @@ logged to `INSPIRATION_RUNS` (`RUN_TYPE = Discovery`).
 individual URLs) still works and is unchanged — use it for hand-picked posts.
 Discovery is the automated, research-driven feeder. Both converge on the same
 `INSPIRATION_CONTENT` schema and dedup keyspace.
+
+### Winning Format Profiles (internal evidence only)
+
+`python src/main.py build-winning-profiles` (or **Build Winning Format
+Profiles**) distills the completed/tagged Storelli evidence base into reusable
+creative profiles in the **`WINNING_FORMAT_PROFILES`** tab. Each profile groups
+the "Great" performers for a (Product, ICP) and records the dominant
+hook/format/visual/problem/solution/funnel pattern, `INTERNAL_SAMPLE_SIZE`,
+`PERFORMANCE_SIGNAL`, and `CONFIDENCE` (High = ≥5 supporting rows and ≥50% Great
+rate; Medium = ≥3; below 3 → no profile). `PROFILE_ID` is stable per
+(Product, ICP), so reruns update in place rather than duplicating.
+
+**Only internal evidence is used.** External inspiration rows
+(`SOURCE_TYPE=EXTERNAL_INSPIRATION`) are dropped defensively before counting —
+external views / follower ratio / priority score never contribute to a profile's
+sample size, confidence, or proof. Runs log to `INSPIRATION_RUNS`
+(`RUN_TYPE=Profiles`). The builder only writes to `WINNING_FORMAT_PROFILES`; it
+never modifies internal completed rows.
 
 ### External inspiration analysis (tagging)
 

@@ -228,6 +228,22 @@ def _do_discover_inspiration() -> None:
         _fail(str(e))
 
 
+def _do_build_winning_profiles() -> None:
+    """Build Storelli Winning Format Profiles from internal evidence only.
+    Reads the internal POC sheet + correlations; writes only to
+    WINNING_FORMAT_PROFILES. External inspiration is never used as proof."""
+    import winning_profiles
+    try:
+        _begin("build-winning-profiles")
+        run = winning_profiles.build_winning_profiles()
+        run.pop("_profiles", None)   # keep STATE JSON-clean
+        with _LOCK:
+            STATE["inspiration"] = run
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
 def _do_analyze_inspiration() -> None:
     """Tag EXTERNAL_INSPIRATION rows in INSPIRATION_CONTENT with the creative
     taxonomy. Reads/writes only the inspiration tab — never touches internal
@@ -441,6 +457,13 @@ def run_discover_inspiration(background: BackgroundTasks,
                              x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     return _guarded(_do_discover_inspiration, background)
+
+
+@app.post("/run/build-winning-profiles", status_code=202)
+def run_build_winning_profiles(background: BackgroundTasks,
+                               x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_build_winning_profiles, background)
 
 
 @app.post("/run/notion-sync", status_code=202)
@@ -789,6 +812,8 @@ _HTML = """<!doctype html>
             style="width:100%;height:52px">Process Inspiration URL Queue</button>
     <button class="btn-secondary" id="btnDiscover" onclick="run('discover-inspiration')"
             style="width:100%;height:52px;margin-top:12px">Discover Inspiration from Apify</button>
+    <button class="btn-secondary" id="btnProfiles" onclick="run('build-winning-profiles')"
+            style="width:100%;height:52px;margin-top:12px">Build Winning Format Profiles</button>
     <button class="btn-secondary" id="btnAnalyzeInsp" onclick="run('analyze-inspiration')"
             style="width:100%;height:52px;margin-top:12px">Analyze Inspiration Content</button>
     <button class="btn-secondary" id="btnScanInsp" onclick="run('scan-inspiration')"
@@ -843,7 +868,7 @@ async function poll(){
     const j = await (await fetch('/status')).json();
     const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
     const busy = (j.status==='queued'||j.status==='running');
-    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
+    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
     const s=j.stats||{};
     const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0)+(s.skipped_no_link||0);
     $('s_scanned').textContent = s.scanned ?? '–';
@@ -879,6 +904,10 @@ async function poll(){
         txt = 'Last analysis ('+ins.STATUS+') — eligible: '+(ins.POSTS_DISCOVERED||0)
           +' · analyzed: '+(ins.POSTS_ANALYZED||0)
           +((ins.POSTS_FAILED)?(' · failed: '+ins.POSTS_FAILED):'');
+      } else if(t==='Profiles'){
+        txt = 'Last profiles build ('+ins.STATUS+') — internal rows: '+(ins.POSTS_DISCOVERED||0)
+          +' · created: '+(ins.POSTS_ADDED||0)+' · updated: '+(ins.POSTS_ANALYZED||0)
+          +' · active: '+(ins.POSTS_SHORTLISTED||0);
       } else if(t==='Discovery'){
         txt = 'Last discovery ('+ins.STATUS+') — queries: '+(ins.CHANNELS_SCANNED||0)
           +' · candidates: '+(ins.POSTS_DISCOVERED||0)+' · added: '+(ins.POSTS_ADDED||0)
@@ -915,7 +944,8 @@ async function run(action){
                  'scan-inspiration':'/run/scan-inspiration',
                  'process-inspiration-queue':'/run/process-inspiration-queue',
                  'analyze-inspiration':'/run/analyze-inspiration',
-                 'discover-inspiration':'/run/discover-inspiration'};
+                 'discover-inspiration':'/run/discover-inspiration',
+                 'build-winning-profiles':'/run/build-winning-profiles'};
   const path = paths[action];
   const body = (action==='social' || action==='analyze-all')
     ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';

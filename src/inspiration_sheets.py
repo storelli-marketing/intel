@@ -32,6 +32,7 @@ INSPIRATION_RUNS_TAB = "INSPIRATION_RUNS"
 INSPIRATION_CONFIG_TAB = "INSPIRATION_CONFIG"
 INSPIRATION_URL_QUEUE_TAB = "INSPIRATION_URL_QUEUE"
 APIFY_DISCOVERY_QUERIES_TAB = "APIFY_DISCOVERY_QUERIES"
+WINNING_FORMAT_PROFILES_TAB = "WINNING_FORMAT_PROFILES"
 
 # Human-in-the-loop queue: paste promising individual reel/post URLs here and
 # process-inspiration-queue ingests each one via yt-dlp (single-URL, cookie
@@ -358,6 +359,50 @@ class InspirationSheets:
         _set("ERROR_MESSAGE", error_message)
         if updates:
             ws.batch_update(updates)
+
+    # ---- winning format profiles (internal evidence only) ----------------
+    def read_profiles(self) -> list[dict]:
+        try:
+            _, rows = self._read_table(self._ws(WINNING_FORMAT_PROFILES_TAB))
+        except gspread.WorksheetNotFound:
+            return []
+        return [r for r in rows if str(r.get("PROFILE_ID", "")).strip()]
+
+    def upsert_profiles(self, profiles: list[dict]) -> tuple[int, int]:
+        """Insert or update WINNING_FORMAT_PROFILES rows keyed by PROFILE_ID.
+        Existing IDs are updated in place (idempotent — no duplicates); new IDs
+        are appended. Returns (created, updated)."""
+        if not profiles:
+            return 0, 0
+        ws = self._ws(WINNING_FORMAT_PROFILES_TAB)
+        headers = [h.strip() for h in ws.row_values(1)]
+        col = {name: i + 1 for i, name in enumerate(headers) if name}
+        _, existing = self._read_table(ws)
+        id_to_row = {str(r.get("PROFILE_ID", "")).strip(): r["_row"]
+                     for r in existing if str(r.get("PROFILE_ID", "")).strip()}
+
+        updates, appends = [], []
+        created = updated = 0
+        for p in profiles:
+            pid = str(p.get("PROFILE_ID", "")).strip()
+            if not pid:
+                continue
+            if pid in id_to_row:
+                ri = id_to_row[pid]
+                for name, val in p.items():
+                    if name in col:
+                        updates.append({
+                            "range": gspread.utils.rowcol_to_a1(ri, col[name]),
+                            "values": [[val]]})
+                updated += 1
+            else:
+                appends.append([str(p.get(h, "")) for h in headers])
+                created += 1
+        if updates:
+            ws.batch_update(updates)
+        if appends:
+            ws.append_rows(appends, value_input_option="RAW")
+        return created, updated
 
     # ---- run log ----------------------------------------------------------
     def append_run(self, run: dict) -> None:

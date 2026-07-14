@@ -73,6 +73,19 @@ GAMBLING_TERMS = {"bet", "betting", "odds", "gambling", "casino", "parlay",
                   "sportsbook", "bookie"}
 BLOCK_MISC = {"onlyfans", "nsfw", "porn", "xxx", "election", "trump", "biden",
               "gore", "graphic injury"}
+# Non-sports "protection" and beauty/lifestyle false positives that generic
+# Ring-5/7 terms ("protective gear", "do this not that") pull in. Phrases are
+# chosen to avoid false-matching legitimate sports content (e.g. bare "hair"
+# would hit "chair"; bare "tactical" would hit soccer "tactics") — so we match
+# specific multi-word phrases instead.
+OFF_DOMAIN_TERMS = {
+    "body armor", "body armour", "stab proof", "stab-proof", "stabproof",
+    "stab vest", "bulletproof", "bullet proof", "knife", "tactical vest",
+    "tactical gear", "cut resistant", "cut-resistant", "nitrile",
+    "industrial glove", "executive protection", "neck protection",
+    "beauty tutorial", "hair tutorial", "hairstyle", "hair hack", "hairhack",
+    "hairtok", "braids", "twist braid", "makeup",
+}
 
 # Positive mechanism signals we WANT (creator-led education, protection demos,
 # mistake->correction, confidence framing, gear proof, etc.).
@@ -252,6 +265,9 @@ def assess_safety(cand: DiscoveryCandidate, query_row: dict) -> tuple[float, str
     h = hit(GAMBLING_TERMS)
     if h:
         return 0.0, "Rejected", f"gambling content: '{h.strip()}'"
+    h = hit(OFF_DOMAIN_TERMS)
+    if h:
+        return 0.15, "Rejected", f"off-domain / non-sports protection: '{h.strip()}'"
     h = hit(BLOCK_MISC)
     if h:
         return 0.0, "Rejected", f"disallowed content: '{h.strip()}'"

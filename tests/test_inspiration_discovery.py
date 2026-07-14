@@ -175,6 +175,23 @@ class TestSafetyFilter(unittest.TestCase):
         self.assertEqual(status, "Safe")
         self.assertEqual(score, 1.0)
 
+    def test_off_domain_non_sports_protection_rejected(self):
+        for cap in ["Flexible stab proof neck protection #bodyarmor",
+                    "This glove is almost impossible to cut #nitrile #cut resistant",
+                    "Try this next time you do twist braids #hairtok"]:
+            c = DiscoveryCandidate(post=InspirationPost(post_id="1", post_url="u",
+                                   caption=cap), platform="TikTok")
+            _, status, reason = assess_safety(c, _query())
+            self.assertEqual(status, "Rejected", cap)
+
+    def test_legit_sports_protection_not_over_rejected(self):
+        # Must NOT be caught by the off-domain filter.
+        c = DiscoveryCandidate(post=InspirationPost(post_id="1", post_url="u",
+            caption="Best goalkeeper padded gloves and shin protection for soccer training"),
+            platform="TikTok")
+        _, status, _ = assess_safety(c, _query())
+        self.assertEqual(status, "Safe")
+
 
 class TestRanking(unittest.TestCase):
     def test_view_follower_ratio(self):
