@@ -61,6 +61,13 @@ CONTENT_DISCOVERY_COLUMNS = [
     "SAFETY_STATUS", "REJECTION_REASON",
 ]
 
+# Match columns added to INSPIRATION_CONTENT on first match run (the base
+# MATCH_SCORE/NOVELTY/FINAL/SHORTLISTED/MATCHED_* columns already exist).
+CONTENT_MATCH_COLUMNS = [
+    "BEST_MATCHED_PROFILE_ID", "BEST_MATCHED_PROFILE_NAME", "MATCH_CONFIDENCE",
+    "MATCH_EXPLANATION",
+]
+
 # APIFY_DISCOVERY_QUERIES tab header (created if missing).
 DISCOVERY_QUERY_HEADERS = [
     "QUERY_ID", "PLATFORM", "QUERY_TYPE", "QUERY", "RESEARCH_RING",
@@ -237,6 +244,27 @@ class InspirationSheets:
                    for name, val in values.items() if name in col]
         if updates:
             ws.batch_update(updates)
+
+    def update_content_cells_bulk(self, updates: list) -> None:
+        """Write named cells across MANY INSPIRATION_CONTENT rows in ONE batched
+        request (reads the header once). `updates` is a list of (row_index,
+        values_dict). Avoids the per-row header re-read that trips the Sheets
+        read-quota on large batches."""
+        updates = [u for u in updates if u and u[1]]
+        if not updates:
+            return
+        ws = self._ws(INSPIRATION_CONTENT_TAB)
+        headers = [h.strip() for h in ws.row_values(1)]
+        col = {name: i + 1 for i, name in enumerate(headers) if name}
+        cells = []
+        for row_index, values in updates:
+            for name, val in values.items():
+                if name in col:
+                    cells.append({"range": gspread.utils.rowcol_to_a1(row_index, col[name]),
+                                  "values": [[val]]})
+        # Chunk to stay well under request-size limits.
+        for i in range(0, len(cells), 5000):
+            ws.batch_update(cells[i:i + 5000])
 
     def append_content_rows(self, row_dicts: list[dict]) -> int:
         """Append fully-formed post dicts to INSPIRATION_CONTENT, aligned to the

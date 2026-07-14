@@ -133,6 +133,7 @@ python src/main.py process-inspiration-queue     # ingest pasted URLs from INSPI
 python src/main.py analyze-inspiration            # tag EXTERNAL_INSPIRATION rows with the taxonomy
 python src/main.py discover-inspiration           # Apify research discovery -> INSPIRATION_CONTENT
 python src/main.py build-winning-profiles         # Storelli winning format profiles (internal only)
+python src/main.py match-inspiration              # match safe external rows to active profiles
 ```
 
 (`python -m src.main <command>` works too.)
@@ -624,6 +625,33 @@ external views / follower ratio / priority score never contribute to a profile's
 sample size, confidence, or proof. Runs log to `INSPIRATION_RUNS`
 (`RUN_TYPE=Profiles`). The builder only writes to `WINNING_FORMAT_PROFILES`; it
 never modifies internal completed rows.
+
+### Match inspiration to winning profiles
+
+`python src/main.py match-inspiration` (or **Match Inspiration to Winning
+Profiles**) scores each SAFE, ANALYZED external row against the ACTIVE
+(Medium/High) winning profiles and shortlists the strongest references. It
+writes match fields onto the external `INSPIRATION_CONTENT` rows only — it never
+modifies `WINNING_FORMAT_PROFILES` or internal rows. Runs log to
+`INSPIRATION_RUNS` (`RUN_TYPE=Match`).
+
+- **MATCH_SCORE** (0–100) = 25% format + 20% hook + 15% problem/solution + 15%
+  visual + 10% funnel + 10% product/ICP + 5% curation-context overlap (taxonomy
+  fit only — engagement never affects it).
+- **NOVELTY_SCORE** = same strategic mechanism (problem/solution/funnel) with a
+  fresh execution (hook/format/visual). Near-copies and no-mechanism rows score
+  low.
+- **FINAL_SCORE** = 70% MATCH + 15% NOVELTY + 15% discovery `PRIORITY_SCORE`
+  (secondary ranking only; renormalized when priority is absent). Discovery
+  priority / views / follower ratio is **never Storelli proof** and never enters
+  profiles, the Signal Library, Marketing Learnings, or correlations.
+- **SHORTLISTED=TRUE** only when Safe + Analyzed + MATCH_SCORE ≥ 60 +
+  FINAL_SCORE ≥ 60 + active matched profile + not famous-player/match/highlight/
+  off-domain (a copyright safety net re-checks the caption at shortlist time).
+  Otherwise `SHORTLIST_REASON` explains why not.
+
+Reruns update the same rows in place (idempotent — no duplication). Not built
+yet: idea generation, idea scoring.
 
 ### External inspiration analysis (tagging)
 

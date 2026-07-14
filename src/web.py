@@ -244,6 +244,21 @@ def _do_build_winning_profiles() -> None:
         _fail(str(e))
 
 
+def _do_match_inspiration() -> None:
+    """Match safe/analyzed external inspiration to active winning profiles and
+    shortlist. Writes only to INSPIRATION_CONTENT; never modifies profiles or
+    internal rows. Discovery priority is a secondary ranking signal only."""
+    import inspiration_matcher
+    try:
+        _begin("match-inspiration")
+        run = inspiration_matcher.match_inspiration()
+        with _LOCK:
+            STATE["inspiration"] = run
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
 def _do_analyze_inspiration() -> None:
     """Tag EXTERNAL_INSPIRATION rows in INSPIRATION_CONTENT with the creative
     taxonomy. Reads/writes only the inspiration tab — never touches internal
@@ -464,6 +479,13 @@ def run_build_winning_profiles(background: BackgroundTasks,
                                x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     return _guarded(_do_build_winning_profiles, background)
+
+
+@app.post("/run/match-inspiration", status_code=202)
+def run_match_inspiration(background: BackgroundTasks,
+                          x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_match_inspiration, background)
 
 
 @app.post("/run/notion-sync", status_code=202)
@@ -814,6 +836,8 @@ _HTML = """<!doctype html>
             style="width:100%;height:52px;margin-top:12px">Discover Inspiration from Apify</button>
     <button class="btn-secondary" id="btnProfiles" onclick="run('build-winning-profiles')"
             style="width:100%;height:52px;margin-top:12px">Build Winning Format Profiles</button>
+    <button class="btn-secondary" id="btnMatch" onclick="run('match-inspiration')"
+            style="width:100%;height:52px;margin-top:12px">Match Inspiration to Winning Profiles</button>
     <button class="btn-secondary" id="btnAnalyzeInsp" onclick="run('analyze-inspiration')"
             style="width:100%;height:52px;margin-top:12px">Analyze Inspiration Content</button>
     <button class="btn-secondary" id="btnScanInsp" onclick="run('scan-inspiration')"
@@ -868,7 +892,7 @@ async function poll(){
     const j = await (await fetch('/status')).json();
     const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
     const busy = (j.status==='queued'||j.status==='running');
-    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
+    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles','btnMatch'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
     const s=j.stats||{};
     const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0)+(s.skipped_no_link||0);
     $('s_scanned').textContent = s.scanned ?? '–';
@@ -904,6 +928,9 @@ async function poll(){
         txt = 'Last analysis ('+ins.STATUS+') — eligible: '+(ins.POSTS_DISCOVERED||0)
           +' · analyzed: '+(ins.POSTS_ANALYZED||0)
           +((ins.POSTS_FAILED)?(' · failed: '+ins.POSTS_FAILED):'');
+      } else if(t==='Match'){
+        txt = 'Last match ('+ins.STATUS+') — external rows: '+(ins.POSTS_DISCOVERED||0)
+          +' · matched: '+(ins.POSTS_ANALYZED||0)+' · shortlisted: '+(ins.POSTS_SHORTLISTED||0);
       } else if(t==='Profiles'){
         txt = 'Last profiles build ('+ins.STATUS+') — internal rows: '+(ins.POSTS_DISCOVERED||0)
           +' · created: '+(ins.POSTS_ADDED||0)+' · updated: '+(ins.POSTS_ANALYZED||0)
@@ -945,7 +972,8 @@ async function run(action){
                  'process-inspiration-queue':'/run/process-inspiration-queue',
                  'analyze-inspiration':'/run/analyze-inspiration',
                  'discover-inspiration':'/run/discover-inspiration',
-                 'build-winning-profiles':'/run/build-winning-profiles'};
+                 'build-winning-profiles':'/run/build-winning-profiles',
+                 'match-inspiration':'/run/match-inspiration'};
   const path = paths[action];
   const body = (action==='social' || action==='analyze-all')
     ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';
