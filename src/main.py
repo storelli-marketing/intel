@@ -608,6 +608,18 @@ def cmd_match_inspiration() -> int:
     return 0
 
 
+def cmd_quality_review_inspiration() -> int:
+    """Quality-control review of safe, analyzed external inspiration candidates
+    (adaptability, Storelli relevance, copyright/off-domain risk, creative
+    mechanism) with a best-effort full-video check on the top candidates. Not
+    idea generation or scoring. Writes only to INSPIRATION_CONTENT."""
+    import inspiration_quality
+
+    run = inspiration_quality.quality_review_inspiration()
+    inspiration_quality.print_quality_summary(run)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # notion-sync (Notion Brain — structured synthesized intelligence only)
 # ---------------------------------------------------------------------------
@@ -776,7 +788,8 @@ def main() -> int:
                                  "notion-sync", "slack-report", "run-all", "reset-incomplete",
                                  "scan-inspiration", "process-inspiration-queue",
                                  "analyze-inspiration", "discover-inspiration",
-                                 "build-winning-profiles", "match-inspiration"])
+                                 "build-winning-profiles", "match-inspiration",
+                                 "quality-review-inspiration"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -824,6 +837,9 @@ def main() -> int:
 
         elif args.command == "match-inspiration":
             return cmd_match_inspiration()
+
+        elif args.command == "quality-review-inspiration":
+            return cmd_quality_review_inspiration()
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

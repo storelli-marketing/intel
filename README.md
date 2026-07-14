@@ -134,6 +134,7 @@ python src/main.py analyze-inspiration            # tag EXTERNAL_INSPIRATION row
 python src/main.py discover-inspiration           # Apify research discovery -> INSPIRATION_CONTENT
 python src/main.py build-winning-profiles         # Storelli winning format profiles (internal only)
 python src/main.py match-inspiration              # match safe external rows to active profiles
+python src/main.py quality-review-inspiration     # QC external candidates for idea-gen readiness
 ```
 
 (`python -m src.main <command>` works too.)
@@ -652,6 +653,27 @@ modifies `WINNING_FORMAT_PROFILES` or internal rows. Runs log to
 
 Reruns update the same rows in place (idempotent — no duplication). Not built
 yet: idea generation, idea scoring.
+
+### Inspiration candidate quality review
+
+`python src/main.py quality-review-inspiration` (or **Quality Review Inspiration
+Candidates**) is a quality-control gate (NOT idea scoring) over SAFE, ANALYZED
+external candidates. For each it writes `CREATIVE_MECHANISM`, `ADAPTABILITY_SCORE`,
+`STORELLI_RELEVANCE_SCORE`, `COPYRIGHT_RISK_SCORE`, `FAMOUS_PLAYER_RISK` /
+`MATCH_FOOTAGE_RISK` / `OFF_DOMAIN_RISK`, `INSPIRATION_QUALITY_SCORE`,
+`REVIEW_METHOD`, and `USE_FOR_IDEA_GEN`.
+
+- **INSPIRATION_QUALITY_SCORE** = 35% adaptability + 30% Storelli relevance +
+  20% mechanism clarity + 15% view/follower-ratio signal − copyright/off-domain
+  penalty. The ratio is a prioritization signal only — high views alone can't
+  pass a low-relevance candidate, and never make external content Storelli proof.
+- **USE_FOR_IDEA_GEN=TRUE** only when Safe + Analyzed + quality ≥ 70 + copyright
+  risk ≤ 30 + famous/match/off-domain risk all Low + a clear creative mechanism.
+- **REVIEW_METHOD** = `Full Video` when the media was actually downloaded/
+  inspected (best-effort on the top candidates via yt-dlp, one bad video never
+  fails the run) or `Metadata Only` otherwise. A metadata-only review never
+  claims full-video confidence. Runs log to `INSPIRATION_RUNS`
+  (`RUN_TYPE=QualityReview`). Writes only to `INSPIRATION_CONTENT`.
 
 ### External inspiration analysis (tagging)
 

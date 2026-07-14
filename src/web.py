@@ -244,6 +244,22 @@ def _do_build_winning_profiles() -> None:
         _fail(str(e))
 
 
+def _do_quality_review_inspiration() -> None:
+    """Quality-control review of safe/analyzed external candidates. Writes only
+    to INSPIRATION_CONTENT; never touches internal rows or profiles. Not idea
+    generation/scoring."""
+    import inspiration_quality
+    try:
+        _begin("quality-review-inspiration")
+        run = inspiration_quality.quality_review_inspiration()
+        run.pop("_full_video_count", None)
+        with _LOCK:
+            STATE["inspiration"] = run
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
 def _do_match_inspiration() -> None:
     """Match safe/analyzed external inspiration to active winning profiles and
     shortlist. Writes only to INSPIRATION_CONTENT; never modifies profiles or
@@ -486,6 +502,13 @@ def run_match_inspiration(background: BackgroundTasks,
                           x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     return _guarded(_do_match_inspiration, background)
+
+
+@app.post("/run/quality-review-inspiration", status_code=202)
+def run_quality_review_inspiration(background: BackgroundTasks,
+                                   x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_quality_review_inspiration, background)
 
 
 @app.post("/run/notion-sync", status_code=202)
@@ -838,6 +861,8 @@ _HTML = """<!doctype html>
             style="width:100%;height:52px;margin-top:12px">Build Winning Format Profiles</button>
     <button class="btn-secondary" id="btnMatch" onclick="run('match-inspiration')"
             style="width:100%;height:52px;margin-top:12px">Match Inspiration to Winning Profiles</button>
+    <button class="btn-secondary" id="btnQuality" onclick="run('quality-review-inspiration')"
+            style="width:100%;height:52px;margin-top:12px">Quality Review Inspiration Candidates</button>
     <button class="btn-secondary" id="btnAnalyzeInsp" onclick="run('analyze-inspiration')"
             style="width:100%;height:52px;margin-top:12px">Analyze Inspiration Content</button>
     <button class="btn-secondary" id="btnScanInsp" onclick="run('scan-inspiration')"
@@ -892,7 +917,7 @@ async function poll(){
     const j = await (await fetch('/status')).json();
     const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
     const busy = (j.status==='queued'||j.status==='running');
-    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles','btnMatch'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
+    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles','btnMatch','btnQuality'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
     const s=j.stats||{};
     const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0)+(s.skipped_no_link||0);
     $('s_scanned').textContent = s.scanned ?? '–';
@@ -931,6 +956,9 @@ async function poll(){
       } else if(t==='Match'){
         txt = 'Last match ('+ins.STATUS+') — external rows: '+(ins.POSTS_DISCOVERED||0)
           +' · matched: '+(ins.POSTS_ANALYZED||0)+' · shortlisted: '+(ins.POSTS_SHORTLISTED||0);
+      } else if(t==='QualityReview'){
+        txt = 'Last quality review ('+ins.STATUS+') — reviewed: '+(ins.POSTS_DISCOVERED||0)
+          +' · use-for-idea-gen: '+(ins.POSTS_SHORTLISTED||0);
       } else if(t==='Profiles'){
         txt = 'Last profiles build ('+ins.STATUS+') — internal rows: '+(ins.POSTS_DISCOVERED||0)
           +' · created: '+(ins.POSTS_ADDED||0)+' · updated: '+(ins.POSTS_ANALYZED||0)
@@ -973,7 +1001,8 @@ async function run(action){
                  'analyze-inspiration':'/run/analyze-inspiration',
                  'discover-inspiration':'/run/discover-inspiration',
                  'build-winning-profiles':'/run/build-winning-profiles',
-                 'match-inspiration':'/run/match-inspiration'};
+                 'match-inspiration':'/run/match-inspiration',
+                 'quality-review-inspiration':'/run/quality-review-inspiration'};
   const path = paths[action];
   const body = (action==='social' || action==='analyze-all')
     ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';
