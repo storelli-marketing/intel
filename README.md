@@ -676,6 +676,28 @@ external candidates. For each it writes `CREATIVE_MECHANISM`, `ADAPTABILITY_SCOR
   claims full-video confidence. Runs log to `INSPIRATION_RUNS`
   (`RUN_TYPE=QualityReview`). Writes only to `INSPIRATION_CONTENT`.
 
+### Slack rated-idea retrieval (Milestone 4B — read-only)
+
+Ask the Marketing Brain in Slack for ideas and it retrieves, ranks, explains,
+and critiques the rated ideas from `INSPIRATION_IDEAS` (`src/idea_retrieval.py`)
+— **read-only**: it never generates ideas live, never writes to the sheet.
+Idea asks are recognized semantically (not just exact keywords) and answered
+deterministically (bypassing the LLM strategist so citations stay exact).
+
+Supported asks include: *"give me 5 BodyShield ideas"*, *"what are the best
+ideas we have?"*, *"show me parent-facing ideas"*, *"which ideas are worth
+shooting?"*, *"critique the top ideas"*, *"what should we shoot first?"* (ranked
+by production practicality, not just IDEA_SCORE), *"which ideas are too
+generic?"*, *"show me the evidence behind the top idea"*.
+
+Answers stay to the top 3–5, cite internal proof `[S#]` and external inspiration
+`[E#]` as **separate** clickable Slack links, and never present external views as
+proof. A light generic-language check flags hype phrases (game-changer, unleash,
+dominate, inner keeper, zero hesitation, unbreakable…) and suggests sharper
+rewrites — without touching the sheet. If no rated ideas exist, it falls back to
+the older live signal-grounded idea path. All other Slack retrieval paths are
+unchanged.
+
 ### Rated creative idea generation (Milestone 4A)
 
 `python src/main.py generate-ideas` (or **Generate Rated Creative Ideas**)

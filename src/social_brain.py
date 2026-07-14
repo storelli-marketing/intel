@@ -44,8 +44,9 @@ log = get_logger()
 
 _HELP = (
     "Hi — I'm the Storelli Marketing Brain. Ask me:\n"
-    "• *ideas* — 3–5 practical Storelli social video ideas grounded in current signals\n"
-    "  _e.g. \"give me ideas for BodyShield\", \"ideas for parents\"_\n"
+    "• *ideas* — top rated creative ideas (from INSPIRATION_IDEAS) with proof + critique\n"
+    "  _e.g. \"give me 5 BodyShield ideas\", \"which ideas are worth shooting?\", "
+    "\"critique the top ideas\", \"which ideas are too generic?\"_\n"
     "• *feedback <link>* — how a specific reel performed and what to do next\n"
     "• *what is working / what should we avoid* — current winning + weak patterns\n"
     "• *what hooks/formats work for <product/ICP>?* / *what did we learn about <product>?*\n"
@@ -703,7 +704,10 @@ def answer_question(user_text: str) -> str:
     mode = _route(text)
     try:
         if mode == "ideas":
-            return _mode_ideas(text)
+            # Prefer the curated RATED ideas (INSPIRATION_IDEAS, Milestone 4A/4B);
+            # fall back to the live signal-grounded generator when none exist.
+            import idea_retrieval
+            return idea_retrieval.answer_ideas(text, fallback=lambda: _mode_ideas(text))
         if mode == "feedback":
             return _mode_feedback(text)
         if mode == "learnings":
@@ -1083,6 +1087,18 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     # Gemini (nothing to compose; it's for operators, not the strategist voice).
     if last_assistant and _classify_followup(text) == "source_debug":
         return social_strategist.render_source_debug(text, context)
+
+    # Rated-idea retrieval (Milestone 4B) is deterministic, cited, and read-only —
+    # answer it directly instead of routing idea asks through the LLM strategist.
+    # Follow-up transforms (e.g. "turn this into a brief") are NOT idea queries
+    # and fall through to the existing conversational engine below.
+    try:
+        import idea_retrieval
+        if idea_retrieval.is_idea_query(text):
+            answer = idea_retrieval.answer_ideas(text, fallback=lambda: _mode_ideas(text))
+            return _finish_conversational(answer, text, skip_polish=True)
+    except Exception as e:  # noqa: BLE001 - never let idea retrieval break the bot
+        log.warning("idea_retrieval intercept failed, falling through: %s", e)
 
     try:
         if config.SLACK_STRATEGIST_MODE_ENABLED and config.GEMINI_API_KEY:
