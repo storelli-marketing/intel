@@ -136,6 +136,7 @@ python src/main.py build-winning-profiles         # Storelli winning format prof
 python src/main.py match-inspiration              # match safe external rows to active profiles
 python src/main.py quality-review-inspiration     # QC external candidates for idea-gen readiness
 python src/main.py generate-ideas                 # rated Storelli creative ideas (internal-anchored)
+python src/main.py refine-ideas                   # creative-director polish (refinement columns only)
 ```
 
 (`python -m src.main <command>` works too.)
@@ -675,6 +676,19 @@ external candidates. For each it writes `CREATIVE_MECHANISM`, `ADAPTABILITY_SCOR
   fails the run) or `Metadata Only` otherwise. A metadata-only review never
   claims full-video confidence. Runs log to `INSPIRATION_RUNS`
   (`RUN_TYPE=QualityReview`). Writes only to `INSPIRATION_CONTENT`.
+
+### Creative director refinement (Milestone 4C)
+
+`python src/main.py refine-ideas` (or **Refine Creative Ideas**) polishes the
+existing rated ideas so titles/hooks/concepts/shot lists read like sharp Storelli
+creative. It writes **only** to the refinement columns (`REFINED_IDEA_TITLE`,
+`REFINED_HOOK`, `REFINED_CONCEPT`, `REFINED_SHOT_LIST`, `CREATIVE_DIRECTOR_NOTES`,
+`ORIGINAL_WEAKNESS`, `REFINEMENT_STATUS`) — the original idea fields and all
+source fields are preserved untouched, and scoring is unchanged. Generic hype
+(game changer, dominate, unleash, unbreakable, inner keeper, zero hesitation…) is
+stripped, hooks are made concrete/visual, copyright safety is re-checked on the
+refined text (unsafe refinements are rejected → `Needs Review`), and no external
+scripts are copied. Runs log to `INSPIRATION_RUNS` (`RUN_TYPE=Refine`).
 
 ### Slack rated-idea retrieval (Milestone 4B — read-only)
 

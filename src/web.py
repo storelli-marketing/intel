@@ -244,6 +244,22 @@ def _do_build_winning_profiles() -> None:
         _fail(str(e))
 
 
+def _do_refine_ideas() -> None:
+    """Creative-director refinement of existing rated ideas. Writes only the
+    refinement columns of INSPIRATION_IDEAS; preserves originals + sources;
+    never touches internal rows, profiles, or scoring."""
+    import idea_refiner
+    try:
+        _begin("refine-ideas")
+        run = idea_refiner.refine_ideas()
+        run.pop("_refinements", None)
+        with _LOCK:
+            STATE["inspiration"] = run
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
 def _do_generate_ideas() -> None:
     """Generate + rate Storelli creative ideas from internal profiles + safe
     high-quality external inspiration. Writes only to INSPIRATION_IDEAS; never
@@ -532,6 +548,13 @@ def run_generate_ideas(background: BackgroundTasks,
                        x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     return _guarded(_do_generate_ideas, background)
+
+
+@app.post("/run/refine-ideas", status_code=202)
+def run_refine_ideas(background: BackgroundTasks,
+                     x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_refine_ideas, background)
 
 
 @app.post("/run/notion-sync", status_code=202)
@@ -888,6 +911,8 @@ _HTML = """<!doctype html>
             style="width:100%;height:52px;margin-top:12px">Quality Review Inspiration Candidates</button>
     <button class="btn-primary" id="btnIdeas" onclick="run('generate-ideas')"
             style="width:100%;height:52px;margin-top:12px">Generate Rated Creative Ideas</button>
+    <button class="btn-secondary" id="btnRefine" onclick="run('refine-ideas')"
+            style="width:100%;height:52px;margin-top:12px">Refine Creative Ideas</button>
     <button class="btn-secondary" id="btnAnalyzeInsp" onclick="run('analyze-inspiration')"
             style="width:100%;height:52px;margin-top:12px">Analyze Inspiration Content</button>
     <button class="btn-secondary" id="btnScanInsp" onclick="run('scan-inspiration')"
@@ -942,7 +967,7 @@ async function poll(){
     const j = await (await fetch('/status')).json();
     const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
     const busy = (j.status==='queued'||j.status==='running');
-    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles','btnMatch','btnQuality','btnIdeas'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
+    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles','btnMatch','btnQuality','btnIdeas','btnRefine'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
     const s=j.stats||{};
     const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0)+(s.skipped_no_link||0);
     $('s_scanned').textContent = s.scanned ?? '–';
@@ -987,6 +1012,9 @@ async function poll(){
       } else if(t==='Ideas'){
         txt = 'Last idea run ('+ins.STATUS+') — profiles: '+(ins.POSTS_DISCOVERED||0)
           +' · ideas: '+(ins.POSTS_ADDED||0)+' · high-priority: '+(ins.POSTS_SHORTLISTED||0);
+      } else if(t==='Refine'){
+        txt = 'Last refinement ('+ins.STATUS+') — ideas: '+(ins.POSTS_DISCOVERED||0)
+          +' · refined: '+(ins.POSTS_ANALYZED||0)+' · clean: '+(ins.POSTS_SHORTLISTED||0);
       } else if(t==='Profiles'){
         txt = 'Last profiles build ('+ins.STATUS+') — internal rows: '+(ins.POSTS_DISCOVERED||0)
           +' · created: '+(ins.POSTS_ADDED||0)+' · updated: '+(ins.POSTS_ANALYZED||0)

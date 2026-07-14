@@ -632,6 +632,17 @@ def cmd_generate_ideas() -> int:
     return 0
 
 
+def cmd_refine_ideas() -> int:
+    """Creative-director refinement of existing rated ideas: sharpen titles/
+    hooks/concepts/shot lists into the refinement columns only. Preserves all
+    original + source fields; changes no scoring, matching, or internal rows."""
+    import idea_refiner
+
+    run = idea_refiner.refine_ideas()
+    idea_refiner.print_refine_summary(run)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # notion-sync (Notion Brain — structured synthesized intelligence only)
 # ---------------------------------------------------------------------------
@@ -801,7 +812,8 @@ def main() -> int:
                                  "scan-inspiration", "process-inspiration-queue",
                                  "analyze-inspiration", "discover-inspiration",
                                  "build-winning-profiles", "match-inspiration",
-                                 "quality-review-inspiration", "generate-ideas"])
+                                 "quality-review-inspiration", "generate-ideas",
+                                 "refine-ideas"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -855,6 +867,9 @@ def main() -> int:
 
         elif args.command == "generate-ideas":
             return cmd_generate_ideas()
+
+        elif args.command == "refine-ideas":
+            return cmd_refine_ideas()
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

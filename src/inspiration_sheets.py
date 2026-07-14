@@ -46,6 +46,13 @@ IDEA_SCORE_COLUMNS = [
     "SELF_CRITIQUE", "RISK_NOTES", "RECOMMENDED_SHOOT_PRIORITY",
 ]
 
+# Creative-director refinement columns (Milestone 4C). Refinements are written
+# ONLY here — the original idea fields are never overwritten.
+IDEA_REFINE_COLUMNS = [
+    "REFINED_IDEA_TITLE", "REFINED_HOOK", "REFINED_CONCEPT", "REFINED_SHOT_LIST",
+    "CREATIVE_DIRECTOR_NOTES", "ORIGINAL_WEAKNESS", "REFINEMENT_STATUS",
+]
+
 # Human-in-the-loop queue: paste promising individual reel/post URLs here and
 # process-inspiration-queue ingests each one via yt-dlp (single-URL, cookie
 # auth) — no profile enumeration, no Apify.
@@ -437,6 +444,24 @@ class InspirationSheets:
     def read_ideas(self) -> list[dict]:
         _, rows = self._read_table(self._ws(INSPIRATION_IDEAS_TAB))
         return [r for r in rows if str(r.get("IDEA_ID", "")).strip()]
+
+    def update_idea_cells_bulk(self, updates: list) -> None:
+        """Write named cells across many INSPIRATION_IDEAS rows in one batched
+        request (header read once). `updates` = list of (row_index, values)."""
+        updates = [u for u in updates if u and u[1]]
+        if not updates:
+            return
+        ws = self._ws(INSPIRATION_IDEAS_TAB)
+        headers = [h.strip() for h in ws.row_values(1)]
+        col = {name: i + 1 for i, name in enumerate(headers) if name}
+        cells = []
+        for row_index, values in updates:
+            for name, val in values.items():
+                if name in col:
+                    cells.append({"range": gspread.utils.rowcol_to_a1(row_index, col[name]),
+                                  "values": [[val]]})
+        for i in range(0, len(cells), 5000):
+            ws.batch_update(cells[i:i + 5000])
 
     # ---- winning format profiles (internal evidence only) ----------------
     def read_profiles(self) -> list[dict]:
