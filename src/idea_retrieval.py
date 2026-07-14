@@ -136,6 +136,43 @@ def _has(idea: dict, *keys) -> bool:
     return any(str(idea.get(k, "")).strip() for k in keys)
 
 
+def _is_refined(idea: dict) -> bool:
+    return str(idea.get("REFINEMENT_STATUS", "")).strip().lower() == "refined"
+
+
+def _field(idea: dict, refined_key: str, original_key: str) -> str:
+    """Prefer the creative-director refined field when the idea is Refined and
+    the refined value is non-empty; otherwise fall back to the original. Never
+    breaks older/unrefined ideas."""
+    if _is_refined(idea):
+        v = str(idea.get(refined_key, "")).strip()
+        if v:
+            return v
+    return str(idea.get(original_key, "")).strip()
+
+
+def _uses_refined(idea: dict) -> bool:
+    return _is_refined(idea) and _has(idea, "REFINED_IDEA_TITLE", "REFINED_HOOK",
+                                      "REFINED_CONCEPT", "REFINED_SHOT_LIST")
+
+
+def _dedup_weakness(text: str) -> str:
+    """Collapse the redundant generic-language phrasings in ORIGINAL_WEAKNESS
+    (read-only cosmetic — the sheet is not modified)."""
+    out, seen = [], set()
+    for part in (p.strip() for p in str(text or "").split(";") if p.strip()):
+        key = re.sub(r"\(.*?\)", "", part).strip().lower()
+        key = key.replace("generic hype in title/hook", "generic").replace("generic language", "generic")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(part)
+    return "; ".join(out)
+
+
+_REFINED_NOTE = "_Showing refined Storelli-ready versions where available._"
+
+
 def eligible(idea: dict) -> bool:
     if str(idea.get("STATUS", "")).strip().lower() not in _ELIGIBLE_STATUS:
         return False
@@ -285,14 +322,18 @@ def _idea_block(n: int, idea: dict, reg: SourceRegistry) -> str:
     weaknesses = critique_points(idea)
     weak = weaknesses[0] if weaknesses else "no major weakness flagged"
     shoot = str(idea.get("RECOMMENDED_SHOOT_PRIORITY", "")).strip() or "Medium"
-    shot = str(idea.get("SHOT_LIST", "")).strip()
+    title = _field(idea, "REFINED_IDEA_TITLE", "IDEA_TITLE") or "Untitled"
+    hook = _field(idea, "REFINED_HOOK", "HOOK")
+    concept = _field(idea, "REFINED_CONCEPT", "CONCEPT")
+    shot = _field(idea, "REFINED_SHOT_LIST", "SHOT_LIST")
     shot_note = (shot.split("|")[0].strip() + ("…" if "|" in shot else "")) if shot else "n/a"
+    tag = "  _(refined)_" if _uses_refined(idea) else ""
     return (
-        f"\n*{n}. {idea.get('IDEA_TITLE', 'Untitled')}*  "
+        f"\n*{n}. {title}*{tag}  "
         f"_(score {idea.get('IDEA_SCORE', '?')}, priority {idea.get('STRATEGIC_PRIORITY_SCORE', '?')})_\n"
         f"• {idea.get('PRODUCT', '?')} / {idea.get('ICP', '?')} · *{idea.get('FORMAT', '')}* · shoot: *{shoot}*\n"
-        f"• Hook: {idea.get('HOOK', '')}\n"
-        f"• Why it's worth shooting: {str(idea.get('CONCEPT', ''))[:220]}\n"
+        f"• Hook: {hook}\n"
+        f"• Why it's worth shooting: {concept[:220]}\n"
         f"• Shoot note: {shot_note}  ·  CTA: {idea.get('CTA', '')}\n"
         f"• Internal proof: {s_txt}   ·   External inspiration (reference only): {e_txt}\n"
         f"• Watch-out: {weak}"
@@ -315,6 +356,8 @@ def _render_list(ranked: list[dict], q: dict) -> str:
     shown = ranked[:count]
     body = [f"*Top {count} rated idea(s){scope}* — grounded in internal winning profiles, "
             "adapting external creative mechanisms."]
+    if any(_uses_refined(i) for i in shown):
+        body.append(_REFINED_NOTE)
     # If any shown idea is a related-family match (not a literal product match),
     # say so naturally so the user knows why adjacent products appear.
     if q["product"] and any(_is_adjacent(i, q["product"]) for i in shown):
@@ -332,11 +375,14 @@ def _render_shoot_first(ranked: list[dict], q: dict) -> str:
     reg = SourceRegistry()
     body = ["*What to shoot first* — ranked by production practicality "
             "(shoot priority → feasibility → execution clarity), not just idea score."]
+    if any(_uses_refined(i) for i in ranked[:3]):
+        body.append(_REFINED_NOTE)
     for n, idea in enumerate(ranked[:3], 1):
         s_txt, e_txt = _cite_idea(idea, reg)
-        shot = str(idea.get("SHOT_LIST", "")).strip()
+        shot = _field(idea, "REFINED_SHOT_LIST", "SHOT_LIST")
+        title = _field(idea, "REFINED_IDEA_TITLE", "IDEA_TITLE") or "Untitled"
         body.append(
-            f"\n*{n}. {idea.get('IDEA_TITLE', 'Untitled')}*  "
+            f"\n*{n}. {title}*  "
             f"_(shoot {idea.get('RECOMMENDED_SHOOT_PRIORITY', 'Medium')}, "
             f"feasibility {idea.get('FEASIBILITY_SCORE', '?')}, exec {idea.get('EXECUTION_CLARITY_SCORE', '?')})_\n"
             f"• {idea.get('PRODUCT', '?')} / {idea.get('ICP', '?')} · {idea.get('FORMAT', '')}\n"
@@ -350,10 +396,21 @@ def _render_shoot_first(ranked: list[dict], q: dict) -> str:
 def _render_critique(ranked: list[dict], q: dict) -> str:
     body = ["*Blunt critique of the top ideas:*"]
     for n, idea in enumerate(ranked[:5], 1):
-        pts = critique_points(idea)
-        verdict = "solid — worth shooting" if not pts else "; ".join(pts)
-        body.append(f"\n*{n}. {idea.get('IDEA_TITLE', 'Untitled')}* "
-                    f"_(score {idea.get('IDEA_SCORE', '?')})_\n• {verdict}")
+        title = _field(idea, "REFINED_IDEA_TITLE", "IDEA_TITLE") or "Untitled"
+        # Prefer the creative-director diagnosis when it exists.
+        stored = _dedup_weakness(idea.get("ORIGINAL_WEAKNESS", ""))
+        verdict = stored or ("solid — worth shooting" if not critique_points(idea)
+                             else "; ".join(critique_points(idea)))
+        body.append(f"\n*{n}. {title}* _(score {idea.get('IDEA_SCORE', '?')})_\n• {verdict}")
+        # Still call out original generic language explicitly.
+        flags = generic_language_flags(idea)
+        if flags:
+            fixed = " — already refined to a sharper version" if _uses_refined(idea) else ""
+            body.append(f"  ⚠️ Original hook/title used generic language "
+                        f"(_{', '.join(sorted(set(flags)))}_){fixed}.")
+        notes = str(idea.get("CREATIVE_DIRECTOR_NOTES", "")).strip()
+        if notes:
+            body.append(f"  ✏️ Creative director: {notes[:200]}")
     body.append("\n_(Critique only — nothing on the sheet was changed.)_")
     return "\n".join(body)
 
@@ -365,8 +422,12 @@ def _render_generic(ranked: list[dict], q: dict) -> str:
         return "None of the current ideas trip the generic-language check — hooks look specific."
     body = ["*Ideas that read as too generic* (hype words over specifics):"]
     for i, f in flagged[:6]:
-        body.append(f"\n• *{i.get('IDEA_TITLE', 'Untitled')}* — vague: _{', '.join(sorted(set(f)))}_.\n"
-                    f"  Sharper: {suggest_sharper_hook(i)}")
+        line = (f"\n• *{i.get('IDEA_TITLE', 'Untitled')}* — vague: _{', '.join(sorted(set(f)))}_.")
+        if _uses_refined(i):
+            line += f"\n  ✅ Already refined → *{_field(i, 'REFINED_IDEA_TITLE', 'IDEA_TITLE')}*"
+        else:
+            line += f"\n  Sharper: {suggest_sharper_hook(i)}"
+        body.append(line)
     body.append("\n_Suggestions only — I haven't changed the sheet._")
     return "\n".join(body)
 
@@ -379,10 +440,12 @@ def _render_evidence(ranked: list[dict], q: dict) -> str:
     idea = ranked[idx]
     reg = SourceRegistry()
     prof = str(idea.get("SOURCE_PROFILE_NAME", "")).strip() or "winning profile"
+    # Source fields are used EXACTLY as stored — only the display title may be refined.
     s_ids = [reg.internal(u, prof) for u in _split(idea.get("INTERNAL_EVIDENCE_URLS"))]
     e_ids = [reg.external(u) for u in _split(idea.get("EXTERNAL_REFERENCE_URLS"))]
+    title = _field(idea, "REFINED_IDEA_TITLE", "IDEA_TITLE") or "Untitled"
     body = [
-        f"*Evidence behind '{idea.get('IDEA_TITLE', 'Untitled')}'*",
+        f"*Evidence behind '{title}'*",
         f"• Anchored to internal winning profile: *{prof}* "
         f"(confidence {idea.get('CONFIDENCE', '?')}).",
         f"• Storelli internal proof: {' '.join('[' + x + ']' for x in s_ids) or '(profile)'}  "

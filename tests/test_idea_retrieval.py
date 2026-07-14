@@ -175,6 +175,59 @@ class TestSourceRendering(unittest.TestCase):
         self.assertIn("not proof", out.lower())
 
 
+def _refined_idea(**over):
+    d = _idea(REFINEMENT_STATUS="Refined",
+              REFINED_IDEA_TITLE="The 3-Second Grip Check Keepers Skip",
+              REFINED_HOOK="Your grip fails on wet shots because of one setup mistake.",
+              REFINED_CONCEPT="Three concrete grip checkpoints to self-test pre-match.",
+              REFINED_SHOT_LIST="hand seam on ball | wet-ball catch | before/after hold",
+              CREATIVE_DIRECTOR_NOTES="Cut the hype; led with a testable mechanic.",
+              ORIGINAL_WEAKNESS="generic hype in title/hook (game changer); generic language (game changer)",
+              IDEA_TITLE="The Game-Changer", HOOK="Unleash your inner keeper and dominate")
+    d.update(over)
+    return d
+
+
+class TestRefinedPreference(unittest.TestCase):
+    def test_uses_refined_title_and_hook(self):
+        out = ir.answer_ideas("give me gloves ideas", ideas=[_refined_idea()])
+        self.assertIn("The 3-Second Grip Check Keepers Skip", out)   # refined title
+        self.assertIn("one setup mistake", out)                       # refined hook
+        self.assertNotIn("The Game-Changer", out)                     # original title hidden
+        self.assertNotIn("Unleash your inner keeper", out)            # original hook hidden
+        self.assertIn("refined", out.lower())                         # marked as refined
+
+    def test_fallback_to_original_when_unrefined(self):
+        out = ir.answer_ideas("give me gloves ideas", ideas=[_idea()])   # no refinement
+        self.assertIn("Wet Weather Grip Myth", out)                   # original title used
+        self.assertNotIn("Showing refined", out)
+
+    def test_fallback_when_refined_field_empty(self):
+        # Status Refined but REFINED_HOOK empty -> original hook.
+        idea = _refined_idea(REFINED_HOOK="")
+        out = ir.answer_ideas("give me gloves ideas", ideas=[idea])
+        self.assertIn("Unleash your inner keeper", out)               # original hook fallback
+
+    def test_critique_uses_stored_weakness_and_notes(self):
+        out = ir.answer_ideas("critique the top ideas", ideas=[_refined_idea()])
+        self.assertIn("Creative director:", out)                      # CREATIVE_DIRECTOR_NOTES
+        self.assertIn("generic language", out.lower())                # still mentions original generic
+        # De-duplicated weakness: "game changer" appears once in the weakness line.
+        self.assertLessEqual(out.lower().count("generic hype in title/hook"), 1)
+
+    def test_generic_mode_shows_refined_fix(self):
+        out = ir.answer_ideas("which ideas are too generic?", ideas=[_refined_idea()])
+        self.assertIn("Already refined", out)
+        self.assertIn("The 3-Second Grip Check Keepers Skip", out)
+
+    def test_evidence_sources_unchanged_with_refined(self):
+        out = ir.answer_ideas("show me the evidence behind the top idea", ideas=[_refined_idea()])
+        self.assertIn("[S1] <https://www.instagram.com/storellisoccer", out)   # source exact
+        self.assertIn("[E1] <https://www.tiktok.com/@_jason_jamal", out)
+        self.assertIn("not proof", out.lower())
+        self.assertIn("The 3-Second Grip Check Keepers Skip", out)             # refined title
+
+
 class TestGuardrails(unittest.TestCase):
     def test_no_ideas_fallback(self):
         out = ir.answer_ideas("give me ideas", ideas=[])
