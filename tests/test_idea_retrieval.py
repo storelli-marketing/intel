@@ -108,6 +108,37 @@ class TestRetrieval(unittest.TestCase):
         self.assertNotIn("1. Hard Shoot", out)
 
 
+class TestProductFamily(unittest.TestCase):
+    def test_bodyshield_includes_related_pants_leggings(self):
+        out = ir.answer_ideas("give me 5 BodyShield ideas", ideas=ALL)
+        self.assertIn("Turf Burn Before & After", out)      # literal BodyShield
+        # a Pants & Leggings idea is in the same family -> included
+        pants = _idea(IDEA_ID="IDEA-pants-001", PRODUCT="Pants & Leggings",
+                      ICP="Aspiring Pro", IDEA_TITLE="Slide Without Scars", IDEA_SCORE="90")
+        out2 = ir.answer_ideas("give me 5 BodyShield ideas", ideas=ALL + [pants])
+        self.assertIn("Slide Without Scars", out2)
+        self.assertIn("map to the BodyShield family", out2)
+
+    def test_labels_unchanged_in_output(self):
+        pants = _idea(IDEA_ID="IDEA-pants-001", PRODUCT="Pants & Leggings",
+                      ICP="Aspiring Pro", IDEA_TITLE="Slide Without Scars", IDEA_SCORE="90")
+        out = ir.answer_ideas("give me BodyShield ideas", ideas=[BODY, pants])
+        self.assertIn("Pants & Leggings", out)              # exact label preserved
+        self.assertIn("BodyShield GK Leggings", out)        # not renamed
+
+    def test_gloves_query_excludes_leggings_family(self):
+        out = ir.answer_ideas("give me gloves ideas", ideas=ALL)
+        self.assertNotIn("Turf Burn Before & After", out)   # BodyShield excluded
+        self.assertNotIn("Keep Your Kid Diving Confidently", out)
+        self.assertNotIn("family", out)                     # no adjacency note
+
+    def test_family_helper(self):
+        self.assertEqual(ir._family_for("BodyShield GK Leggings"), "leggings")
+        self.assertEqual(ir._family_for("Pants & Leggings"), "leggings")
+        self.assertEqual(ir._family_for("Gloves"), "gloves")
+        self.assertIsNone(ir._family_for("Random Widget"))
+
+
 class TestCritique(unittest.TestCase):
     def test_generic_flagging(self):
         out = ir.answer_ideas("which ideas are too generic?", ideas=ALL)

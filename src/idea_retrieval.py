@@ -58,6 +58,26 @@ _PRODUCTS = {
     "gloves": "Gloves", "glove": "Gloves", "exoshield": "ExoShield",
     "head guard": "Head Guard", "sliders": "Sliders",
 }
+
+# Product families — strategically related products retrieved together. Storelli's
+# leg-protection line (BodyShield, GK Leggings, Pants & Leggings, sliders) shares
+# the same creative territory, so a "BodyShield" ask surfaces the whole family.
+_PRODUCT_FAMILIES = {
+    "leggings": ("bodyshield", "gk leggings", "leggings", "pants & leggings",
+                 "pants", "protective leggings", "sliders", "leg protection", "leg guard"),
+    "gloves": ("gloves", "glove"),
+    "head": ("exoshield", "head guard", "head guards", "gladiator jersey"),
+}
+_FAMILY_LABEL = {"leggings": "leggings/protection", "gloves": "gloves",
+                 "head": "head/jersey protection"}
+
+
+def _family_for(product_text: str) -> Optional[str]:
+    p = str(product_text or "").lower()
+    for fam, members in _PRODUCT_FAMILIES.items():
+        if any(m in p for m in members):
+            return fam
+    return None
 _ICPS = {
     "parent": "Parents", "parents": "Parents", "aspiring pro": "Aspiring Pro",
     "adult amateur": "Adult Amateur", "amateur": "Adult Amateur",
@@ -128,10 +148,31 @@ def eligible(idea: dict) -> bool:
     return True
 
 
+def _product_matches(idea: dict, q_product: str) -> bool:
+    """True if the idea's product is the SAME family as the requested product
+    (so a BodyShield ask also surfaces Pants & Leggings / sliders), else a
+    literal substring fallback."""
+    if not q_product:
+        return True
+    idea_product = str(idea.get("PRODUCT", ""))
+    qfam, ifam = _family_for(q_product), _family_for(idea_product)
+    if qfam and ifam:
+        return qfam == ifam
+    return q_product.lower() in idea_product.lower()
+
+
+def _is_adjacent(idea: dict, q_product: str) -> bool:
+    """True when the idea is a family match but NOT a literal match for the
+    queried product (e.g. a Pants & Leggings idea returned for a BodyShield ask)."""
+    if not q_product:
+        return False
+    return (_product_matches(idea, q_product)
+            and q_product.lower() not in str(idea.get("PRODUCT", "")).lower())
+
+
 def _matches_filters(idea: dict, q: dict) -> bool:
-    if q["product"]:
-        if q["product"].lower() not in str(idea.get("PRODUCT", "")).lower():
-            return False
+    if not _product_matches(idea, q["product"]):
+        return False
     if q["icp"]:
         if q["icp"].lower() not in str(idea.get("ICP", "")).lower():
             return False
@@ -271,9 +312,16 @@ def _render_list(ranked: list[dict], q: dict) -> str:
     if q["icp"]:
         head_bits.append(q["icp"])
     scope = (" for " + " / ".join(head_bits)) if head_bits else ""
+    shown = ranked[:count]
     body = [f"*Top {count} rated idea(s){scope}* — grounded in internal winning profiles, "
             "adapting external creative mechanisms."]
-    for n, idea in enumerate(ranked[:count], 1):
+    # If any shown idea is a related-family match (not a literal product match),
+    # say so naturally so the user knows why adjacent products appear.
+    if q["product"] and any(_is_adjacent(i, q["product"]) for i in shown):
+        fam = _FAMILY_LABEL.get(_family_for(q["product"]), "related")
+        body.append(f"_I'm including related {fam} ideas because they map to the "
+                    f"{q['product']} family._")
+    for n, idea in enumerate(shown, 1):
         body.append(_idea_block(n, idea, reg))
     body.append("\n" + _DISCLAIMER)
     src = reg.render()
