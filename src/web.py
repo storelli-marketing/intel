@@ -213,6 +213,21 @@ def _do_process_inspiration_queue() -> None:
         _fail(str(e))
 
 
+def _do_discover_inspiration() -> None:
+    """Apify Research + Discovery. Finds safe, high-signal external candidates
+    and appends them to INSPIRATION_CONTENT. Isolated from internal Storelli
+    learning — separate worksheet, external inspiration is never proof."""
+    import inspiration_discovery
+    try:
+        _begin("discover-inspiration")
+        run = inspiration_discovery.discover_inspiration()
+        with _LOCK:
+            STATE["inspiration"] = run
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
 def _do_analyze_inspiration() -> None:
     """Tag EXTERNAL_INSPIRATION rows in INSPIRATION_CONTENT with the creative
     taxonomy. Reads/writes only the inspiration tab — never touches internal
@@ -419,6 +434,13 @@ def run_analyze_inspiration(background: BackgroundTasks,
                             x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     return _guarded(_do_analyze_inspiration, background)
+
+
+@app.post("/run/discover-inspiration", status_code=202)
+def run_discover_inspiration(background: BackgroundTasks,
+                             x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_discover_inspiration, background)
 
 
 @app.post("/run/notion-sync", status_code=202)
@@ -765,6 +787,8 @@ _HTML = """<!doctype html>
     <h2><span class="pin">+</span>Inspiration Layer</h2>
     <button class="btn-secondary" id="btnQueue" onclick="run('process-inspiration-queue')"
             style="width:100%;height:52px">Process Inspiration URL Queue</button>
+    <button class="btn-secondary" id="btnDiscover" onclick="run('discover-inspiration')"
+            style="width:100%;height:52px;margin-top:12px">Discover Inspiration from Apify</button>
     <button class="btn-secondary" id="btnAnalyzeInsp" onclick="run('analyze-inspiration')"
             style="width:100%;height:52px;margin-top:12px">Analyze Inspiration Content</button>
     <button class="btn-secondary" id="btnScanInsp" onclick="run('scan-inspiration')"
@@ -819,7 +843,7 @@ async function poll(){
     const j = await (await fetch('/status')).json();
     const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
     const busy = (j.status==='queued'||j.status==='running');
-    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
+    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
     const s=j.stats||{};
     const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0)+(s.skipped_no_link||0);
     $('s_scanned').textContent = s.scanned ?? '–';
@@ -855,6 +879,11 @@ async function poll(){
         txt = 'Last analysis ('+ins.STATUS+') — eligible: '+(ins.POSTS_DISCOVERED||0)
           +' · analyzed: '+(ins.POSTS_ANALYZED||0)
           +((ins.POSTS_FAILED)?(' · failed: '+ins.POSTS_FAILED):'');
+      } else if(t==='Discovery'){
+        txt = 'Last discovery ('+ins.STATUS+') — queries: '+(ins.CHANNELS_SCANNED||0)
+          +' · candidates: '+(ins.POSTS_DISCOVERED||0)+' · added: '+(ins.POSTS_ADDED||0)
+          +' · skipped: '+(ins.POSTS_SKIPPED_EXISTING||0)
+          +((ins.CHANNELS_FAILED)?(' · failed: '+ins.CHANNELS_FAILED):'');
       } else if(t==='Queue'){
         txt = 'Last queue run ('+ins.STATUS+') — URLs: '+(ins.POSTS_DISCOVERED||0)
           +' · added: '+(ins.POSTS_ADDED||0)+' · dupes: '+(ins.POSTS_SKIPPED_EXISTING||0)
@@ -885,7 +914,8 @@ async function run(action){
                  'notion-sync':'/run/notion-sync', 'slack-report':'/run/slack-report',
                  'scan-inspiration':'/run/scan-inspiration',
                  'process-inspiration-queue':'/run/process-inspiration-queue',
-                 'analyze-inspiration':'/run/analyze-inspiration'};
+                 'analyze-inspiration':'/run/analyze-inspiration',
+                 'discover-inspiration':'/run/discover-inspiration'};
   const path = paths[action];
   const body = (action==='social' || action==='analyze-all')
     ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';

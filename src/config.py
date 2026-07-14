@@ -144,6 +144,28 @@ INSPIRATION_PROVIDER = os.getenv("INSPIRATION_PROVIDER", "ytdlp").strip().lower(
 INSPIRATION_FULL_VIDEO_ANALYSIS = os.getenv(
     "INSPIRATION_FULL_VIDEO_ANALYSIS", "false").strip().lower() in ("true", "1", "yes", "on")
 
+# Apify Research + Discovery Layer. Finds safe, high-signal external inspiration
+# candidates (IG/TikTok) via Apify actors, filters for copyright safety and
+# mechanism relevance, ranks by view/follower ratio, and writes candidates into
+# INSPIRATION_CONTENT (SOURCE_TYPE=EXTERNAL_INSPIRATION). The token is a secret —
+# never logged/printed/committed. Missing token => discovery fails cleanly.
+APIFY_TOKEN = os.getenv("APIFY_TOKEN", "").strip()
+APIFY_INSTAGRAM_ACTOR_ID = (os.getenv("APIFY_INSTAGRAM_ACTOR_ID", "").strip()
+                            or "apify/instagram-scraper")
+APIFY_TIKTOK_ACTOR_ID = (os.getenv("APIFY_TIKTOK_ACTOR_ID", "").strip()
+                         or "clockworks/tiktok-scraper")
+
+# Cost/safety caps (overridable, but hard-capped in code).
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)) or default)
+    except ValueError:
+        return default
+
+APIFY_MAX_RESULTS_PER_QUERY = _int_env("APIFY_MAX_RESULTS_PER_QUERY", 25)
+APIFY_MAX_RESULTS_PER_RUN = _int_env("APIFY_MAX_RESULTS_PER_RUN", 100)
+APIFY_DEFAULT_MAX_RESULTS = _int_env("APIFY_DEFAULT_MAX_RESULTS", 10)
+
 # QA compiler pass. On by default (2 Gemini calls/row). Set false to skip it
 # (1 call/row) — useful to stretch a limited free-tier quota.
 QA_COMPILER_ENABLED = os.getenv("QA_COMPILER_ENABLED", "true").strip().lower() \
@@ -194,6 +216,10 @@ def require_sheets() -> None:
 
 def require_gemini() -> None:
     _require("GEMINI_API_KEY")
+
+
+def require_apify() -> None:
+    _require("APIFY_TOKEN")
 
 
 def require_notion() -> None:

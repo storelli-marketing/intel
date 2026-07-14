@@ -131,6 +131,7 @@ python src/main.py reset-incomplete      # re-queue processed-but-untagged rows
 python src/main.py scan-inspiration              # scan ACTIVE MONITORED CHANNELS (metadata)
 python src/main.py process-inspiration-queue     # ingest pasted URLs from INSPIRATION_URL_QUEUE
 python src/main.py analyze-inspiration            # tag EXTERNAL_INSPIRATION rows with the taxonomy
+python src/main.py discover-inspiration           # Apify research discovery -> INSPIRATION_CONTENT
 ```
 
 (`python -m src.main <command>` works too.)
@@ -549,6 +550,61 @@ queue row is then marked **Processed**, **Duplicate**, or **Failed** with
 `INSPIRATION_CONTENT` (`RUN_TYPE = Scan`). Note: profile enumeration via yt-dlp
 is currently unreliable on Instagram, so the URL queue above is the recommended
 ingestion path until a hosted provider is added.
+
+### Research + Discovery Layer (Apify — IG/TikTok)
+
+`python src/main.py discover-inspiration` (or **Discover Inspiration from Apify**
+on the dashboard) finds *safe, high-signal* external candidates and appends them
+to `INSPIRATION_CONTENT`. It runs **before** analysis and never touches internal
+Storelli data.
+
+**Setup:** set `APIFY_TOKEN` (required). Optional actor overrides:
+`APIFY_INSTAGRAM_ACTOR_ID` (default `apify/instagram-scraper`),
+`APIFY_TIKTOK_ACTOR_ID` (default `clockworks/tiktok-scraper`). If `APIFY_TOKEN`
+is missing, discovery fails cleanly. The token is a secret — never commit it.
+
+**Workflow:** add research queries to the **`APIFY_DISCOVERY_QUERIES`** tab
+(auto-created on first run), set `ACTIVE=TRUE` on the ones to run, then run
+discovery. Flow:
+
+```
+research queries → Apify IG/TikTok → copyright + relevance filter
+  → view/follower ratio ranking → INSPIRATION_CONTENT candidates
+  → (later) analyze-inspiration → (later) matching / scoring
+```
+
+**Matryoshka research rings** (`RESEARCH_RING` / `SEMANTIC_DISTANCE`), from
+closest to Storelli outward: 1 goalkeeper pain/confidence/training · 2 youth
+soccer/parent safety/coaching · 3 adjacent protection sports (hockey, lacrosse,
+rugby, MTB, skate, moto) · 4 injury prevention/prehab/athlete safety · 5 gear
+proof/product demo/UGC · 6 confidence/fear/psychology · 7 creator-led education
+formats (do/don't, "watch before you buy", "3 things athletes need").
+
+**Copyright / match-footage guardrails:** candidates are rejected (from
+caption/hashtags/handle/query context — never face recognition) when they
+involve famous/named players, match/broadcast/highlight footage, league or
+national-team content (UCL/EPL/World Cup/etc.), fan or celebrity edits, save
+compilations, gambling, or adult/violent/political content. Anything matching a
+query's `SHOULD_AVOID` is also rejected.
+
+**View/follower ratio priority (discovery signal only):** for each candidate we
+compute `VIEW_FOLLOWER_RATIO = VIEW_COUNT / FOLLOWER_COUNT`, plus `RATIO_SCORE`,
+`ABSOLUTE_VIEW_SCORE`, `MECHANISM_RELEVANCE_SCORE`, `COPYRIGHT_SAFETY_SCORE`, and
+`PRIORITY_SCORE = 0.40·mechanism + 0.30·ratio + 0.15·absolute + 0.15·safety`.
+Small/medium creators with unusually high ratios rank above giant accounts when
+relevance is comparable. **This is a discovery-priority signal only — external
+engagement is never Storelli proof and never enters correlations, the Signal
+Library, Marketing Learnings, or "what works" calculations.**
+
+**Cost/safety caps:** default `MAX_RESULTS=10` per query when blank; hard cap 25
+per query (`APIFY_MAX_RESULTS_PER_QUERY`); hard cap 100 per full run
+(`APIFY_MAX_RESULTS_PER_RUN`). A failed query never aborts the run. Runs are
+logged to `INSPIRATION_RUNS` (`RUN_TYPE = Discovery`).
+
+**Manual queue vs Apify discovery:** the manual `INSPIRATION_URL_QUEUE` (paste
+individual URLs) still works and is unchanged — use it for hand-picked posts.
+Discovery is the automated, research-driven feeder. Both converge on the same
+`INSPIRATION_CONTENT` schema and dedup keyspace.
 
 ### External inspiration analysis (tagging)
 

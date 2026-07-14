@@ -572,6 +572,19 @@ def cmd_analyze_inspiration() -> int:
     return 0
 
 
+def cmd_discover_inspiration() -> int:
+    """Research + Discovery: run ACTIVE APIFY_DISCOVERY_QUERIES via Apify,
+    copyright/relevance-filter and view/follower-rank the candidates, and append
+    safe ones to INSPIRATION_CONTENT (SOURCE_TYPE=EXTERNAL_INSPIRATION). Fails
+    cleanly if APIFY_TOKEN is missing. External inspiration is never Storelli
+    proof."""
+    import inspiration_discovery
+
+    run = inspiration_discovery.discover_inspiration()
+    inspiration_discovery.print_discovery_summary(run)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # notion-sync (Notion Brain — structured synthesized intelligence only)
 # ---------------------------------------------------------------------------
@@ -739,7 +752,7 @@ def main() -> int:
                         choices=["analyze", "analyze-all", "correlations", "synthesize",
                                  "notion-sync", "slack-report", "run-all", "reset-incomplete",
                                  "scan-inspiration", "process-inspiration-queue",
-                                 "analyze-inspiration"])
+                                 "analyze-inspiration", "discover-inspiration"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -778,6 +791,9 @@ def main() -> int:
 
         elif args.command == "analyze-inspiration":
             return cmd_analyze_inspiration()
+
+        elif args.command == "discover-inspiration":
+            return cmd_discover_inspiration()
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

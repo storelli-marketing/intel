@@ -184,6 +184,39 @@ Processed/Duplicate/Failed. Runs are logged to `INSPIRATION_RUNS`
 the internal learning pipeline never reads and can never enter performance
 buckets, correlations, the Signal Library, or Marketing Learnings.
 
+### Apify Research + Discovery Layer (optional)
+
+Automated, research-driven discovery of *safe* external IG/TikTok inspiration.
+Runs before analysis; never touches internal Storelli data.
+
+Railway env vars:
+
+| var | required | notes |
+|-----|----------|-------|
+| `APIFY_TOKEN` | for discovery | Apify API token. Secret — never commit/print. Discovery fails cleanly if unset. |
+| `APIFY_INSTAGRAM_ACTOR_ID` | no | default `apify/instagram-scraper` |
+| `APIFY_TIKTOK_ACTOR_ID` | no | default `clockworks/tiktok-scraper` |
+| `APIFY_MAX_RESULTS_PER_QUERY` | no | default/hard cap 25 |
+| `APIFY_MAX_RESULTS_PER_RUN` | no | default cap 100 |
+| `APIFY_DEFAULT_MAX_RESULTS` | no | default 10 when a query row is blank |
+
+Workflow: fill the **`APIFY_DISCOVERY_QUERIES`** tab (auto-created on first run)
+using the **matryoshka research-ring model** (Ring 1 goalkeeper → Ring 7
+creator-led education), set `ACTIVE=TRUE` on the queries to run, then click
+**Discover Inspiration from Apify** (or `POST /run/discover-inspiration`; CLI:
+`python -m src.main discover-inspiration`).
+
+Candidates are copyright/relevance-filtered (reject famous players,
+match/highlight/broadcast footage, leagues/national teams, fan edits, gambling,
+adult/political — from caption/hashtags/handle only, no face recognition), then
+ranked by view/follower ratio into `INSPIRATION_CONTENT`
+(`SOURCE_TYPE=EXTERNAL_INSPIRATION`). Runs log to `INSPIRATION_RUNS`
+(`RUN_TYPE=Discovery`).
+
+**External inspiration is not Storelli proof.** View/follower ratio is only a
+discovery-priority signal; external rows never enter performance buckets,
+correlations, the Signal Library, or Marketing Learnings.
+
 ## 6. Dev Brain — backend self-awareness + push-to-code
 
 Optional, on by default (`SLACK_DEV_MODE_ENABLED`). The same Slack bot
