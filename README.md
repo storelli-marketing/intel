@@ -137,6 +137,7 @@ python src/main.py match-inspiration              # match safe external rows to 
 python src/main.py quality-review-inspiration     # QC external candidates for idea-gen readiness
 python src/main.py generate-ideas                 # rated Storelli creative ideas (internal-anchored)
 python src/main.py refine-ideas                   # creative-director polish (refinement columns only)
+python src/main.py rate-calendar-ideas            # rate proposed Notion calendar ideas (read-only Notion)
 ```
 
 (`python -m src.main <command>` works too.)
@@ -555,6 +556,60 @@ queue row is then marked **Processed**, **Duplicate**, or **Failed** with
 `INSPIRATION_CONTENT` (`RUN_TYPE = Scan`). Note: profile enumeration via yt-dlp
 is currently unreliable on Instagram, so the URL queue above is the recommended
 ingestion path until a hosted provider is added.
+
+### Inspiration pool expansion — controlled batch runbook
+
+Do **not** scrape blindly. Expand the pool in bounded batches, keeping the
+copyright/famous-player/match-footage/fan-edit guardrails strict (they're
+enforced in `inspiration_discovery`), and preferring creator/coach/training/
+product-demo/youth-safety/injury-prevention/protection/confidence content.
+
+Per batch (≈100–150 discovered):
+1. Activate ~10–15 `APIFY_DISCOVERY_QUERIES` rows across the **matryoshka rings**
+   (1 goalkeeper fear/landing/injury/turf/diving-confidence → 2 youth soccer/
+   parent safety/coach → 3 adjacent sports protection → 4 prehab/injury
+   prevention → 5 gear proof/product demo → 6 fear/confidence/psychology → 7
+   creator-led education). Set `MAX_RESULTS=10`, `LOOKBACK_DAYS=90`.
+2. `discover-inspiration` → `analyze-inspiration` → `match-inspiration` →
+   `quality-review-inspiration`.
+3. Deactivate the batch's queries; review the top candidates and junk rate
+   (rejected + low-quality ÷ discovered).
+4. Repeat with fresh queries. **Stop at ~500–1,000 total candidates** unless
+   quality is clearly high.
+
+Candidate ranking priority: (1) safety/copyright cleanliness, (2) creative
+mechanism relevance, (3) view/follower ratio, (4) absolute views, (5) novelty.
+The view/follower ratio is a **discovery-priority signal only — never Storelli
+proof**. Caps: 25/query, 100/run (`APIFY_MAX_RESULTS_PER_*`).
+
+### Notion content-calendar idea rating (read-only Notion)
+
+`python src/main.py rate-calendar-ideas` (or **Rate Notion Calendar Ideas**)
+reads the **Content Production Calendar** Notion DB
+(`NOTION_CONTENT_CALENDAR_DB_ID`, discoverable via Notion search), selects the
+**proposed / not-yet-shoot-ready** items (excludes Published/Scheduled/Approved/
+Done/Archived, non-Deliverable entry kinds, empty items, and — by default —
+items with a camera/production emoji: `CALENDAR_EXCLUDE_CAMERA_EMOJI=true`), and
+rates each against internal winning profiles + external inspiration (reference
+only) + existing rated ideas. It **never writes to Notion** — ratings go to the
+`CONTENT_CALENDAR_IDEA_RATINGS` Google Sheet tab (idempotent upsert by
+`NOTION_PAGE_ID` + content hash). Logs to `INSPIRATION_RUNS`
+(`RUN_TYPE=CalendarRatings`).
+
+`CALENDAR_IDEA_SCORE` = 25% internal-evidence-fit + 20% inspiration-alignment +
+15% product/ICP fit + 15% hook+format strength + 10% shootability + 10% novelty
++ 5% copyright safety. `STRATEGIC_PRIORITY_SCORE` is separate. Inspiration
+alignment uses `INSPIRATION_QUALITY_SCORE` (a capped 0–100 signal), never view
+counts — so **high external views alone can't lift a weak idea**, and external
+inspiration is never Storelli proof. Recommendation = Keep / Revise / Reject /
+Needs More Info.
+
+**Slack (read-only):** ask "rate the content calendar ideas", "which calendar
+ideas are worth shooting?", "which proposed ideas are weak?", "which Notion
+calendar ideas should we revise?" — the bot reads `CONTENT_CALENDAR_IDEA_RATINGS`
+and reports top-to-shoot / to-revise / to-reject + the biggest recurring
+weakness, with `[S#]`/`[E#]` links. It never rates live from Slack; if no ratings
+exist it says "I need to run the calendar rating workflow first."
 
 ### Research + Discovery Layer (Apify — IG/TikTok)
 

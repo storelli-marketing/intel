@@ -244,6 +244,22 @@ def _do_build_winning_profiles() -> None:
         _fail(str(e))
 
 
+def _do_rate_calendar_ideas() -> None:
+    """Rate proposed Notion calendar ideas into CONTENT_CALENDAR_IDEA_RATINGS.
+    Read-only w.r.t. Notion; never writes to the calendar, internal rows, or
+    profiles. External inspiration is reference only, never proof."""
+    import calendar_rater
+    try:
+        _begin("rate-calendar-ideas")
+        run = calendar_rater.rate_calendar_ideas(limit=10)
+        run.pop("_ratings", None)
+        with _LOCK:
+            STATE["inspiration"] = run
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
 def _do_refine_ideas() -> None:
     """Creative-director refinement of existing rated ideas. Writes only the
     refinement columns of INSPIRATION_IDEAS; preserves originals + sources;
@@ -555,6 +571,13 @@ def run_refine_ideas(background: BackgroundTasks,
                      x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     return _guarded(_do_refine_ideas, background)
+
+
+@app.post("/run/rate-calendar-ideas", status_code=202)
+def run_rate_calendar_ideas(background: BackgroundTasks,
+                            x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_rate_calendar_ideas, background)
 
 
 @app.post("/run/notion-sync", status_code=202)
@@ -913,6 +936,8 @@ _HTML = """<!doctype html>
             style="width:100%;height:52px;margin-top:12px">Generate Rated Creative Ideas</button>
     <button class="btn-secondary" id="btnRefine" onclick="run('refine-ideas')"
             style="width:100%;height:52px;margin-top:12px">Refine Creative Ideas</button>
+    <button class="btn-secondary" id="btnCalRate" onclick="run('rate-calendar-ideas')"
+            style="width:100%;height:52px;margin-top:12px">Rate Notion Calendar Ideas</button>
     <button class="btn-secondary" id="btnAnalyzeInsp" onclick="run('analyze-inspiration')"
             style="width:100%;height:52px;margin-top:12px">Analyze Inspiration Content</button>
     <button class="btn-secondary" id="btnScanInsp" onclick="run('scan-inspiration')"
@@ -967,7 +992,7 @@ async function poll(){
     const j = await (await fetch('/status')).json();
     const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
     const busy = (j.status==='queued'||j.status==='running');
-    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles','btnMatch','btnQuality','btnIdeas','btnRefine'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
+    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles','btnMatch','btnQuality','btnIdeas','btnRefine','btnCalRate'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
     const s=j.stats||{};
     const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0)+(s.skipped_no_link||0);
     $('s_scanned').textContent = s.scanned ?? '–';
@@ -1015,6 +1040,9 @@ async function poll(){
       } else if(t==='Refine'){
         txt = 'Last refinement ('+ins.STATUS+') — ideas: '+(ins.POSTS_DISCOVERED||0)
           +' · refined: '+(ins.POSTS_ANALYZED||0)+' · clean: '+(ins.POSTS_SHORTLISTED||0);
+      } else if(t==='CalendarRatings'){
+        txt = 'Last calendar rating ('+ins.STATUS+') — rated: '+(ins.POSTS_ANALYZED||0)
+          +' · excluded: '+(ins.POSTS_SKIPPED_EXISTING||0)+' · keep: '+(ins.POSTS_SHORTLISTED||0);
       } else if(t==='Profiles'){
         txt = 'Last profiles build ('+ins.STATUS+') — internal rows: '+(ins.POSTS_DISCOVERED||0)
           +' · created: '+(ins.POSTS_ADDED||0)+' · updated: '+(ins.POSTS_ANALYZED||0)
@@ -1059,7 +1087,9 @@ async function run(action){
                  'build-winning-profiles':'/run/build-winning-profiles',
                  'match-inspiration':'/run/match-inspiration',
                  'quality-review-inspiration':'/run/quality-review-inspiration',
-                 'generate-ideas':'/run/generate-ideas'};
+                 'generate-ideas':'/run/generate-ideas',
+                 'refine-ideas':'/run/refine-ideas',
+                 'rate-calendar-ideas':'/run/rate-calendar-ideas'};
   const path = paths[action];
   const body = (action==='social' || action==='analyze-all')
     ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';

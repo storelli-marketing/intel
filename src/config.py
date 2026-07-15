@@ -95,6 +95,15 @@ if _YTDLP_COOKIES_B64:
               f"({type(_e).__name__}: {_e}); yt-dlp will run without cookies until fixed.",
               file=sys.stderr)
 
+# Notion content calendar (Content Production Calendar DB). The reader is
+# read-only; ratings are stored in a Google Sheet tab, NOT written back to Notion.
+NOTION_CONTENT_CALENDAR_DB_ID = os.getenv(
+    "NOTION_CONTENT_CALENDAR_DB_ID", "106b78fb-05fa-80ff-85b3-ccb54fc2c878").strip()
+# Exclude calendar items whose title/notes carry a camera/production emoji
+# (already in production / shoot-ready) from rating by default.
+CALENDAR_EXCLUDE_CAMERA_EMOJI = os.getenv(
+    "CALENDAR_EXCLUDE_CAMERA_EMOJI", "true").strip().lower() not in ("false", "0", "no", "off")
+
 # Notion
 NOTION_API_KEY = os.getenv("NOTION_API_KEY", "").strip()
 NOTION_PARENT_PAGE_ID = clean_notion_id(os.getenv("NOTION_PARENT_PAGE_ID", "").strip())

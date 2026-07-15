@@ -643,6 +643,17 @@ def cmd_refine_ideas() -> int:
     return 0
 
 
+def cmd_rate_calendar_ideas() -> int:
+    """Rate proposed Notion content-calendar ideas against internal winning
+    profiles + external inspiration (reference only) + existing rated ideas.
+    Read-only w.r.t. Notion; writes ratings to CONTENT_CALENDAR_IDEA_RATINGS."""
+    import calendar_rater
+
+    run = calendar_rater.rate_calendar_ideas(limit=10)
+    calendar_rater.print_calendar_summary(run)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # notion-sync (Notion Brain — structured synthesized intelligence only)
 # ---------------------------------------------------------------------------
@@ -813,7 +824,7 @@ def main() -> int:
                                  "analyze-inspiration", "discover-inspiration",
                                  "build-winning-profiles", "match-inspiration",
                                  "quality-review-inspiration", "generate-ideas",
-                                 "refine-ideas"])
+                                 "refine-ideas", "rate-calendar-ideas"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -870,6 +881,9 @@ def main() -> int:
 
         elif args.command == "refine-ideas":
             return cmd_refine_ideas()
+
+        elif args.command == "rate-calendar-ideas":
+            return cmd_rate_calendar_ideas()
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

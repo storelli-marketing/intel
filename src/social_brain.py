@@ -1093,12 +1093,16 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     # Follow-up transforms (e.g. "turn this into a brief") are NOT idea queries
     # and fall through to the existing conversational engine below.
     try:
+        import calendar_retrieval
+        if calendar_retrieval.is_calendar_query(text):
+            return _finish_conversational(calendar_retrieval.answer_calendar(text), text,
+                                          skip_polish=True)
         import idea_retrieval
         if idea_retrieval.is_idea_query(text):
             answer = idea_retrieval.answer_ideas(text, fallback=lambda: _mode_ideas(text))
             return _finish_conversational(answer, text, skip_polish=True)
-    except Exception as e:  # noqa: BLE001 - never let idea retrieval break the bot
-        log.warning("idea_retrieval intercept failed, falling through: %s", e)
+    except Exception as e:  # noqa: BLE001 - never let idea/calendar retrieval break the bot
+        log.warning("idea/calendar retrieval intercept failed, falling through: %s", e)
 
     try:
         if config.SLACK_STRATEGIST_MODE_ENABLED and config.GEMINI_API_KEY:
