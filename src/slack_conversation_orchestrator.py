@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+import decision_trace as dt
 import slack_response_style as st
 from idea_retrieval import _display_risk, _field, _first_sentence, _split
 from logger import get_logger
@@ -218,6 +219,11 @@ def _idea_ids(idea: dict, srcmap: _SrcMap) -> tuple:
 # ---------------------------------------------------------------------------
 # pack builders — each returns (deterministic_answer, facts, srcmap)
 # ---------------------------------------------------------------------------
+def _conf(idea: dict) -> str:
+    c = str(idea.get("CONFIDENCE", "")).strip().lower()
+    return "High" if c == "high" else "Thin" if c == "low" else "Medium"
+
+
 def _pack_urgent(ideas: list[dict], mode: str):
     pool = [i for i in ideas if str(i.get("STATUS", "")).strip().lower()
             in ("", "proposed", "draft", "review")]
@@ -226,8 +232,8 @@ def _pack_urgent(ideas: list[dict], mode: str):
     ranked = sorted(pool, key=urgency_score, reverse=True)[:3]
     srcmap = _SrcMap()
     facts = ["Question: which proposed ideas are most URGENT to test now, and why "
-             "(reason from evidence, not just idea score)."]
-    det_bullets = []
+             "(reason from evidence, not just the model/evidence idea score)."]
+    why = []
     for i in ranked:
         s, e = _idea_ids(i, srcmap)
         cite = " ".join(f"[{x}]" for x in s + e)
@@ -236,14 +242,16 @@ def _pack_urgent(ideas: list[dict], mode: str):
             f"strategic {_num(i.get('STRATEGIC_PRIORITY_SCORE'))}, shootability {round(_shootability(i))}, "
             f"evidence_fit {_num(i.get('EVIDENCE_FIT_SCORE'))}, novelty {_num(i.get('NOVELTY_SCORE'))}, "
             f"product '{i.get('PRODUCT', '')}'/{i.get('ICP', '')}, why: {_urgency_reasons(i)}; sources {cite}")
-        det_bullets.append(f"*{_title(i)}* — {_urgency_reasons(i)} · {cite}")
+        why.append(f"*{_title(i)}* — {_urgency_reasons(i)} · {cite}")
+    top = ranked[0]
+    why.append(f"*KPI bet:* {dt.kpi_value(_field(top, 'REFINED_CONCEPT', 'CONCEPT') + ' ' + str(top.get('PRODUCT','')))}")
     lead = ("Test these first — ranking by strategic value we can actually shoot and learn "
-            "from now, not just idea score.")
-    move = f"Start with *{_title(ranked[0])}* ({ranked[0].get('RECOMMENDED_SHOOT_PRIORITY', 'Medium')} priority)."
+            "from now, not just the model/evidence idea score.")
+    move = f"Start with *{_title(top)}* ({top.get('RECOMMENDED_SHOOT_PRIORITY', 'Medium')} priority)."
     src = srcmap.render()
-    det = st.render_ceo_summary(lead, why=det_bullets, move=move,
+    det = st.render_ceo_summary(lead, why=why, move=move,
                                 sources=(f"{src}\n{_NOT_PROOF}" if src else ""), mode=mode)
-    return det, "\n".join(facts), srcmap
+    return det, "\n".join(facts), srcmap, why, move
 
 
 def _pack_deep_dive(idea: dict, mode: str):
@@ -253,32 +261,37 @@ def _pack_deep_dive(idea: dict, mode: str):
     concept = _field(idea, "REFINED_CONCEPT", "CONCEPT")
     shot = _field(idea, "REFINED_SHOT_LIST", "SHOT_LIST")
     film = _first_sentence(shot.split("|")[0] if shot else concept, 18)
+    # Decision trace (deterministic provenance): each step is a <=3-word label +
+    # short value + the source ids that back it. Internal proof = [S] only;
+    # external = [E] reference; KPI is always an inferred proxy.
+    steps = [
+        dt.step("Internal proof", f"{prof} demos worked", s, "internal", _conf(idea)),
+        dt.step("Story match", film or concept, [], "connection", "Medium"),
+    ]
+    if e:
+        steps.append(dt.step("Inspo cue", "execution reference", e, "external", "Medium"))
+    steps.append(dt.kpi_step(f"{concept} {film} {prof}"))
+    steps.append(dt.risk_step(_display_risk(idea)))
+    why = dt.bullets(steps)
     facts = (
         f"Question: deep dive on one idea — why it, what to film, evidence, risk.\n"
         f"Idea: {_title(idea)} (product {idea.get('PRODUCT', '')}/{idea.get('ICP', '')})\n"
         f"Internal winning profile (PROOF the format works): {prof}, confidence {idea.get('CONFIDENCE', '?')}\n"
-        f"Scores: idea {idea.get('IDEA_SCORE', '?')}, strategic {_num(idea.get('STRATEGIC_PRIORITY_SCORE'))}, "
-        f"shootability {round(_shootability(idea))}, evidence_fit {_num(idea.get('EVIDENCE_FIT_SCORE'))}, "
-        f"novelty {_num(idea.get('NOVELTY_SCORE'))}\n"
+        f"Model/evidence idea score: {idea.get('IDEA_SCORE', '?')} (NOT a performance metric); "
+        f"strategic {_num(idea.get('STRATEGIC_PRIORITY_SCORE'))}, "
+        f"shootability {round(_shootability(idea))}, evidence_fit {_num(idea.get('EVIDENCE_FIT_SCORE'))}\n"
         f"What to film (from shot list): {film}\n"
         f"Known risk/watch-out: {_display_risk(idea)}\n"
         f"CTA: {str(idea.get('CTA', '')).strip()[:80]}\n"
         f"Internal proof sources: {' '.join('[' + x + ']' for x in s) or '(profile evidence only)'}; "
-        f"External inspiration (reference only, NOT proof): {' '.join('[' + x + ']' for x in e) or '(none)'}")
-    why = [
-        f"Why this one: anchored to internal winning profile *{prof}* "
-        f"(confidence {idea.get('CONFIDENCE', '?')}), idea score {idea.get('IDEA_SCORE', '?')}.",
-        f"What to film: {film}.",
-        f"Storelli proof it works: {' '.join('[' + x + ']' for x in s) or '(profile evidence)'}.",
-        f"External inspiration (reference only, not proof): {' '.join('[' + x + ']' for x in e) or '(none)'}.",
-        f"Watch out: {_display_risk(idea)}.",
-    ]
+        f"External inspiration (reference only, NOT proof): {' '.join('[' + x + ']' for x in e) or '(none)'}\n"
+        f"Trace candidates (USE these labels/refs; do not invent): {' | '.join(why)}")
     move = (f"Shoot it {idea.get('RECOMMENDED_SHOOT_PRIORITY', 'Medium')} priority — "
             f"CTA: {str(idea.get('CTA', 'tie to the product')).strip()[:60]}.")
     src = srcmap.render()
     det = st.render_ceo_summary(f"Here's the rundown on *{_title(idea)}*:", why=why, move=move,
                                 sources=(f"{src}\n{_NOT_PROOF}" if src else ""), mode=mode)
-    return det, facts, srcmap
+    return det, facts, srcmap, why, move
 
 
 def _pack_compare(a: dict, b: dict, mode: str):
@@ -294,12 +307,12 @@ def _pack_compare(a: dict, b: dict, mode: str):
             f"novelty {_num(i.get('NOVELTY_SCORE'))}, why: {_urgency_reasons(i)}; sources {cite}")
         det_bullets.append(f"*{_title(i)}* — score {i.get('IDEA_SCORE', '?')}, {_urgency_reasons(i)}.")
     winner = a if urgency_score(a) >= urgency_score(b) else b
+    det_bullets.append(f"*KPI bet:* {dt.kpi_value(_field(winner, 'REFINED_CONCEPT', 'CONCEPT'))}")
+    move = f"Go with *{_title(winner)}* first — stronger strategic value we can shoot now."
     src = srcmap.render()
-    det = st.render_ceo_summary(
-        "Head-to-head:", why=det_bullets,
-        move=f"Go with *{_title(winner)}* first — stronger strategic value we can shoot now.",
-        sources=(f"{src}\n{_NOT_PROOF}" if src else ""), mode=mode)
-    return det, "\n".join(facts), srcmap
+    det = st.render_ceo_summary("Head-to-head:", why=det_bullets, move=move,
+                                sources=(f"{src}\n{_NOT_PROOF}" if src else ""), mode=mode)
+    return det, "\n".join(facts), srcmap, det_bullets, move
 
 
 def _clarify(memory: dict) -> str:
@@ -361,13 +374,19 @@ def _validate(obj, allowed: set, mode: str, deep: bool) -> tuple:
         return False, "views framed as proof"
     if re.search(r"\[e\d+\][^.]{0,25}prov", text):
         return False, "E-source framed as proof"
+    if dt.claims_hard_kpi(text):
+        return False, "hard KPI metric claimed"
     cap = st.WORD_CAP[st.MODE_DEEP] if deep else st.WORD_CAP.get(mode, st.WORD_CAP[st.MODE_DEFAULT])
     if len(text.split()) > cap * 1.6:
         return False, "too long"
     return True, ""
 
 
-def _synthesize(facts: str, srcmap: _SrcMap, mode: str, gemini, deep: bool) -> Optional[str]:
+def _synthesize(facts: str, srcmap: _SrcMap, why: list, det_move: str, mode: str,
+                gemini, deep: bool) -> Optional[str]:
+    """The LLM writes only the lead + my_move narrative; the Why trace stays the
+    deterministic, source-validated `why` bullets (so the LLM can never invent a
+    trace ref or an unsupported KPI claim). Invalid LLM output -> deterministic."""
     allowed = srcmap.all_ids()
     prompt = _PROMPT.replace("<<FACTS>>", facts).replace(
         "<<IDS>>", ", ".join(sorted(allowed)) or "(none)")
@@ -381,21 +400,20 @@ def _synthesize(facts: str, srcmap: _SrcMap, mode: str, gemini, deep: bool) -> O
     if not ok:
         log.info("orchestrator LLM synth rejected (%s) -> deterministic", reason)
         return None
-    used = {str(i).strip() for i in obj.get("source_ids_used", []) if str(i).strip() in allowed}
-    sources = srcmap.render(used) if used else ""
+    src = srcmap.render()   # provenance comes from the deterministic trace
     return st.render_ceo_summary(
-        str(obj["lead"]).strip(), why=[str(b).strip() for b in obj["bullets"]],
-        move=str(obj["my_move"]).strip(),
-        sources=(f"{sources}\n{_NOT_PROOF}" if sources else ""),
+        str(obj["lead"]).strip(), why=why,
+        move=str(obj.get("my_move", "")).strip() or det_move,
+        sources=(f"{src}\n{_NOT_PROOF}" if src else ""),
         mode=(st.MODE_DEEP if deep else mode))
 
 
 def _finalize(pack, mode: str, gemini, deep: bool, use_llm: bool) -> Optional[str]:
     if pack is None:
         return None
-    det, facts, srcmap = pack
+    det, facts, srcmap, why, move = pack
     if use_llm and gemini is not None:
-        return _synthesize(facts, srcmap, mode, gemini, deep) or det
+        return _synthesize(facts, srcmap, why, move, mode, gemini, deep) or det
     return det
 
 

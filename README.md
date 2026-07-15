@@ -327,6 +327,19 @@ route/intent/context/LLM a prompt takes (never shown to normal users). A
 golden-prompt QA harness (`tests/test_slack_golden_prompts.py`) locks these
 behaviours in end-to-end.
 
+**Decision trace.** Every recommendation carries a tiny, source-linked "Why"
+provenance trail (`src/decision_trace.py`): ≤3-word labels (Internal proof, Story
+match, Inspo cue, KPI bet, Risk, Weakness, Fix…), each ≤12 words and tagged with
+the sources that back it — `[S]` internal proof, `[C]` connection, `[E]` external
+reference, `[N]` Notion idea, `[I]` similar idea. `IDEA_SCORE` is a *model/evidence
+idea score*, never a "performance score"; internal proof comes only from Storelli
+analyzed videos / winning profiles; external inspiration is execution reference
+only. KPI outcomes aren't tracked, so every **KPI bet** is an explicit proxy tied
+to the storytelling structure (e.g. pain hooks → "comment-likelihood inferred",
+demo/proof → "saves / conversion-fit proxy"). When Gemini writes the lead/my-move,
+the Why trace stays deterministic and validated, so the model can't invent a trace
+ref or claim an untracked metric.
+
 ### Slack chat (interactive Marketing Brain — Notion-first)
 
 An optional Slack app turns the brain into a **chat interface**: mention the

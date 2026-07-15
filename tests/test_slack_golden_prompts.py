@@ -229,7 +229,7 @@ class TestGoldenPrompts(GoldenBase):
     def test_04_evaluate_notion_writes_artifact(self):
         text = f"evaluate this idea: {MOCK_URL}"
         out = self.run_prompt(text)
-        self.assertIn("Score:", out)
+        self.assertIn("Idea score:", out)
         self.assertIn("/100", out)
         self.assertEqual(FakeSheets.writes, 1)         # exactly the artifact
         self.assertQuality(text, out)

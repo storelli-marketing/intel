@@ -518,23 +518,32 @@ def _verdict(rec: str) -> str:
 
 
 def render_evaluation(ev: dict, text: str = "") -> str:
+    import decision_trace as dt
     mode = st.detect_response_mode(text) if text else st.MODE_DEFAULT
     score = ev.get("IDEA_EVALUATION_SCORE")
-    conf = ev.get("CONFIDENCE", "")
-    lead = f"{ev.get('_lead','')}\n\nScore: {int(round(_num(score)))}/100 — {conf} confidence."
+    conf = ev.get("CONFIDENCE", "") or "Medium"
+    lead = f"{ev.get('_lead','')}\n\nIdea score: {int(round(_num(score)))}/100 — {conf} confidence."
 
-    why = [_short(w, 18) for w in (ev.get("_why") or [])][:3]
-    fixes = ev.get("_improve") or []
-    if fixes:
-        why.append(f"Fix: {_short(fixes[0], 20)}")
     videos = ev.get("_videos") or []
-    for i, v in enumerate(videos[:2], 1):
-        why.append(f"Inspo [E{i}] {v['creator']} — steal {_short(v['steal'], 10)}; "
-                   f"don't copy {_short(v['not_copy'], 8)}")
+    has_s = bool(ev.get("_s_url") or _split(ev.get("INTERNAL_EVIDENCE_URLS")))
+    # Decision trace: Notion idea [N] -> internal proof [S] -> story bridge [C]
+    # -> inspo cue [E] -> KPI proxy -> verdict. Provenance, not reasoning.
+    steps = []
+    if ev.get("CLOSEST_WINNING_PROFILE_NAME"):
+        steps.append(dt.step("Internal proof", f"{ev['CLOSEST_WINNING_PROFILE_NAME']} matched",
+                             ["S1"] if has_s else [], "internal", conf))
+    if ev.get("CLOSEST_SEMANTIC_CONNECTION_NAME"):
+        steps.append(dt.step("Story bridge", ev["CLOSEST_SEMANTIC_CONNECTION_NAME"],
+                             ["C1"], "connection", "Medium"))
+    if videos:
+        steps.append(dt.step("Inspo cue", ev.get("WHAT_TO_STEAL") or "execution reference",
+                             ["E1"], "external", "Medium"))
+    steps.append(dt.kpi_step(ev.get("SUGGESTED_STORY_STRUCTURE", "")))
+    steps.append(dt.step("Verdict", ev.get("RECOMMENDATION", ""), ["N1"], "verdict", conf))
 
     move = f"Structure: {_short(ev.get('SUGGESTED_STORY_STRUCTURE',''), 20)}. {_short(ev.get('_my_move',''), 16)}"
     sources = _sources_block(ev, videos)
-    return st.render_ceo_summary(lead, why=why, move=move,
+    return st.render_ceo_summary(lead, why=dt.bullets(steps), move=move,
                                  sources=(f"{sources}\n{_NOT_PROOF}" if sources else ""), mode=mode)
 
 

@@ -338,7 +338,7 @@ class TestSlackRoutingAndRender(unittest.TestCase):
         r = ev.evaluate_idea(STRONG_IDEA, [_profile()], [dict(CONN)], [dict(x) for x in INSP],
                              [dict(i) for i in IDEAS], [])
         out = ev.render_evaluation(r, "evaluate this idea")
-        self.assertIn("Score:", out)
+        self.assertIn("Idea score:", out)
         self.assertIn("/100", out)
         self.assertIn("[N1]", out)                            # notion source
         self.assertIn("[S1]", out)                            # internal proof
@@ -375,7 +375,7 @@ class TestDryRunAndFollowUps(unittest.TestCase):
     def test_normal_evaluation_writes_artifact(self):
         sheets = FakeSheets()
         out = ev.answer_evaluation(f"evaluate this idea {PAGE_URL}", [], sheets=sheets, gemini=None)
-        self.assertIn("Score:", out)
+        self.assertIn("Idea score:", out)
         self.assertEqual(len(sheets.adhoc_upserts), 1)        # artifact written
         self.assertEqual(sheets.other_writes, 0)              # nothing canonical
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+import decision_trace as dt
 import slack_response_style as st
 from logger import get_logger
 
@@ -414,7 +415,9 @@ def _skill_comment_drivers(text, context, brain, gemini, mode) -> str:
     # framing and the preferred "Try:" prompt-CTA shape (comments are inference).
     lead = ("Short answer: I don't have hard comment-level proof yet — we don't track comment "
             "counts. Based on the hooks/formats that work, I'd test pain-confession hooks first.")
-    return _ceo(lead, bullets=[_short(b, 20) for b in inference],
+    trace = [_short(b, 18) for b in inference[:3]]
+    trace.append("KPI bet: comment-likelihood inferred (comments not tracked yet)")
+    return _ceo(lead, bullets=trace,
                 sections=[("Try", f"“{cta}”")], src_tail=_sources_tail(src), mode=mode)
 
 
@@ -463,7 +466,9 @@ def _skill_concept_references(text, context, brain, gemini, mode) -> Optional[st
                        f"steal {_short(subject.get('steal',''), 8)}; don't copy {_short(subject.get('not_copy',''), 6)}")
     concept = subject.get("connection_name") or f"{subject['product']} concept"
     lead = f"Before shooting the {concept[:46]}, watch these execution references:"
-    return _ceo(lead, bullets=bullets, sections=[("Structure to hit", subject.get("structure", ""))],
+    return _ceo(lead, bullets=bullets,
+                sections=[("Structure to hit", subject.get("structure", "")),
+                          ("KPI bet", dt.kpi_value(subject.get("structure", "")))],
                 src_tail=_sources_tail(src), mode=mode)
 
 
@@ -490,9 +495,13 @@ def _skill_idea_diagnosis(text, context, brain, gemini, mode) -> Optional[str]:
     if obj:
         obj.setdefault("recommendation", verdict)
         return _render_strategy(obj, src, mode)
+    proof_bullet = (f"Internal proof: {_short(subject.get('profile_name',''), 8)} [S1]" if has_evidence
+                    else "Internal proof: thin — no matched profile")
     return _ceo("Here's the honest diagnosis:",
-                bullets=[f"Weakness: {_short(weak, 18)}", f"Missing: {missing}",
-                         f"Product role: {'clear' if has_evidence else 'needs to be the hero beat'}"],
+                bullets=[f"Weakness: {_short(weak, 16)}",
+                         f"Story gap: {_short(missing, 14)}",
+                         proof_bullet,
+                         f"KPI bet: {dt.kpi_value(subject.get('structure', ''))}"],
                 sections=[("Verdict", f"{verdict} — Fix: {fix}")],
                 src_tail=_sources_tail(src), mode=mode)
 
@@ -618,7 +627,8 @@ def _skill_shot_brief(text, context, brain, gemini, mode) -> Optional[str]:
     lines = [f"Shoot brief — *{subject['title'][:48]}*:", "",
              f"*Hook:* {pain.capitalize()} — one line, first 2 seconds.", "", "*Beats:*"]
     lines += [f"{i}. {b}" for i, b in enumerate(beats, 1)]      # numbered at line start
-    lines += ["", f"*CTA:* Protect every dive — {product}."]
+    lines += ["", f"*CTA:* Protect every dive — {product}.",
+              f"*KPI bet:* {dt.kpi_value(structure)}"]
     if ref:
         lines.append(f"*Reference:* [E1] {ref[0]['creator']} — steal {_short(subject.get('steal',''), 10)}")
     lines.append(f"*Don't copy:* {_short(subject.get('not_copy',''), 14)}")

@@ -553,7 +553,8 @@ def _assemble(product, structure, adaptation, steal, not_copy, video_bullets,
     # Keep bullets <= 5 AND each line short enough to survive length enforcement:
     # video lines + one steal/skip line (structure -> My move).
     why = video_bullets[:4] + [f"Steal: {_short(steal)} · Don't copy: {_short(not_copy)}."]
-    move = f"Structure: {_short(structure, 18)}. {_short(adaptation, 16)}"
+    import decision_trace as dt
+    move = f"Structure: {_short(structure, 16)}. KPI bet: {dt.kpi_value(structure)}."
     src_rows = ([s_row] if s_row else []) + e_rows
     sources = st.compact_sources(src_rows)
     return st.render_ceo_summary(lead, why=why, move=move,
