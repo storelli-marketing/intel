@@ -1003,21 +1003,15 @@ def _maybe_llm_polish(deterministic_text: str, user_text: str) -> Optional[str]:
 
 
 def _finish_conversational(base: str, user_text: str, skip_polish: bool = False) -> str:
-    """Optional validated LLM polish (skipped when strategist mode already ran
-    — no point spending a second Gemini call on the same failed attempt), then
-    ensure a natural follow-up nudge is present (skipped if one is already
-    there)."""
+    """Optional validated LLM polish (skipped when strategist mode already ran),
+    then the CEO-conversation style pass: strip canned endings (no auto
+    "want me to…" nudge) and enforce the length for the detected mode
+    (concise / default / deep), always preserving the Sources block."""
     text = base
     if not skip_polish and not config.SLACK_STRATEGIST_MODE_ENABLED:
         text = _maybe_llm_polish(base, user_text) or base
-    # Phrasing-agnostic: any natural continuation question (deterministic or
-    # LLM-composed) already ends its last line with "?" — checking for that
-    # instead of a fixed keyword list avoids missing phrasings we didn't
-    # anticipate (a free-form strategist answer won't reuse our fixed wording).
-    stripped = text.strip()
-    last_line = stripped.splitlines()[-1].strip() if stripped else ""
-    has_prompt = bool(re.search(r"\?[_*]*\s*$", last_line))
-    return text if has_prompt else text + _FOLLOWUP_NUDGE
+    import slack_response_style as style
+    return style.compact_slack_response(text, style.detect_response_mode(user_text))
 
 
 def _deterministic_conversation_answer(text: str, context: list, last_assistant: str) -> str:

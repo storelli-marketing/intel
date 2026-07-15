@@ -12,9 +12,17 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+import slack_response_style as st
 from logger import get_logger
 
 log = get_logger()
+
+
+def _first_sentence(text: str, max_words: int = 16) -> str:
+    s = re.split(r"(?<=[.!?])\s", str(text or "").strip())
+    out = s[0] if s and s[0] else str(text or "").strip()
+    words = out.split()
+    return (" ".join(words[:max_words]) + "…") if len(words) > max_words else out
 
 # Ideas in these STATUS values are presentable (Proposed is the generator's
 # default; blank/Draft/Review are hand states). Approved/Published/Rejected/etc.
@@ -87,7 +95,8 @@ _ICPS = {
 
 def parse_query(text: str) -> dict:
     t = (text or "").lower()
-    q = {"product": "", "icp": "", "count": 5, "mode": "list", "target": None}
+    q = {"product": "", "icp": "", "count": 5, "count_explicit": False,
+         "mode": "list", "target": None}
 
     for k, v in _PRODUCTS.items():
         if k in t:
@@ -101,6 +110,7 @@ def parse_query(text: str) -> dict:
     m = re.search(r"\b([1-9])\b", t)
     if m:
         q["count"] = int(m.group(1))
+        q["count_explicit"] = True
 
     if "generic" in t or "too vague" in t or "cliché" in t or "cliche" in t:
         q["mode"] = "generic"
@@ -317,146 +327,123 @@ def _cite_idea(idea: dict, reg: SourceRegistry, max_each: int = 2) -> tuple[str,
 # ---------------------------------------------------------------------------
 # renderers
 # ---------------------------------------------------------------------------
-def _idea_block(n: int, idea: dict, reg: SourceRegistry) -> str:
+_NOT_PROOF = "_External inspiration is reference only — not proof it works for Storelli._"
+
+
+def _cap(q: dict, mode: str, default: int = 3, hard: int = 5) -> int:
+    n = q["count"] if q.get("count_explicit") else default
+    n = min(n, hard)
+    if mode == st.MODE_CONCISE:
+        n = min(n, 3)
+    return max(1, n)
+
+
+def _idea_line(n: int, idea: dict, reg: SourceRegistry, blunt: bool) -> str:
     s_txt, e_txt = _cite_idea(idea, reg)
-    weaknesses = critique_points(idea)
-    weak = weaknesses[0] if weaknesses else "no major weakness flagged"
-    shoot = str(idea.get("RECOMMENDED_SHOOT_PRIORITY", "")).strip() or "Medium"
     title = _field(idea, "REFINED_IDEA_TITLE", "IDEA_TITLE") or "Untitled"
     hook = _field(idea, "REFINED_HOOK", "HOOK")
-    concept = _field(idea, "REFINED_CONCEPT", "CONCEPT")
-    shot = _field(idea, "REFINED_SHOT_LIST", "SHOT_LIST")
-    shot_note = (shot.split("|")[0].strip() + ("…" if "|" in shot else "")) if shot else "n/a"
-    tag = "  _(refined)_" if _uses_refined(idea) else ""
-    return (
-        f"\n*{n}. {title}*{tag}  "
-        f"_(score {idea.get('IDEA_SCORE', '?')}, priority {idea.get('STRATEGIC_PRIORITY_SCORE', '?')})_\n"
-        f"• {idea.get('PRODUCT', '?')} / {idea.get('ICP', '?')} · *{idea.get('FORMAT', '')}* · shoot: *{shoot}*\n"
-        f"• Hook: {hook}\n"
-        f"• Why it's worth shooting: {concept[:220]}\n"
-        f"• Shoot note: {shot_note}  ·  CTA: {idea.get('CTA', '')}\n"
-        f"• Internal proof: {s_txt}   ·   External inspiration (reference only): {e_txt}\n"
-        f"• Watch-out: {weak}"
-    )
+    shoot = str(idea.get("RECOMMENDED_SHOOT_PRIORITY", "")).strip() or "Medium"
+    pts = critique_points(idea)
+    risk = _first_sentence(pts[0], 9) if pts else "shootable, no big weakness"
+    tag = " _(refined)_" if _uses_refined(idea) else ""
+    why = _first_sentence(hook, 16)
+    return (f"*{n}. {title}*{tag} _({idea.get('PRODUCT', '?')}, score {idea.get('IDEA_SCORE', '?')})_\n"
+            f"{why} _· shoot {shoot} · {risk}_ · proof {s_txt} · ref {e_txt}")
 
 
-_DISCLAIMER = ("_External inspiration is a creative reference only — its views/followers "
-               "are not proof it will work for Storelli._")
-
-
-def _render_list(ranked: list[dict], q: dict) -> str:
-    count = max(3, min(q["count"], 5, len(ranked)))
+def _render_list(ranked: list[dict], q: dict, mode: str, blunt: bool) -> str:
     reg = SourceRegistry()
-    head_bits = []
-    if q["product"]:
-        head_bits.append(q["product"])
-    if q["icp"]:
-        head_bits.append(q["icp"])
-    scope = (" for " + " / ".join(head_bits)) if head_bits else ""
+    count = min(_cap(q, mode), len(ranked))
     shown = ranked[:count]
-    body = [f"*Top {count} rated idea(s){scope}* — grounded in internal winning profiles, "
-            "adapting external creative mechanisms."]
-    if any(_uses_refined(i) for i in shown):
-        body.append(_REFINED_NOTE)
-    # If any shown idea is a related-family match (not a literal product match),
-    # say so naturally so the user knows why adjacent products appear.
+    scope = " ".join(x for x in (q["product"], q["icp"]) if x)
+    lead = (f"The {count} strongest{(' ' + scope) if scope else ''} idea(s) to shoot"
+            + (" (blunt takes below)" if blunt else "") + ":")
     if q["product"] and any(_is_adjacent(i, q["product"]) for i in shown):
         fam = _FAMILY_LABEL.get(_family_for(q["product"]), "related")
-        body.append(f"_I'm including related {fam} ideas because they map to the "
-                    f"{q['product']} family._")
-    for n, idea in enumerate(shown, 1):
-        body.append(_idea_block(n, idea, reg))
-    body.append("\n" + _DISCLAIMER)
+        lead += f" _(incl. related {fam} — same {q['product']} family)_"
+    blocks = "\n".join(_idea_line(n, i, reg, blunt) for n, i in enumerate(shown, 1))
+    top = _field(shown[0], "REFINED_IDEA_TITLE", "IDEA_TITLE")
+    move = f"Shoot *{top}* first ({shown[0].get('RECOMMENDED_SHOOT_PRIORITY', 'Medium')} priority)."
     src = reg.render()
-    return "\n".join(body) + (f"\n\n{src}" if src else "")
+    sources = (f"{src}\n{_NOT_PROOF}") if src else ""
+    return st.render_ceo_summary(lead + "\n\n" + blocks, move=move, sources=sources, mode=mode)
 
 
-def _render_shoot_first(ranked: list[dict], q: dict) -> str:
+def _render_shoot_first(ranked: list[dict], q: dict, mode: str, blunt: bool) -> str:
     reg = SourceRegistry()
-    body = ["*What to shoot first* — ranked by production practicality "
-            "(shoot priority → feasibility → execution clarity), not just idea score."]
-    if any(_uses_refined(i) for i in ranked[:3]):
-        body.append(_REFINED_NOTE)
-    for n, idea in enumerate(ranked[:3], 1):
+    shown = ranked[:3]
+    blocks = []
+    for n, idea in enumerate(shown, 1):
         s_txt, e_txt = _cite_idea(idea, reg)
         shot = _field(idea, "REFINED_SHOT_LIST", "SHOT_LIST")
         title = _field(idea, "REFINED_IDEA_TITLE", "IDEA_TITLE") or "Untitled"
-        body.append(
-            f"\n*{n}. {title}*  "
-            f"_(shoot {idea.get('RECOMMENDED_SHOOT_PRIORITY', 'Medium')}, "
-            f"feasibility {idea.get('FEASIBILITY_SCORE', '?')}, exec {idea.get('EXECUTION_CLARITY_SCORE', '?')})_\n"
-            f"• {idea.get('PRODUCT', '?')} / {idea.get('ICP', '?')} · {idea.get('FORMAT', '')}\n"
-            f"• Fastest path: {shot.split('|')[0].strip() if shot else 'n/a'}\n"
-            f"• Internal proof: {s_txt} · External ref: {e_txt}")
-    body.append("\n" + _DISCLAIMER)
+        blocks.append(f"*{n}. {title}* _(shoot {idea.get('RECOMMENDED_SHOOT_PRIORITY', 'Medium')}, "
+                      f"feasibility {idea.get('FEASIBILITY_SCORE', '?')})_\n"
+                      f"Fastest path: {_first_sentence(shot.split('|')[0], 12) if shot else 'n/a'} "
+                      f"· {s_txt} {e_txt}")
+    lead = "Shoot these first — ranked by production practicality (priority → feasibility → clarity), not raw score:"
     src = reg.render()
-    return "\n".join(body) + (f"\n\n{src}" if src else "")
+    sources = (f"{src}\n{_NOT_PROOF}") if src else ""
+    move = f"Block a shoot day for *{_field(shown[0], 'REFINED_IDEA_TITLE', 'IDEA_TITLE')}* this week." if shown else ""
+    return st.render_ceo_summary(lead + "\n\n" + "\n".join(blocks), move=move, sources=sources, mode=mode)
 
 
-def _render_critique(ranked: list[dict], q: dict) -> str:
-    body = ["*Blunt critique of the top ideas:*"]
-    for n, idea in enumerate(ranked[:5], 1):
+def _render_critique(ranked: list[dict], q: dict, mode: str, blunt: bool) -> str:
+    n_show = 3 if mode == st.MODE_CONCISE else 5
+    lines = []
+    for idea in ranked[:n_show]:
         title = _field(idea, "REFINED_IDEA_TITLE", "IDEA_TITLE") or "Untitled"
-        # Prefer the creative-director diagnosis when it exists.
-        stored = _dedup_weakness(idea.get("ORIGINAL_WEAKNESS", ""))
-        verdict = stored or ("solid — worth shooting" if not critique_points(idea)
-                             else "; ".join(critique_points(idea)))
-        body.append(f"\n*{n}. {title}* _(score {idea.get('IDEA_SCORE', '?')})_\n• {verdict}")
-        # Still call out original generic language explicitly.
-        flags = generic_language_flags(idea)
-        if flags:
-            fixed = " — already refined to a sharper version" if _uses_refined(idea) else ""
-            body.append(f"  ⚠️ Original hook/title used generic language "
-                        f"(_{', '.join(sorted(set(flags)))}_){fixed}.")
+        pts = critique_points(idea)
+        verdict = ("This is shootable — no major weakness." if not pts
+                   else _first_sentence(_dedup_weakness(idea.get("ORIGINAL_WEAKNESS", "")) or pts[0], 16))
+        if generic_language_flags(idea):
+            verdict += " (original used generic language)"
+        line = f"• *{title}* — {verdict}"
         notes = str(idea.get("CREATIVE_DIRECTOR_NOTES", "")).strip()
-        if notes:
-            body.append(f"  ✏️ Creative director: {notes[:200]}")
-    body.append("\n_(Critique only — nothing on the sheet was changed.)_")
-    return "\n".join(body)
+        if notes and mode != st.MODE_CONCISE:
+            line += f"\n  ✏️ Creative director: {_first_sentence(notes, 16)}"
+        lines.append(line)
+    lead = "Straight critique of the top ideas:"
+    return st.render_ceo_summary(lead + "\n\n" + "\n".join(lines),
+                                 move="Fix the hooks first; the shootable ones can go now.",
+                                 sources="", mode=mode)
 
 
-def _render_generic(ranked: list[dict], q: dict) -> str:
-    flagged = [(i, generic_language_flags(i)) for i in ranked]
-    flagged = [(i, f) for i, f in flagged if f]
+def _render_generic(ranked: list[dict], q: dict, mode: str, blunt: bool) -> str:
+    flagged = [(i, f) for i, f in ((i, generic_language_flags(i)) for i in ranked) if f]
     if not flagged:
-        return "None of the current ideas trip the generic-language check — hooks look specific."
-    body = ["*Ideas that read as too generic* (hype words over specifics):"]
-    for i, f in flagged[:6]:
-        line = (f"\n• *{i.get('IDEA_TITLE', 'Untitled')}* — vague: _{', '.join(sorted(set(f)))}_.")
+        return "None of the current ideas trip the generic-language check — the hooks look specific."
+    lines = []
+    for i, f in flagged[:6 if mode != st.MODE_CONCISE else 3]:
+        line = f"• *{i.get('IDEA_TITLE', 'Untitled')}* — vague (_{', '.join(sorted(set(f)))}_)"
         if _uses_refined(i):
-            line += f"\n  ✅ Already refined → *{_field(i, 'REFINED_IDEA_TITLE', 'IDEA_TITLE')}*"
-        else:
-            line += f"\n  Sharper: {suggest_sharper_hook(i)}"
-        body.append(line)
-    body.append("\n_Suggestions only — I haven't changed the sheet._")
-    return "\n".join(body)
+            line += f" → already refined to *{_field(i, 'REFINED_IDEA_TITLE', 'IDEA_TITLE')}*"
+        lines.append(line)
+    lead = "These read as too generic (hype over specifics):"
+    return st.render_ceo_summary(lead + "\n\n" + "\n".join(lines),
+                                 move="Rewrite each hook around a concrete pain, number, or mistake.",
+                                 sources="", mode=mode)
 
 
-def _render_evidence(ranked: list[dict], q: dict) -> str:
+def _render_evidence(ranked: list[dict], q: dict, mode: str, blunt: bool) -> str:
     if not ranked:
         return "I don't have a matching idea to show evidence for."
-    idx = (q["target"] or 1) - 1
-    idx = max(0, min(idx, len(ranked) - 1))
+    idx = max(0, min((q["target"] or 1) - 1, len(ranked) - 1))
     idea = ranked[idx]
     reg = SourceRegistry()
     prof = str(idea.get("SOURCE_PROFILE_NAME", "")).strip() or "winning profile"
-    # Source fields are used EXACTLY as stored — only the display title may be refined.
     s_ids = [reg.internal(u, prof) for u in _split(idea.get("INTERNAL_EVIDENCE_URLS"))]
     e_ids = [reg.external(u) for u in _split(idea.get("EXTERNAL_REFERENCE_URLS"))]
     title = _field(idea, "REFINED_IDEA_TITLE", "IDEA_TITLE") or "Untitled"
-    body = [
-        f"*Evidence behind '{title}'*",
-        f"• Anchored to internal winning profile: *{prof}* "
-        f"(confidence {idea.get('CONFIDENCE', '?')}).",
-        f"• Storelli internal proof: {' '.join('[' + x + ']' for x in s_ids) or '(profile)'}  "
-        "— this is the evidence the format works for Storelli.",
-        f"• External inspiration (execution reference ONLY, not proof): "
+    lead = f"Evidence behind *{title}*:"
+    why = [
+        f"Anchored to internal winning profile *{prof}* (confidence {idea.get('CONFIDENCE', '?')}) — "
+        f"that's the proof it works for Storelli: {' '.join('[' + x + ']' for x in s_ids) or '(profile)'}.",
+        f"External inspiration is execution reference only, not proof: "
         f"{' '.join('[' + x + ']' for x in e_ids) or '(none)'}.",
-        f"• Rationale: {str(idea.get('IDEA_RATIONALE', ''))[:400]}",
-        "\n" + _DISCLAIMER,
     ]
     src = reg.render()
-    return "\n".join(body) + (f"\n\n{src}" if src else "")
+    return st.render_ceo_summary(lead, why=why, move="", sources=(f"{src}\n{_NOT_PROOF}" if src else ""), mode=mode)
 
 
 # ---------------------------------------------------------------------------
@@ -483,22 +470,18 @@ def answer_ideas(text: str, sheets=None, ideas: Optional[list] = None,
     if not rows:
         if fallback:
             return fallback()
-        return ("I don't have any rated ideas saved yet. Generate them from the dashboard "
-                "(*Generate Rated Creative Ideas*) or `generate-ideas`, then ask me again.")
+        return ("I don't have any rated ideas saved yet — generate them from the dashboard "
+                "(*Generate Rated Creative Ideas*) first.")
 
+    mode = st.detect_response_mode(text)
+    blunt = "blunt" in (text or "").lower()
     q = parse_query(text)
     ranked = rank_ideas(rows, q)
     if not ranked:
         scope = " ".join(x for x in (q["product"], q["icp"]) if x) or "that"
-        return (f"I don't have any eligible rated ideas for *{scope}* right now. "
-                "Ask for another product/ICP, or *what are the best ideas we have?*")
+        return f"No eligible rated ideas for *{scope}* yet — try another product/ICP."
 
-    if q["mode"] == "critique":
-        return _render_critique(ranked, q)
-    if q["mode"] == "generic":
-        return _render_generic(ranked, q)
-    if q["mode"] == "shoot_first":
-        return _render_shoot_first(ranked, q)
-    if q["mode"] == "evidence":
-        return _render_evidence(ranked, q)
-    return _render_list(ranked, q)
+    renderer = {"critique": _render_critique, "generic": _render_generic,
+                "shoot_first": _render_shoot_first, "evidence": _render_evidence}.get(
+        q["mode"], _render_list)
+    return renderer(ranked, q, mode, blunt)

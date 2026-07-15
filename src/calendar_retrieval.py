@@ -10,13 +10,13 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+import slack_response_style as st
 from logger import get_logger
 
 log = get_logger()
 
 _NO_RATINGS = "I need to run the calendar rating workflow first."
-_DISCLAIMER = ("_External inspiration is a creative reference only — its views are not "
-               "proof it will work for Storelli._")
+_NOT_PROOF = "_External inspiration is reference only — not proof it works for Storelli._"
 
 
 def is_calendar_query(text: str) -> bool:
@@ -55,7 +55,9 @@ def _handle(url: str) -> str:
 
 
 def _sources_block(rows: list[dict]) -> str:
-    s, e = {}, {}
+    """Combined Sources: [S#] internal proof, [E#] external inspiration,
+    [N#] Notion calendar page."""
+    s, e, n = {}, {}, {}
     for r in rows:
         for u in str(r.get("INTERNAL_EVIDENCE_URLS", "")).split(";"):
             u = u.strip()
@@ -65,21 +67,26 @@ def _sources_block(rows: list[dict]) -> str:
             u = u.strip()
             if u and u not in e:
                 e[u] = f"E{len(e)+1}"
-    if not (s or e):
-        return ""
-    lines = ["*Sources:*"]
-    for u, sid in s.items():
-        lines.append(f"  [{sid}] <{u}|Storelli internal evidence>")
-    for u, eid in e.items():
-        lines.append(f"  [{eid}] <{u}|External inspiration — {_handle(u)}>")
-    return "\n".join(lines)
+        u = str(r.get("NOTION_PAGE_URL", "")).strip()
+        if u and u not in n:
+            n[u] = f"N{len(n)+1}"
+    items = ([(sid, u, "Storelli internal proof") for u, sid in s.items()]
+             + [(eid, u, f"External inspiration — {_handle(u)}") for u, eid in e.items()]
+             + [(nid, u, "Notion calendar") for u, nid in n.items()])
+    return st.compact_sources(items)
 
 
 def _line(r: dict) -> str:
     return (f"• *{r.get('CALENDAR_TITLE', 'Untitled')}* "
-            f"_(score {r.get('CALENDAR_IDEA_SCORE', '?')}, {r.get('PRODUCT', '?')}/{r.get('ICP', '?')})_ "
-            f"<{r.get('NOTION_PAGE_URL', '')}|open>\n"
-            f"   {str(r.get('RATIONALE', ''))[:180]}")
+            f"_(score {r.get('CALENDAR_IDEA_SCORE', '?')})_ <{r.get('NOTION_PAGE_URL', '')}|open> — "
+            f"{_first(r.get('RATIONALE', ''), 14)}")
+
+
+def _first(text, n=14):
+    s = re.split(r"(?<=[.!?])\s", str(text or "").strip())
+    out = s[0] if s and s[0] else str(text or "").strip()
+    w = out.split()
+    return (" ".join(w[:n]) + "…") if len(w) > n else out
 
 
 def _recurring_weakness(rows: list[dict]) -> str:
@@ -108,39 +115,49 @@ def answer_calendar(text: str, sheets=None) -> str:
         return _NO_RATINGS
     rows.sort(key=lambda r: _num(r.get("CALENDAR_IDEA_SCORE")), reverse=True)
     t = (text or "").lower()
+    mode = st.detect_response_mode(text)
 
     keep = [r for r in rows if r.get("RECOMMENDATION") == "Keep"]
     revise = [r for r in rows if r.get("RECOMMENDATION") == "Revise"]
-    reject = [r for r in rows if r.get("RECOMMENDATION") in ("Reject",)]
+    reject = [r for r in rows if r.get("RECOMMENDATION") == "Reject"]
+    weakness = _recurring_weakness(rows)
 
     # Focused modes.
     if "revise" in t:
-        body = ["*Calendar ideas to revise:*"] + [_line(r) for r in revise[:6]] \
-            if revise else ["No calendar ideas are currently flagged to revise."]
-        return "\n".join(body) + "\n\n" + _DISCLAIMER
+        pool = revise[:3 if mode == st.MODE_CONCISE else 5]
+        if not pool:
+            return "Nothing's flagged to revise right now — the proposed ideas hold up."
+        lead = "Calendar ideas to revise:"
+        return st.render_ceo_summary(lead + "\n\n" + "\n".join(_line(r) for r in pool),
+                                     move="Rework the hook + product tie-in on the top one, then re-rate.",
+                                     sources=_sources_block(pool) + ("\n" + _NOT_PROOF), mode=mode)
     if "weak" in t or "reject" in t or "avoid" in t:
-        pool = (reject + revise)[:6]
-        body = ["*Weakest proposed calendar ideas (reject/avoid or revise):*"] + [_line(r) for r in pool] \
-            if pool else ["Nothing looks weak — the proposed ideas are reasonable."]
-        w = _recurring_weakness(rows)
-        return "\n".join(body) + (f"\n\n{w}" if w else "") + "\n\n" + _DISCLAIMER
+        pool = (reject + revise)[:3 if mode == st.MODE_CONCISE else 5]
+        if not pool:
+            return "Nothing looks weak — the proposed ideas are reasonable."
+        lead = "Weakest proposed ideas (fix or drop):"
+        return st.render_ceo_summary(lead + "\n\n" + "\n".join(_line(r) for r in pool),
+                                     why=[weakness] if weakness else None,
+                                     move="Don't shoot these as-is; the shared fix is above.",
+                                     sources=_sources_block(pool) + ("\n" + _NOT_PROOF), mode=mode)
     if "shoot" in t or "worth" in t:
-        pool = keep[:5] or rows[:5]
-        body = ["*Calendar ideas worth shooting (top-rated, Keep):*"] + [_line(r) for r in pool]
-        return "\n".join(body) + "\n\n" + _sources_block(pool) + "\n\n" + _DISCLAIMER
+        pool = (keep or rows)[:3 if mode == st.MODE_CONCISE else 5]
+        lead = "Calendar ideas worth shooting:"
+        move = f"Prioritize *{pool[0].get('CALENDAR_TITLE', 'the top one')}*." if pool else ""
+        return st.render_ceo_summary(lead + "\n\n" + "\n".join(_line(r) for r in pool),
+                                     move=move,
+                                     sources=_sources_block(pool) + ("\n" + _NOT_PROOF), mode=mode)
 
-    # Default: a balanced report.
-    body = [f"*Content calendar ratings* — {len(rows)} proposed idea(s) rated."]
-    body.append("\n*Top to shoot:*")
-    body += [_line(r) for r in (keep[:3] or rows[:3])]
+    # Default: top 3 to shoot / top 3 to revise / one recurring weakness / sources.
+    shoot = keep[:3] or rows[:3]
+    parts = [f"{len(rows)} proposed calendar ideas rated. Here's the shortlist:"]
+    parts.append("*Shoot:*\n" + "\n".join(_line(r) for r in shoot))
     if revise:
-        body.append("\n*To revise:*")
-        body += [_line(r) for r in revise[:3]]
+        parts.append("*Revise:*\n" + "\n".join(_line(r) for r in revise[:3]))
     if reject:
-        body.append("\n*To reject / avoid:*")
-        body += [_line(r) for r in reject[:3]]
-    w = _recurring_weakness(rows)
-    if w:
-        body.append("\n" + w)
-    src = _sources_block((keep[:3] or rows[:3]))
-    return "\n".join(body) + "\n\n" + _DISCLAIMER + (f"\n\n{src}" if src else "")
+        parts.append("*Skip:*\n" + "\n".join(_line(r) for r in reject[:3]))
+    if weakness:
+        parts.append(weakness)
+    src = _sources_block(shoot)
+    body = "\n\n".join(parts)
+    return st.compact_slack_response(body + (f"\n\n{src}\n{_NOT_PROOF}" if src else ""), mode)

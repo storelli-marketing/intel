@@ -117,7 +117,7 @@ class TestProductFamily(unittest.TestCase):
                       ICP="Aspiring Pro", IDEA_TITLE="Slide Without Scars", IDEA_SCORE="90")
         out2 = ir.answer_ideas("give me 5 BodyShield ideas", ideas=ALL + [pants])
         self.assertIn("Slide Without Scars", out2)
-        self.assertIn("map to the BodyShield family", out2)
+        self.assertIn("BodyShield family", out2)
 
     def test_labels_unchanged_in_output(self):
         pants = _idea(IDEA_ID="IDEA-pants-001", PRODUCT="Pants & Leggings",
@@ -144,8 +144,7 @@ class TestCritique(unittest.TestCase):
         out = ir.answer_ideas("which ideas are too generic?", ideas=ALL)
         self.assertIn("The Game-Changer", out)
         self.assertRegex(out.lower(), r"game-changer|unleash|dominate|inner keeper")
-        self.assertIn("haven't changed the sheet", out.lower().replace("’", "'")
-                      if "haven't" in out.lower() else out)
+        self.assertIn("too generic", out.lower())
 
     def test_critique_is_blunt(self):
         out = ir.answer_ideas("critique the top ideas", ideas=[HARD])
@@ -164,9 +163,9 @@ class TestSourceRendering(unittest.TestCase):
         self.assertIn("Storelli internal evidence", out)
         self.assertIn("[E1] <https://www.tiktok.com/@_jason_jamal", out)
         self.assertIn("External inspiration", out)
-        # Internal proof and external inspiration are labeled separately.
-        self.assertIn("Internal proof:", out)
-        self.assertIn("External inspiration (reference only)", out)
+        # Internal proof and external inspiration are cited separately (compact).
+        self.assertIn("proof [S1]", out)
+        self.assertIn("ref [E1]", out)
 
     def test_evidence_mode(self):
         out = ir.answer_ideas("show me the evidence behind the top idea", ideas=[_idea()])
@@ -217,7 +216,7 @@ class TestRefinedPreference(unittest.TestCase):
 
     def test_generic_mode_shows_refined_fix(self):
         out = ir.answer_ideas("which ideas are too generic?", ideas=[_refined_idea()])
-        self.assertIn("Already refined", out)
+        self.assertIn("already refined", out.lower())
         self.assertIn("The 3-Second Grip Check Keepers Skip", out)
 
     def test_evidence_sources_unchanged_with_refined(self):
@@ -255,7 +254,7 @@ class TestGuardrails(unittest.TestCase):
         approved = _idea(STATUS="Published")
         no_internal = _idea(INTERNAL_EVIDENCE_URLS="", INTERNAL_EVIDENCE_IDS="")
         out = ir.answer_ideas("give me gloves ideas", ideas=[approved, no_internal])
-        self.assertIn("don't have any eligible", out.lower().replace("’", "'"))
+        self.assertIn("no eligible", out.lower())
 
 
 if __name__ == "__main__":
