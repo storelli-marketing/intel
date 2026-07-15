@@ -1087,6 +1087,14 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     # Follow-up transforms (e.g. "turn this into a brief") are NOT idea queries
     # and fall through to the existing conversational engine below.
     try:
+        # Conversational RAG orchestrator first: reasoning-heavy intents (urgent
+        # tests, deep-dive on a prior/named idea, compare) with thread memory.
+        # Returns None for everything else -> the concise retrieval paths below.
+        import slack_conversation_orchestrator as orch
+        reasoned = orch.answer(text, context)
+        if reasoned:
+            return _finish_conversational(reasoned, text, skip_polish=True)
+
         import calendar_retrieval
         if calendar_retrieval.is_calendar_query(text):
             return _finish_conversational(calendar_retrieval.answer_calendar(text), text,

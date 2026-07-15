@@ -89,6 +89,37 @@ def _first(text, n=14):
     return (" ".join(w[:n]) + "…") if len(w) > n else out
 
 
+_HYPE = ("game changer", "game-changer", "dominate", "unleash", "unbreakable",
+         "inner keeper", "zero hesitation", "secret", "ultimate", "insane")
+
+
+def _weak_because(r: dict) -> str:
+    """A short, plain 'weak because …' reason (no truncated mid-sentence)."""
+    if _num(r.get("INTERNAL_EVIDENCE_FIT_SCORE"), 100) < 60:
+        seg = str(r.get("ICP") or r.get("PRODUCT") or "this angle").strip()
+        return f"we don't have enough internal proof for {seg} yet"
+    title = str(r.get("CALENDAR_TITLE", "")).lower()
+    if any(g in title for g in _HYPE):
+        return "it's too generic"
+    if not str(r.get("PRODUCT", "")).strip():
+        return "it's broad and not product-led"
+    return "the hook isn't specific enough yet"
+
+
+def _fix(r: dict) -> str:
+    """A one-line, complete-sentence fix from the revision suggestion (no stray
+    list markers, no mid-word truncation)."""
+    rev = re.sub(r"\s+", " ", str(r.get("REVISION_SUGGESTION", "")).strip())
+    rev = re.sub(r"^\s*\d+[\.\)]\s*", "", rev)          # drop a leading "1."
+    rev = re.sub(r"^\*+[^:]{0,40}:\*+\s*", "", rev)     # drop a leading "*Label:*"
+    rev = re.split(r"\s\d+[\.\)]\s", rev)[0]            # cut at an inline "… 1. …" list
+    first = re.split(r"(?<=[.!?])\s", rev)[0] if rev else ""
+    if not first or len(first.split()) < 3:
+        return "anchor it to one proven pain point (turf burn, finger sting, or fear of diving)"
+    words = first.split()
+    return (" ".join(words[:24]).rstrip(",;:") + "…") if len(words) > 24 else first
+
+
 def _recurring_weakness(rows: list[dict]) -> str:
     from collections import Counter
     weak = [r for r in rows if str(r.get("RECOMMENDATION")) in ("Revise", "Reject")]
@@ -132,14 +163,21 @@ def answer_calendar(text: str, sheets=None) -> str:
                                      move="Rework the hook + product tie-in on the top one, then re-rate.",
                                      sources=_sources_block(pool) + ("\n" + _NOT_PROOF), mode=mode)
     if "weak" in t or "reject" in t or "avoid" in t:
-        pool = (reject + revise)[:3 if mode == st.MODE_CONCISE else 5]
+        # KISS: default to 3 complete items; up to 5 only when explicitly asked.
+        cap = 5 if re.search(r"\b(5|five|all|more)\b", t) else 3
+        pool = (revise + reject)[:cap]
         if not pool:
             return "Nothing looks weak — the proposed ideas are reasonable."
-        lead = "Weakest proposed ideas (fix or drop):"
-        return st.render_ceo_summary(lead + "\n\n" + "\n".join(_line(r) for r in pool),
-                                     why=[weakness] if weakness else None,
-                                     move="Don't shoot these as-is; the shared fix is above.",
-                                     sources=_sources_block(pool) + ("\n" + _NOT_PROOF), mode=mode)
+        # KISS shape: title — weak because … / Fix: … (full sentences, no dump).
+        lead = f"Yep — {len(pool)} idea(s) need revision before shooting."
+        items = []
+        for i, r in enumerate(pool, 1):
+            items.append(f"{i}. *{r.get('CALENDAR_TITLE', 'Untitled')}* — weak because "
+                         f"{_weak_because(r)}.\n   Fix: {_fix(r)}")
+        body = lead + "\n\n" + "\n".join(items)
+        return st.render_ceo_summary(
+            body, move="Don't shoot these as-is — rewrite them around a proven pain point first.",
+            sources=_sources_block(pool) + ("\n" + _NOT_PROOF), mode=mode)
     if "shoot" in t or "worth" in t:
         pool = (keep or rows)[:3 if mode == st.MODE_CONCISE else 5]
         lead = "Calendar ideas worth shooting:"

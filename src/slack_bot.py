@@ -166,7 +166,10 @@ def post_message(channel: str, text: str, thread_ts: str | None = None) -> dict:
     """
     if not config.SLACK_BOT_TOKEN:
         raise RuntimeError("SLACK_BOT_TOKEN not configured")
-    payload = {"channel": channel, "text": text}
+    # Disable link previews so TikTok/IG/Notion source links don't dump huge
+    # unfurl cards — the links stay clickable, just no previews.
+    payload = {"channel": channel, "text": text,
+               "unfurl_links": False, "unfurl_media": False}
     if thread_ts:
         payload["thread_ts"] = thread_ts
     headers = {
@@ -193,7 +196,8 @@ def update_message(channel: str, ts: str, text: str) -> bool:
         resp = httpx.post(f"{_SLACK_API}/chat.update",
                           headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}",
                                   "Content-Type": "application/json; charset=utf-8"},
-                          json={"channel": channel, "ts": ts, "text": text}, timeout=15)
+                          json={"channel": channel, "ts": ts, "text": text,
+                                "unfurl_links": False, "unfurl_media": False}, timeout=15)
         data = resp.json()
         if not data.get("ok"):
             log.warning("slack chat.update not ok: %s", data.get("error"))

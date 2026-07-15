@@ -338,13 +338,22 @@ def _cap(q: dict, mode: str, default: int = 3, hard: int = 5) -> int:
     return max(1, n)
 
 
+def _display_risk(idea: dict) -> str:
+    """The risk/watch-out to show. For a REFINED idea, drop the 'generic
+    language' point — the displayed refined title/hook already fixes it, so
+    flagging it would contradict what the reader sees."""
+    pts = critique_points(idea)
+    if _uses_refined(idea):
+        pts = [p for p in pts if "generic language" not in p.lower()]
+    return _first_sentence(pts[0], 9) if pts else "shootable, no big weakness"
+
+
 def _idea_line(n: int, idea: dict, reg: SourceRegistry, blunt: bool) -> str:
     s_txt, e_txt = _cite_idea(idea, reg)
     title = _field(idea, "REFINED_IDEA_TITLE", "IDEA_TITLE") or "Untitled"
     hook = _field(idea, "REFINED_HOOK", "HOOK")
     shoot = str(idea.get("RECOMMENDED_SHOOT_PRIORITY", "")).strip() or "Medium"
-    pts = critique_points(idea)
-    risk = _first_sentence(pts[0], 9) if pts else "shootable, no big weakness"
+    risk = _display_risk(idea)
     tag = " _(refined)_" if _uses_refined(idea) else ""
     why = _first_sentence(hook, 16)
     return (f"*{n}. {title}*{tag} _({idea.get('PRODUCT', '?')}, score {idea.get('IDEA_SCORE', '?')})_\n"
@@ -393,11 +402,17 @@ def _render_critique(ranked: list[dict], q: dict, mode: str, blunt: bool) -> str
     lines = []
     for idea in ranked[:n_show]:
         title = _field(idea, "REFINED_IDEA_TITLE", "IDEA_TITLE") or "Untitled"
+        refined = _uses_refined(idea)
         pts = critique_points(idea)
+        if refined:
+            pts = [p for p in pts if "generic language" not in p.lower()]
         verdict = ("This is shootable — no major weakness." if not pts
                    else _first_sentence(_dedup_weakness(idea.get("ORIGINAL_WEAKNESS", "")) or pts[0], 16))
+        # Non-contradictory: note original generic language, but say it's fixed
+        # when the idea has been refined (never imply the shown title is generic).
         if generic_language_flags(idea):
-            verdict += " (original used generic language)"
+            verdict += (" (original used generic language — the refined version fixes it)"
+                        if refined else " (original used generic language)")
         line = f"• *{title}* — {verdict}"
         notes = str(idea.get("CREATIVE_DIRECTOR_NOTES", "")).strip()
         if notes and mode != st.MODE_CONCISE:
