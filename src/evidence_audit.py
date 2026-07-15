@@ -251,6 +251,60 @@ def evidence_building_tests() -> list[dict]:
     ]
 
 
+def control_cut() -> dict:
+    """The baseline the parent/coach angles are measured against — a generic
+    product demo of the SAME product, with no parent/coach/fear framing."""
+    return {"label": "control", "test_name": "CONTROL — The Demo: BodyShield GK Leggings",
+            "product": "BodyShield GK Leggings", "icp": "Adult Amateur / General",
+            "hypothesis": "Baseline generic product demo — the parent/coach cuts are measured against this.",
+            "structure": "Product/benefit hook → demo dive/slide → protection proof → CTA.",
+            "success_proves": "Baseline engagement for a non-parent demo of the same product.",
+            "failure_means": "n/a — this is the control, not a hypothesis.",
+            "kpi_proxy": "saves / conversion-fit (proxy)",
+            "internal_proof_needed": "Tag as the non-Parents control; do NOT count it toward the Parents cluster.",
+            "external_refs": "generic product-demo refs (reference only)",
+            "shootability": "High — same keeper/location/length as the treatment cuts.",
+            "risk": "Keep it truly generic (no parent/coach angle) so the A/B stays clean."}
+
+
+_TRACKER_ANGLES = ["Parent POV", "Before/After", "Coach-Trust"]
+
+
+def _tracker_row(t: dict, angle: str, is_control: str) -> dict:
+    return {
+        "TEST_ID": "PT-" + hashlib.sha1(t["test_name"].encode()).hexdigest()[:8],
+        "TEST_NAME": t["test_name"], "ANGLE": angle, "IS_CONTROL": is_control,
+        "PRODUCT": t["product"], "ICP": t["icp"], "HYPOTHESIS": t["hypothesis"],
+        "STORY_STRUCTURE": t["structure"], "SUCCESS_PROVES": t["success_proves"],
+        "KPI_PROXY": t["kpi_proxy"], "STATUS": "Planned",
+        "SHOT_DATE": "", "POST_URL": "", "PERFORMANCE_GRADE": "", "SAVES_OR_KPI": "",
+        "ENGAGEMENT_NOTE": "",
+        "NOTES": ("Tag ICP=Parents on upload; stack ①② on BodyShield leggings to build the cluster."
+                  if is_control == "FALSE"
+                  else "Baseline: tag as the non-Parents control; measure the parent cuts against it."),
+    }
+
+
+def test_tracker_rows() -> list[dict]:
+    """The 3 treatment cuts + the control, as tracker rows (results left blank)."""
+    rows = [_tracker_row(t, _TRACKER_ANGLES[i], "FALSE")
+            for i, t in enumerate(evidence_building_tests()[:3])]
+    rows.append(_tracker_row(control_cut(), "Control (baseline)", "TRUE"))
+    return rows
+
+
+def seed_test_tracker(sheets: Optional[InspirationSheets] = None) -> tuple[int, int]:
+    """Create-if-absent seed of the PARENTS_EVIDENCE_TESTS tab. Never overwrites
+    logged results. Returns (created, skipped_existing)."""
+    s = sheets or InspirationSheets()
+    try:
+        s.ensure_evidence_test_tracker_tab()
+        return s.seed_evidence_tests(test_tracker_rows())
+    except Exception as e:  # noqa: BLE001
+        log.warning("evidence test tracker seed failed: %s", e)
+        return 0, 0
+
+
 # ---------------------------------------------------------------------------
 # Part D — Slack answers (disciplined, source-linked trace)
 # ---------------------------------------------------------------------------
@@ -378,13 +432,16 @@ def run_audit(sheets: Optional[InspirationSheets] = None, write: bool = True,
         pass
     gaps = evidence_gaps(a, internal, ext_use)
     created = updated = 0
+    tracker_created = tracker_existing = 0
     if write:
         try:
             s.ensure_evidence_gaps_tab()
             created, updated = s.upsert_evidence_gaps(gaps)
         except Exception as e:  # noqa: BLE001
             log.warning("evidence gaps write failed: %s", e)
+        tracker_created, tracker_existing = seed_test_tracker(s)   # create-if-absent
     justified, reason = profile_justified(a)
     return {"audit": a, "gaps": gaps, "tests": evidence_building_tests(),
             "profile_justified": justified, "reason": reason,
-            "created": created, "updated": updated}
+            "created": created, "updated": updated,
+            "tracker_created": tracker_created, "tracker_existing": tracker_existing}

@@ -762,6 +762,8 @@ def cmd_audit_evidence_gaps() -> int:
     print(f"\nEvidence-building tests recommended: {len(r['tests'])}")
     for t in r["tests"]:
         print(f"  - {t['test_name']} ({t['product']} / {t['icp']})")
+    print(f"\nPARENTS_EVIDENCE_TESTS tracker: seeded={r['tracker_created']} "
+          f"kept-existing={r['tracker_existing']} (create-if-absent; your logged results are never overwritten)")
     return 0
 
 

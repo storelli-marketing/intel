@@ -58,6 +58,14 @@ EVIDENCE_GAPS_HEADERS = [
     "RECOMMENDED_TESTS", "PRIORITY", "STATUS", "AUDITED_AT",
 ]
 
+EVIDENCE_TEST_TRACKER_TAB = "PARENTS_EVIDENCE_TESTS"
+
+EVIDENCE_TEST_TRACKER_HEADERS = [
+    "TEST_ID", "TEST_NAME", "ANGLE", "IS_CONTROL", "PRODUCT", "ICP", "HYPOTHESIS",
+    "STORY_STRUCTURE", "SUCCESS_PROVES", "KPI_PROXY", "STATUS", "SHOT_DATE",
+    "POST_URL", "PERFORMANCE_GRADE", "SAVES_OR_KPI", "ENGAGEMENT_NOTE", "NOTES",
+]
+
 ADHOC_IDEA_EVALUATIONS_TAB = "ADHOC_IDEA_EVALUATIONS"
 
 ADHOC_IDEA_EVALUATIONS_HEADERS = [
@@ -725,6 +733,41 @@ class InspirationSheets:
         if appends:
             ws.append_rows(appends, value_input_option="RAW")
         return created, updated
+
+    # ---- Parents evidence-test tracker (plan artifact; create-if-absent) --
+    def ensure_evidence_test_tracker_tab(self) -> bool:
+        titles = [ws.title for ws in self._sh.worksheets()]
+        if EVIDENCE_TEST_TRACKER_TAB in titles:
+            return False
+        ws = self._sh.add_worksheet(title=EVIDENCE_TEST_TRACKER_TAB, rows=100,
+                                    cols=len(EVIDENCE_TEST_TRACKER_HEADERS))
+        ws.update(range_name="A1", values=[EVIDENCE_TEST_TRACKER_HEADERS], value_input_option="RAW")
+        self._ws_cache[EVIDENCE_TEST_TRACKER_TAB] = ws
+        return True
+
+    def read_evidence_test_tracker(self) -> list[dict]:
+        try:
+            _, rows = self._read_table(self._ws(EVIDENCE_TEST_TRACKER_TAB))
+        except gspread.WorksheetNotFound:
+            return []
+        return [r for r in rows if str(r.get("TEST_ID", "")).strip()]
+
+    def seed_evidence_tests(self, rows: list[dict]) -> tuple[int, int]:
+        """Create-if-absent by TEST_ID. NEVER overwrites an existing row, so any
+        results you've logged (POST_URL, PERFORMANCE_GRADE, ...) are preserved.
+        Returns (created, skipped_existing)."""
+        if not rows:
+            return 0, 0
+        self.ensure_evidence_test_tracker_tab()
+        ws = self._ws(EVIDENCE_TEST_TRACKER_TAB)
+        headers = [h.strip() for h in ws.row_values(1)]
+        _, existing = self._read_table(ws)
+        have = {str(r.get("TEST_ID", "")).strip() for r in existing if str(r.get("TEST_ID", "")).strip()}
+        appends = [[str(r.get(h, "")) for h in headers]
+                   for r in rows if str(r.get("TEST_ID", "")).strip() and str(r.get("TEST_ID", "")).strip() not in have]
+        if appends:
+            ws.append_rows(appends, value_input_option="RAW")
+        return len(appends), len(rows) - len(appends)
 
     # ---- winning format profiles (internal evidence only) ----------------
     def read_profiles(self) -> list[dict]:

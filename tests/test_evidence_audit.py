@@ -51,6 +51,7 @@ class FakeSheets:
         self.gap_writes = 0
         self.other_writes = 0
         self._gaps = []
+        self._tracker = []
 
     def read_profiles(self):
         return []                          # no Parents profile exists
@@ -64,10 +65,20 @@ class FakeSheets:
     def ensure_evidence_gaps_tab(self):
         return False
 
+    def ensure_evidence_test_tracker_tab(self):
+        return False
+
     def upsert_evidence_gaps(self, gaps):
         self.gap_writes += 1
         self._gaps = gaps
         return len(gaps), 0
+
+    def seed_evidence_tests(self, rows):
+        # create-if-absent semantics: only append TEST_IDs not already present
+        have = {r["TEST_ID"] for r in self._tracker}
+        new = [r for r in rows if r["TEST_ID"] not in have]
+        self._tracker.extend(new)
+        return len(new), len(rows) - len(new)
 
     def __getattr__(self, name):
         # Any profile/internal/other write must never happen.
@@ -124,6 +135,25 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(sheets.other_writes, 0)           # no profile / internal writes
         self.assertEqual(len(r["gaps"]), 5)
         self.assertTrue(any(g["GAP_NAME"] == "Parents / Youth Safety Proof" for g in r["gaps"]))
+
+    def test_tracker_has_three_tests_plus_control(self):
+        rows = ea.test_tracker_rows()
+        self.assertEqual(len(rows), 4)
+        controls = [r for r in rows if r["IS_CONTROL"] == "TRUE"]
+        self.assertEqual(len(controls), 1)                 # exactly one baseline
+        self.assertNotIn("Parents", controls[0]["ICP"])    # control is NOT tagged Parents
+        self.assertTrue(all(r["PERFORMANCE_GRADE"] == "" for r in rows))   # results left blank
+        self.assertTrue(all(r["STATUS"] == "Planned" for r in rows))
+
+    def test_tracker_seed_is_create_if_absent(self):
+        sheets = FakeSheets()
+        c1, s1 = ea.seed_test_tracker(sheets)
+        self.assertEqual((c1, s1), (4, 0))                 # first run creates 4
+        # simulate the user logging a result on one row
+        sheets._tracker[0]["PERFORMANCE_GRADE"] = "Great"
+        c2, s2 = ea.seed_test_tracker(sheets)
+        self.assertEqual((c2, s2), (0, 4))                 # re-seed creates nothing
+        self.assertEqual(sheets._tracker[0]["PERFORMANCE_GRADE"], "Great")  # result preserved
 
 
 class TestSlack(unittest.TestCase):
