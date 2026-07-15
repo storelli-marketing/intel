@@ -293,6 +293,54 @@ def test_tracker_rows() -> list[dict]:
     return rows
 
 
+# Canonical string to log in the SAVES_OR_KPI column — keeps the 4 videos
+# comparable. All rates are read at the SAME age and normalized by views.
+KPI_LOG_FORMAT = "views=..; retention=..%; saves=..; shares=..; comments=..; parent_intent=.."
+
+
+def logging_convention() -> dict:
+    """The measurement protocol so PERFORMANCE_GRADE stays defensible and the
+    parent cuts are comparable to the control. We don't auto-track engagement, so
+    this is a manual, consistent hand-logging convention."""
+    return {
+        "window": "Read all 4 at the SAME age — 7 days after posting.",
+        "same_platform": "Compare within one platform (IG vs IG, TikTok vs TikTok) — never across.",
+        "format": KPI_LOG_FORMAT,
+        "fields": [
+            "views = total plays at 7 days",
+            "retention% = avg watch time ÷ video length (IG 'watched full', TikTok avg watch)",
+            "saves / shares / comments = raw counts (normalize by views when comparing)",
+            "parent_intent = # comments showing parent/buyer intent (\"where do I buy for my son\", fit/size Qs)",
+        ],
+        "primary_kpi": {
+            "Parent POV": "saves/1k + parent_intent (comment-likelihood proxy)",
+            "Before/After": "saves/1k + profile/link taps (conversion-fit)",
+            "Coach-Trust": "shares/1k (shareability proxy)",
+            "Control": "saves/1k (its own baseline)",
+        },
+        "grade_rule": [
+            "Great = beats the CONTROL ≥1.3× on its primary KPI AND retention ≥ control",
+            "Ok = within ±30% of the control",
+            "Underdog = clearly below the control",
+        ],
+        "note": "Normalize by views (per-1,000) before comparing — reach differs between cuts.",
+    }
+
+
+def render_logging_convention(mode: str = None) -> str:
+    c = logging_convention()
+    lines = ["*How to log the 4 Parents tests* (so grades stay comparable):", "",
+             f"• *Window:* {c['window']}",
+             f"• *Same platform:* {c['same_platform']}",
+             f"• *Log into SAVES_OR_KPI as:* `{c['format']}`",
+             "  " + "; ".join(c["fields"][1:3]), "",
+             "*Primary KPI per cut:*"]
+    lines += [f"• {k} → {v}" for k, v in c["primary_kpi"].items()]
+    lines += ["", "*Grade vs the control:*"] + [f"• {g}" for g in c["grade_rule"]]
+    lines += ["", f"_{c['note']}_"]
+    return st.compact_slack_response("\n".join(lines), mode or st.MODE_DEEP)
+
+
 def seed_test_tracker(sheets: Optional[InspirationSheets] = None) -> tuple[int, int]:
     """Create-if-absent seed of the PARENTS_EVIDENCE_TESTS tab. Never overwrites
     logged results. Returns (created, skipped_existing)."""
@@ -317,11 +365,21 @@ def is_evidence_gap_query(text: str, context: Optional[list] = None) -> bool:
     t = (text or "").lower()
     if any(k in t for k in _PROOF_KW):
         return True
+    if _wants_logging(t) and any(k in t for k in ("parent", "youth", "test", "tests")):
+        return True
     if any(k in t for k in ("parent", "youth")) and any(
             k in t for k in ("content", "test", "tests", "proof", "scale", "scaling",
                              "make", "should we", "pillar", "evidence", "prove")):
         return True
     return False
+
+
+def _wants_logging(text: str) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in ("how do we log", "how to log", "logging convention",
+                                "how do we measure", "how to measure", "how do we grade",
+                                "how to grade", "what do we record", "track results",
+                                "measure the parents", "log the parents", "kpi convention"))
 
 
 def _wants_test_plan(text: str) -> bool:
@@ -364,8 +422,10 @@ def _read_learnings() -> str:
 
 
 def answer_evidence_gap(text: str, context: Optional[list] = None, sheets=None) -> Optional[str]:
-    a, _internal, _learn = _load_audit(sheets)
     mode = st.detect_response_mode(text)
+    if _wants_logging(text):
+        return render_logging_convention(mode)
+    a, _internal, _learn = _load_audit(sheets)
     if _wants_test_plan(text):
         return _render_test_plan(a, mode)
     return _render_verdict(a, mode)

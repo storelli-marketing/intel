@@ -189,6 +189,20 @@ class TestSlack(unittest.TestCase):
         self.assertIn("Test 1:", out)
         self.assertIn("not proven ideas", out.lower())
 
+    def test_logging_convention_is_consistent(self):
+        c = ea.logging_convention()
+        for key in ("views", "retention", "saves", "shares", "comments", "parent_intent"):
+            self.assertIn(key, c["format"])
+        self.assertEqual(set(c["primary_kpi"]), {"Parent POV", "Before/After", "Coach-Trust", "Control"})
+
+    def test_slack_logging_convention(self):
+        self.assertTrue(ea.is_evidence_gap_query("how do we log the Parents tests?"))
+        out = ea.answer_evidence_gap("how do we measure the Parents tests?")
+        self.assertIn("SAVES_OR_KPI", out)
+        self.assertIn("retention", out.lower())
+        self.assertIn("control", out.lower())            # graded against the baseline
+        self.assertIn("7 days", out.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

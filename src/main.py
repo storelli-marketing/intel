@@ -764,6 +764,11 @@ def cmd_audit_evidence_gaps() -> int:
         print(f"  - {t['test_name']} ({t['product']} / {t['icp']})")
     print(f"\nPARENTS_EVIDENCE_TESTS tracker: seeded={r['tracker_created']} "
           f"kept-existing={r['tracker_existing']} (create-if-absent; your logged results are never overwritten)")
+    conv = evidence_audit.logging_convention()
+    print("\nLogging convention (fill SAVES_OR_KPI per video, read all 4 at the same 7-day age):")
+    print(f"  format: {conv['format']}")
+    print(f"  window: {conv['window']}")
+    print("  grade:  " + " · ".join(conv["grade_rule"]))
     return 0
 
 

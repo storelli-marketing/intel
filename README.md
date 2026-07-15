@@ -844,6 +844,18 @@ Parents/youth tests should we run?", "what would we need to prove before scaling
 Parents?" return a cautious, source-linked decision trace (internal proof → gap →
 test needed → my move), never treating external refs as proof.
 
+The audit also seeds a **`PARENTS_EVIDENCE_TESTS`** tracker tab (create-if-absent
+— it never overwrites results you log) with the 3 treatment cuts + a generic-demo
+**control** (tagged non-Parents so it stays a clean baseline). Fill the result
+columns as videos ship, using the **logging convention** (also `logging_convention()`
+and Slack "how do we log the Parents tests?"): read all 4 at the **same 7-day
+age**, compare **within one platform**, log `SAVES_OR_KPI` as
+`views=..; retention=..%; saves=..; shares=..; comments=..; parent_intent=..`,
+normalize by views, and grade **vs the control** (Great = beats control ≥1.3× on
+its primary KPI and retention ≥ control; Ok = ±30%; Underdog = below). Then
+`build-winning-profiles` → re-run `audit-evidence-gaps`; the verdict flips to a
+Parents profile **only** if ≥3 Great land in one product cluster.
+
 ### Winning Format Profiles (internal evidence only)
 
 `python src/main.py build-winning-profiles` (or **Build Winning Format
