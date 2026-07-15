@@ -67,7 +67,7 @@ class TestTraceSchema(unittest.TestCase):
                  dt.kpi_step("Curiosity Gap → Demo → Pain Reveal")]
         b = dt.bullets(steps)
         self.assertIn("*Internal proof:*", b[0])
-        self.assertIn("[S1][S2]", b[0])
+        self.assertIn("[S1] [S2]", b[0])
         self.assertTrue(b[1].startswith("*KPI bet:*"))
 
     def test_validate_rejects_invented_and_external_proof(self):

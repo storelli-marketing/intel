@@ -170,17 +170,20 @@ class GoldenBase(unittest.TestCase):
     def assertQuality(self, text, out, allow_deep=False):
         body, _src = st.split_sources(out)
         low = out.lower()
-        # no raw long URLs in the body (URLs live only in the Sources block)
-        self.assertNotIn("http", body, "raw URL leaked into the answer body")
-        # sources at the bottom when source tags are cited
-        if re.search(r"\[[SECNI]\d+\]", body):
+        # no NAKED urls in the body — links are allowed only as Slack hyperlinks
+        # (<url|label>), never dumped raw.
+        naked = re.sub(r"<[^>]*>", "", body)
+        self.assertNotIn("http", naked, "raw (non-hyperlinked) URL leaked into the body")
+        # sources at the bottom when source tags/links are cited
+        if re.search(r"\[[SECNI]\d+\]|<[^|>]+\|[SECNI]\d+>", body):
             self.assertIn("*Sources:*", out)
             self.assertLess(out.index("*Why:*") if "*Why:*" in out else 0, out.index("*Sources:*"))
         # external inspiration is never framed as proof
         self.assertNotRegex(low, r"(external|inspiration|reference)[^.]{0,40}prov(e|es|en|ing)")
-        # <= 5 main bullets by default
-        bullets = [ln for ln in body.splitlines() if ln.strip().startswith("•")]
-        self.assertLessEqual(len(bullets), 5, "more than 5 main bullets")
+        # <= 5 main Why steps by default (bulleted OR numbered)
+        why_lines = [ln for ln in body.splitlines()
+                     if ln.strip().startswith("•") or re.match(r"^\s*\d+\. ", ln)]
+        self.assertLessEqual(len(why_lines), 6, "more than 5 main Why steps")
         # no canned endings
         self.assertNotRegex(low, r"want me to|shall i\b|let me know if|would you like me")
         # no giant markdown tables unless explicitly asked
@@ -294,6 +297,18 @@ class TestGoldenPrompts(GoldenBase):
         self.assertIn("route:", out)
         self.assertIn("social_strategy_skill", out)
         self.assertIn("calendar_doctor", out)
+
+    def test_14_trace_is_sequential_and_linked(self):
+        # A recommendation's Why trail is a NUMBERED sequence, and inline source
+        # citations are clickable links (<url|S1>), not bare [S1] letters.
+        out = self.run_prompt("you suggested Dive Without The Sting — why should we shoot it?",
+                              _BODYSHIELD_CTX)
+        body = st.split_sources(out)[0]
+        self.assertRegex(body, r"\n1\. ")                     # numbered step 1
+        self.assertRegex(body, r"\n2\. ")                     # sequential step 2
+        self.assertRegex(body, r"<https?://[^|>]+\|S1>")      # internal proof is a link
+        self.assertNotRegex(body, r"\[S1\]")                  # not a bare letter anymore
+        self.assertIn("*Sources:*", out)
 
     def test_13_write_policy_only_evaluate_writes(self):
         # A whole session of non-evaluate prompts must not write anything.

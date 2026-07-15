@@ -1011,7 +1011,11 @@ def _finish_conversational(base: str, user_text: str, skip_polish: bool = False)
     if not skip_polish and not config.SLACK_STRATEGIST_MODE_ENABLED:
         text = _maybe_llm_polish(base, user_text) or base
     import slack_response_style as style
-    return style.compact_slack_response(text, style.detect_response_mode(user_text))
+    polished = style.compact_slack_response(text, style.detect_response_mode(user_text))
+    # Final pass: number the Why trail into a sequential workflow and linkify the
+    # inline source letters ([S1] -> clickable link). Runs last so links never
+    # count toward the length cap.
+    return style.format_trace_answer(polished)
 
 
 def _deterministic_conversation_answer(text: str, context: list, last_assistant: str) -> str:

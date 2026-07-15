@@ -94,7 +94,7 @@ def bullets(steps: list[dict], max_n: int = 5) -> list[str]:
     for s in steps:
         if not s or not str(s.get("value", "")).strip():
             continue
-        refs = "".join(f"[{r}]" for r in s.get("refs", []))
+        refs = " ".join(f"[{r}]" for r in s.get("refs", []))
         out.append(f"*{s['label']}:* {s['value']}{(' ' + refs) if refs else ''}".rstrip())
         if len(out) >= max_n:
             break

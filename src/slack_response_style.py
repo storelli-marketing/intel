@@ -120,3 +120,48 @@ def compact_slack_response(text: str, mode: str = MODE_DEFAULT) -> str:
     """Generic post-processor for any Slack answer: strip canned endings and
     enforce the mode's length, always preserving the Sources block."""
     return enforce_length(remove_canned_endings(text or ""), mode)
+
+
+_SRC_LINK_RE = re.compile(r"\[([A-Za-z]+\d+)\]\s*<([^|>]+)\|")
+
+
+def _source_links(src_block: str) -> dict:
+    """tag -> url parsed from a rendered Sources block (`[S1] <url|label>`)."""
+    return {m.group(1): m.group(2) for m in _SRC_LINK_RE.finditer(src_block or "")}
+
+
+def _strip_bullet(line: str) -> str:
+    return re.sub(r"^\s*•\s?", "", line).lstrip()
+
+
+def format_trace_answer(text: str) -> str:
+    """Final formatting pass (runs AFTER length enforcement so it can't be
+    trimmed): render the 'Why' evidence trail as a NUMBERED sequential workflow,
+    and turn inline source letters like [S1] into clickable Slack links using the
+    Sources block — links, not just letters. Idempotent; leaves the Sources block
+    and already-numbered lists untouched.
+    """
+    body, src = split_sources(text)
+    lines, out, n, in_why = body.splitlines(), [], 0, False
+    for ln in lines:
+        s = ln.lstrip()
+        if s.startswith("*Why"):
+            in_why, n = True, 0
+            out.append(ln)
+            continue
+        if in_why:
+            if s.startswith("•"):
+                # Skip lists that already carry their own numbering (e.g. videos).
+                if not re.match(r"\*?\d+\.", _strip_bullet(ln)):
+                    n += 1
+                    ln = re.sub(r"^(\s*)•\s?", rf"\g<1>{n}. ", ln)
+            elif s.startswith("*"):
+                in_why = False
+        out.append(ln)
+    body = "\n".join(out)
+    links = _source_links(src)
+    if links:
+        body = re.sub(r"\[([A-Za-z]+\d+)\]",
+                      lambda m: f"<{links[m.group(1)]}|{m.group(1)}>" if m.group(1) in links else m.group(0),
+                      body)
+    return body + ("\n\n" + src if src else "")
