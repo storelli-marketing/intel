@@ -1108,6 +1108,16 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
             if insp:
                 return _finish_conversational(insp, text, skip_polish=True)
 
+        # Social strategist skill pack: practical strategy questions (comment
+        # drivers, test hypotheses, concept references, idea diagnosis, calendar
+        # doctor, learning->action, content gaps, shot briefs). Read-only; returns
+        # None for anything it doesn't own so the paths below handle the turn.
+        import social_strategy_skills as strat
+        if strat.is_strategy_query(text, context):
+            skilled = strat.answer(text, context)
+            if skilled:
+                return _finish_conversational(skilled, text, skip_polish=True)
+
         # Conversational RAG orchestrator: reasoning-heavy intents (urgent
         # tests, deep-dive on a prior/named idea, compare) with thread memory.
         # Returns None for everything else -> the concise retrieval paths below.

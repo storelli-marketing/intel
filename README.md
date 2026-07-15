@@ -615,6 +615,36 @@ structure, and `[S#]` internal proof / `[E#]` external reference sources. It
 resolves "related to the ideas you proposed" from the prior turn, and says
 "external = execution reference only" once. Read-only from Slack.
 
+### Social strategist skill pack (`src/social_strategy_skills.py`)
+
+Slack answers practical social-media-strategy questions like a strategist, not
+just an idea retriever. Eight skills, routed deterministically before the RAG
+orchestrator: **comment_drivers** ("what gets the most comments?", "which hooks
+invite replies?"), **test_hypothesis** ("what are we trying to learn?", "what
+would success prove?"), **concept_references** ("what videos should we watch
+before shooting this?" → semantic-connection references, not the idea list),
+**idea_diagnosis** ("why is this idea weak?" → weakness + fix + shoot/revise/drop),
+**calendar_doctor** ("what should we revise/kill/move up?" → max 3, KISS),
+**learning_to_action** ("what should we do because of our learnings?"),
+**content_gap** ("where is the evidence thin?", "do we have enough parent
+content?"), and **shot_brief** ("turn this into a shoot brief" → hook + 4–6 shot
+beats + CTA + reference + what not to copy).
+
+Every answer separates **hard Storelli evidence** (internal proof) from **external
+inspiration** (execution reference only, never proof) from **strategic inference**
+— and when a metric isn't in the data (e.g. we don't track comment counts) it says
+so plainly instead of inventing one. Evidence packs are small and read-only
+(≤3 profiles / connections / refined ideas / calendar ratings, ≤3 external
+references, ≤1 ad-hoc evaluation) drawn from the existing brain; Gemini synthesis
+(schema `lead` / `hard_evidence` / `strategic_inference` / `recommendation` /
+`next_action` / `sources_used`) is validated (no invented source ids, no
+external-as-proof, no unsupported hard-metric claims) with a deterministic
+fallback. Sources use `[S#]/[E#]/[C#]/[N#]/[I#]`. Follow-ups ("turn that into a
+shoot brief", "what videos should we use?", "make it more comment-driven") resolve
+the subject from thread memory or the last evaluated Notion idea; if it can't
+resolve one, it asks a clarifying question. **Slack answers only — no Sheets or
+Notion writes, no new canonical ideas, scoring formulas unchanged.**
+
 ### Ad-hoc Notion idea evaluation
 
 Paste any Notion idea page into Slack — "*@Marketing Brain evaluate this idea:
