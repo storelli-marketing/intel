@@ -1076,6 +1076,16 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     context = conversation_context or []
     last_assistant = next((m["text"] for m in reversed(context) if m.get("role") == "assistant"), "")
 
+    # Developer routing diagnostics ("route_debug ...") — introspection only, never
+    # runs a handler or writes. Checked before everything so it can't be shadowed.
+    import slack_help
+    if slack_help.is_route_debug(text):
+        return slack_help.route_debug(text, context)
+    # Capability menu ("what can you do?", "help", "show me examples") — a short
+    # grouped menu, returned as-is (already formatted; no CEO polish needed).
+    if slack_help.is_help_query(text):
+        return slack_help.capability_menu()
+
     # "source debug" / "show me the sources you used" is a deterministic,
     # mechanical reflection of what was actually cited — never routed through
     # Gemini (nothing to compose; it's for operators, not the strategist voice).

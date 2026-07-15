@@ -307,6 +307,26 @@ videos needed."*; above it, each test includes Product, ICP and a concrete
 Execution line. The dashboard also auto-posts after a successful social run when
 the webhook is set.
 
+### How to use Marketing Brain in Slack
+
+Mention the bot and ask **one concrete content decision at a time**. Ask
+"*what can you do?*" (or "help") anytime for this menu in-thread. Grouped by who's
+asking:
+
+| Who | Ask it… |
+| --- | --- |
+| **Strategy / CEO** | "What should we shoot this week?" · "What are the most urgent tests and why?" · "Where is the evidence thin?" |
+| **Social manager** | "What should we revise in the calendar?" · "What content is most likely to get comments?" · "What should we post more of?" |
+| **Creative strategist** | "What storytelling structure should this idea use?" · "Which videos should we take inspiration from?" · "How do we make this less generic?" |
+| **Shooter / creator** | "Turn this into a shoot brief." · "What should Gerald film?" · "What are the shot beats?" |
+| **Notion idea evaluator** | "Evaluate this idea: `<Notion URL>`" · "Dry run this idea: `<Notion URL>`" · "What should I tell the team?" |
+
+Follow-ups keep context ("why?", "turn that into a shoot brief", "what videos
+should we use?"). Developers can prefix a message with `route_debug` to see which
+route/intent/context/LLM a prompt takes (never shown to normal users). A
+golden-prompt QA harness (`tests/test_slack_golden_prompts.py`) locks these
+behaviours in end-to-end.
+
 ### Slack chat (interactive Marketing Brain — Notion-first)
 
 An optional Slack app turns the brain into a **chat interface**: mention the
