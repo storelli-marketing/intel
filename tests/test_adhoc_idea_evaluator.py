@@ -1,12 +1,17 @@
 """Tests for the Ad-Hoc Notion Idea Evaluation Layer.
 
-Proves Notion URL detection/extraction, clear errors for inaccessible / thin
-pages, normalization, RAG retrieval (semantic connections + internal evidence
-separated from external inspiration), external-never-proof scoring, guarded
-recommendations (vague -> revise / needs more info; strong BodyShield idea
-scores higher), idempotent writes to ADHOC_IDEA_EVALUATIONS, Slack routing +
-follow-up context resolution, source-id validation, external-as-proof rejection,
-and read-only behavior (no Notion writes, no internal-row writes).
+Proves Notion URL detection/extraction (page/database/query-param/browser
+variants), clear errors for inaccessible / thin pages, normalization (incl.
+empty-body-useful-props and rich-body-weak-title), RAG retrieval (semantic
+connections + internal evidence separated from external inspiration),
+external-never-proof scoring, guarded recommendations, idempotent writes,
+dry-run (no write), follow-up memory (why / improve / team / videos), source
+labels [N]/[S]/[C]/[E]/[I], source-id validation, external-as-proof rejection.
+
+Write policy under test: Slack writes only the evaluation artifact in
+ADHOC_IDEA_EVALUATIONS (and never on a dry-run); Notion and canonical evidence
+(internal rows, profiles, inspiration, semantic connections, calendar ratings)
+are never written.
 
 Run: python -m unittest discover -s tests
 """
@@ -137,6 +142,40 @@ class TestNotionIngest(unittest.TestCase):
         dashed = "https://www.notion.so/x-1a2b3c4d-5e6f-7890-abcd-ef1234567890"
         self.assertEqual(ni.extract_page_id(dashed), PAGE_ID)
         self.assertEqual(ni.find_notion_url("no link here"), "")
+
+    def test_url_variants(self):
+        # page URL with a title slug
+        self.assertEqual(ni.extract_page_id(
+            f"https://www.notion.so/storelli/BodyShield-Turf-Burn-{PAGE_ID}"), PAGE_ID)
+        # URL with query params — the view id in ?v= must NOT win over the path id
+        self.assertEqual(ni.extract_page_id(
+            f"https://www.notion.so/Idea-{PAGE_ID}?v=ffffffffffffffffffffffffffffffff&pvs=4"), PAGE_ID)
+        # database-item side-peek URL — the page id lives in ?p=
+        self.assertEqual(ni.extract_page_id(
+            f"https://www.notion.so/storelli/Content-Calendar-abcdef00000000000000000000000000?p={PAGE_ID}&pm=s"),
+            PAGE_ID)
+        # browser-copied link with trailing text
+        self.assertEqual(ni.find_notion_url(f"here: {PAGE_URL}?pvs=4 thanks"),
+                         f"{PAGE_URL}?pvs=4")
+
+    def test_empty_body_but_useful_properties_is_evaluable(self):
+        page = {"id": PAGE_ID, "url": PAGE_URL, "properties": {
+            "Name": {"type": "title", "title": [{"plain_text": "BodyShield idea"}]},
+            "Product": {"type": "select", "select": {"name": "BodyShield GK Leggings"}},
+            "Format": {"type": "select", "select": {"name": "Reel"}},
+            "Hook": {"type": "select", "select": {"name": "Curiosity Gap"}}}}
+        idea, err = ni.ingest(PAGE_URL, fetcher=lambda _p: (page, []))   # no body blocks
+        self.assertIsNone(err)
+        self.assertEqual(idea["product"], "BodyShield GK Leggings")
+
+    def test_rich_body_weak_title_is_evaluable(self):
+        page, blocks = _mock_page(
+            "idea",   # weak, one-word title
+            "Open on the turf-burn sting after a diving save, then a protected replay wearing "
+            "the leggings, then a clean CTA over three shootable beats.")
+        idea, err = ni.ingest(PAGE_URL, fetcher=lambda _p: (page, blocks))
+        self.assertIsNone(err)
+        self.assertIn("turf-burn", idea["raw_text"])
 
     def test_inaccessible_page_returns_clear_error(self):
         def boom(_pid):
@@ -286,6 +325,7 @@ class TestSlackRoutingAndRender(unittest.TestCase):
         self.assertFalse(ev.is_evaluation_query("what videos should we take inspiration from?"))
 
     def test_followup_why_resolves_last_notion_idea(self):
+        ev._EVAL_CACHE.clear()
         ctx = [{"role": "user", "text": f"evaluate this idea {PAGE_URL}"},
                {"role": "assistant", "text": f"Worth testing. Sources: [N1] {PAGE_URL}"}]
         self.assertTrue(ev.is_evaluation_query("why?", ctx))
@@ -305,17 +345,113 @@ class TestSlackRoutingAndRender(unittest.TestCase):
         self.assertIn("execution reference", out.lower())     # external-not-proof disclaimer
 
 
-class TestReadOnly(unittest.TestCase):
-    def test_persist_only_writes_adhoc_tab(self):
+class TestWritePolicy(unittest.TestCase):
+    def test_artifact_is_the_only_write_canonical_untouched(self):
+        # Slack writes ONLY the evaluation artifact; canonical evidence untouched.
         sheets = FakeSheets()
         r = ev.evaluate_idea(STRONG_IDEA, sheets.read_profiles(), sheets.read_semantic_connections(),
                              sheets.read_content_rows(), sheets.read_ideas(), [])
         persist = {k: v for k, v in r.items() if not k.startswith("_")}
         sheets.upsert_adhoc_evaluations([persist])
-        self.assertEqual(sheets.other_writes, 0)              # no internal-row writes
-        self.assertEqual(len(sheets.adhoc_upserts), 1)
-        # transient render-only keys are never persisted
+        self.assertEqual(sheets.other_writes, 0)              # no canonical-evidence writes
+        self.assertEqual(len(sheets.adhoc_upserts), 1)        # only the artifact
         self.assertFalse(any(k.startswith("_") for k in sheets.adhoc_upserts[0][0]))
+
+
+class TestDryRunAndFollowUps(unittest.TestCase):
+    def setUp(self):
+        ev._EVAL_CACHE.clear()
+        self._orig_ingest = ni.ingest
+        ni.ingest = lambda *a, **k: (dict(STRONG_IDEA), None)   # no real Notion
+
+    def tearDown(self):
+        ni.ingest = self._orig_ingest
+        ev._EVAL_CACHE.clear()
+
+    def _ctx(self, prior_out):
+        return [{"role": "user", "text": f"evaluate this idea {PAGE_URL}"},
+                {"role": "assistant", "text": prior_out}]
+
+    def test_normal_evaluation_writes_artifact(self):
+        sheets = FakeSheets()
+        out = ev.answer_evaluation(f"evaluate this idea {PAGE_URL}", [], sheets=sheets, gemini=None)
+        self.assertIn("Score:", out)
+        self.assertEqual(len(sheets.adhoc_upserts), 1)        # artifact written
+        self.assertEqual(sheets.other_writes, 0)              # nothing canonical
+
+    def test_dry_run_does_not_write(self):
+        sheets = FakeSheets()
+        out = ev.answer_evaluation(f"dry run this idea {PAGE_URL}", [], sheets=sheets, gemini=None)
+        self.assertIn("Not saved — dry run.", out)
+        self.assertEqual(sheets.adhoc_upserts, [])            # nothing written
+        self.assertEqual(sheets.other_writes, 0)
+
+    def test_dry_run_without_saving_phrase(self):
+        sheets = FakeSheets()
+        out = ev.answer_evaluation(f"evaluate this idea without saving: {PAGE_URL}", [],
+                                   sheets=sheets, gemini=None)
+        self.assertIn("Not saved — dry run.", out)
+        self.assertEqual(sheets.adhoc_upserts, [])
+
+    def test_followup_why_resolves_and_does_not_write(self):
+        sheets = FakeSheets()
+        first = ev.answer_evaluation(f"evaluate this idea {PAGE_URL}", [], sheets=sheets, gemini=None)
+        out = ev.answer_evaluation("why?", self._ctx(first), sheets=sheets, gemini=None)
+        self.assertIn("[N1]", out)                            # resolved to the Notion idea
+        self.assertIn("/100", out)
+        self.assertEqual(len(sheets.adhoc_upserts), 1)        # follow-up wrote nothing new
+
+    def test_followup_improve_returns_hook_structure_beats(self):
+        sheets = FakeSheets()
+        first = ev.answer_evaluation(f"evaluate this idea {PAGE_URL}", [], sheets=sheets, gemini=None)
+        out = ev.answer_evaluation("how do we improve it?", self._ctx(first), sheets=sheets, gemini=None)
+        self.assertIn("Hook:", out)
+        self.assertIn("structure", out.lower())
+        self.assertRegex(out, r"\n1\. ")                      # at least one shot beat
+
+    def test_followup_team_summary_is_concise(self):
+        sheets = FakeSheets()
+        first = ev.answer_evaluation(f"evaluate this idea {PAGE_URL}", [], sheets=sheets, gemini=None)
+        out = ev.answer_evaluation("what should I tell the team?", self._ctx(first),
+                                   sheets=sheets, gemini=None)
+        self.assertIn("Team takeaway", out)
+        self.assertIn("Why:", out)
+        self.assertIn("Change:", out)
+
+    def test_followup_videos_returns_external_refs(self):
+        sheets = FakeSheets()
+        first = ev.answer_evaluation(f"evaluate this idea {PAGE_URL}", [], sheets=sheets, gemini=None)
+        out = ev.answer_evaluation("what videos should we use?", self._ctx(first),
+                                   sheets=sheets, gemini=None)
+        self.assertIn("@jasmines_main", out)                  # a specific external creator
+        self.assertIn("[E1]", out)
+        self.assertIn("execution reference", out.lower())     # never called proof
+        self.assertNotRegex(out.lower(), r"prov(e|es|en)\b")
+
+    def test_take_inspiration_from_not_captured_as_followup(self):
+        ctx = self._ctx("Score: 91/100. Sources: [N1] " + PAGE_URL)
+        self.assertFalse(ev.is_evaluation_query(
+            "what videos should we take inspiration from for gloves?", ctx))
+
+    def test_source_labels_valid(self):
+        r = ev.evaluate_idea(STRONG_IDEA, [_profile()], [dict(CONN)], [dict(x) for x in INSP],
+                             [dict(i) for i in IDEAS], [])
+        out = ev.render_evaluation(r, "evaluate this idea")
+        for tag in ("[N1]", "[S1]", "[C1]", "[E1]", "[I1]"):
+            self.assertIn(tag, out)
+
+    def test_build_memory_fields(self):
+        r = ev.evaluate_idea(STRONG_IDEA, [_profile()], [dict(CONN)], [dict(x) for x in INSP],
+                             [dict(i) for i in IDEAS], [])
+        mem = ev.build_memory(r)
+        for key in ("last_evaluated_notion_page_id", "last_evaluated_title", "last_evaluation_id",
+                    "last_score", "last_recommendation", "last_matched_profile",
+                    "last_semantic_connection", "last_suggested_structure",
+                    "last_external_refs", "last_internal_refs"):
+            self.assertIn(key, mem)
+        self.assertEqual(mem["last_evaluated_notion_page_id"], PAGE_ID)
+        self.assertTrue(mem["last_internal_refs"])
+        self.assertTrue(mem["last_external_refs"])
 
 
 if __name__ == "__main__":

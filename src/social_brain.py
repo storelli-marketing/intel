@@ -1089,8 +1089,10 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     try:
         # Ad-hoc Notion idea evaluation first: a pasted Notion page URL + eval
         # language ("evaluate this idea <url>", "is this worth shooting?") — or a
-        # follow-up ("why?", "how do we improve it?") on a previously evaluated
-        # page — is scored against the brain. Read-only w.r.t. Notion.
+        # follow-up ("why?", "how do we improve it?", "what should I tell the
+        # team?") on a previously evaluated page — is scored against the brain.
+        # Slack writes only the evaluation artifact (and not on a dry-run);
+        # Notion and canonical evidence stay read-only.
         import adhoc_idea_evaluator as ev
         if ev.is_evaluation_query(text, context):
             evaluated = ev.answer_evaluation(text, context)

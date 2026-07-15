@@ -58,11 +58,21 @@ def find_notion_url(text: str) -> str:
 
 
 def extract_page_id(url: str) -> str:
-    """Trailing 32-hex page id (dashes stripped), or "" if none."""
-    ids = _ID_RE.findall(str(url or ""))
-    if not ids:
-        return ""
-    return ids[-1].replace("-", "").lower()
+    """The Notion page id (32-hex, dashes stripped), or "" if none.
+
+    Handles: a page URL with a title slug (id is the trailing path token), a URL
+    with query params like `?v=<viewid>&pvs=4` (parse the PATH only, so the view
+    id is ignored), a database-item side-peek URL `...?p=<pageid>&pm=...` (the id
+    is in the `p=` query param, not the path), and browser-copied links.
+    """
+    u = str(url or "")
+    # Database item opened as a side-peek: the real page id is in `p=`.
+    mp = re.search(r"[?&]p=([0-9a-fA-F]{32}|[0-9a-fA-F-]{36})", u)
+    if mp:
+        return mp.group(1).replace("-", "").lower()
+    path = u.split("?", 1)[0]                      # ignore ?v=<viewid>&pvs=... etc.
+    ids = _ID_RE.findall(path)
+    return ids[-1].replace("-", "").lower() if ids else ""
 
 
 def _dash(page_id: str) -> str:
@@ -222,14 +232,26 @@ def normalize(page: dict, blocks: list) -> dict:
 
 
 def _has_enough_detail(idea: dict) -> bool:
-    """Meaningful idea content beyond a bare title — enough to actually judge."""
+    """Meaningful idea content beyond a bare title — enough to actually judge.
+
+    Passes on: a real body (rich block/property text), a descriptive multi-word
+    title, OR a page with an empty body but useful structured properties
+    (product / icp / format / hook filled in) plus a short title.
+    """
     title = str(idea.get("title", "")).strip()
     body = " ".join(str(idea.get(k, "")) for k in
                     ("concept", "caption", "script", "notes")).strip()
     body_chars = len(re.sub(r"[^a-z0-9]", "", body.lower()))
     title_chars = len(re.sub(r"[^a-z0-9]", "", title.lower()))
-    # Need a real body, or at least a descriptive multi-word title.
-    return body_chars >= 25 or (title_chars >= 12 and len(title.split()) >= 3 and body_chars >= 8)
+    prop_signal = sum(bool(str(idea.get(k, "")).strip())
+                      for k in ("product", "icp", "format", "hook"))
+    if body_chars >= 25:                                           # rich body (weak title ok)
+        return True
+    if title_chars >= 12 and len(title.split()) >= 3 and body_chars >= 8:
+        return True
+    if prop_signal >= 2 and title_chars >= 5:                      # empty body, useful props
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------

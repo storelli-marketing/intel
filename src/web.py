@@ -262,14 +262,15 @@ def _do_build_semantic_connections() -> None:
         _fail(str(e))
 
 
-def _do_evaluate_notion_idea(url: str) -> None:
-    """Evaluate a single pasted Notion idea page into ADHOC_IDEA_EVALUATIONS.
-    Read-only w.r.t. Notion; never writes to the page, internal rows, profiles,
-    or calendar ratings. External inspiration is reference only, never proof."""
+def _do_evaluate_notion_idea(url: str, dry_run: bool = False) -> None:
+    """Evaluate a single pasted Notion idea page. Writes the evaluation artifact
+    to ADHOC_IDEA_EVALUATIONS unless dry_run; Notion and canonical evidence (the
+    page, internal rows, profiles, inspiration, semantic connections, calendar
+    ratings) are never written. External inspiration is reference only, never proof."""
     import adhoc_idea_evaluator
     try:
         _begin("evaluate-notion-idea")
-        result = adhoc_idea_evaluator.evaluate_notion_url(url)
+        result = adhoc_idea_evaluator.evaluate_notion_url(url, dry_run=dry_run)
         if result.get("error"):
             _fail(result["error"])
             return
@@ -631,6 +632,7 @@ def run_build_semantic_connections(background: BackgroundTasks,
 
 class EvaluateNotionReq(BaseModel):
     url: str
+    dry_run: bool = False
 
 
 @app.post("/run/evaluate-notion-idea", status_code=202)
@@ -639,7 +641,7 @@ def run_evaluate_notion_idea(req: EvaluateNotionReq, background: BackgroundTasks
     _check_secret(x_run_secret)
     if not (req.url or "").strip():
         raise HTTPException(400, "url is required")
-    return _guarded(lambda: _do_evaluate_notion_idea(req.url.strip()), background)
+    return _guarded(lambda: _do_evaluate_notion_idea(req.url.strip(), req.dry_run), background)
 
 
 @app.post("/run/notion-sync", status_code=202)

@@ -615,21 +615,41 @@ structure, and `[S#]` internal proof / `[E#]` external reference sources. It
 resolves "related to the ideas you proposed" from the prior turn, and says
 "external = execution reference only" once. Read-only from Slack.
 
-### Ad-hoc Notion idea evaluation (read-only Notion)
+### Ad-hoc Notion idea evaluation
 
 Paste any Notion idea page into Slack — "*@Marketing Brain evaluate this idea:
 `<notion-url>`*", "*is this concept worth shooting? `<url>`*", "*score this idea
 and tell me how to improve it: `<url>`*", "*compare this to our BodyShield
-learnings: `<url>`*" — and the bot reads the page (**read-only**; never changes
-the page or its status), normalizes it into a structured idea, runs RAG against
-the whole brain (winning profiles, semantic connections, external inspiration
-references, rated/refined ideas, calendar ratings), and returns a concise CEO
-answer: **recommendation** (Shoot / Revise then shoot / Keep as test / Needs more
-info / Do not prioritize), **score**, why, what to fix, a suggested story
-structure, 2–3 inspiration videos, and `[N#]` Notion / `[S#]` internal proof /
-`[C#]` semantic connection / `[E#]` external reference / `[I#]` similar-idea
-sources. Follow-ups ("why?", "how do we improve it?", "what videos should we
-use?") resolve back to the last evaluated page from thread memory.
+learnings: `<url>`*" — and the bot reads the page, normalizes it into a structured
+idea, runs RAG against the whole brain (winning profiles, semantic connections,
+external inspiration references, rated/refined ideas, calendar ratings), and
+returns a concise CEO answer: **recommendation** (Shoot / Revise then shoot /
+Keep as test / Needs more info / Do not prioritize), **score**, why, what to fix,
+a suggested story structure, 2–3 inspiration videos, and `[N#]` Notion idea /
+`[S#]` internal proof / `[C#]` semantic connection (storytelling bridge) / `[E#]`
+external execution reference / `[I#]` similar rated idea sources.
+
+**Write policy** — *not* "Slack read-only": Slack writes **only the evaluation
+artifact** (a row in `ADHOC_IDEA_EVALUATIONS`) and only when you explicitly ask
+to evaluate a Notion link. Notion and canonical evidence stay read-only — Slack
+never writes to Notion, never changes a page's status, and never modifies
+internal Storelli rows, canonical learnings, winning profiles, inspiration rows,
+semantic connections, calendar ratings, or source evidence.
+
+**Dry-run** — "*evaluate this idea without saving: `<url>`*", "*dry run this idea:
+`<url>`*", or `--dry-run` on the CLI — returns the same answer, writes nothing,
+and appends "*Not saved — dry run.*".
+
+**Follow-ups** resolve back to the last-evaluated page from thread memory (page
+id, title, score, recommendation, matched profile, semantic connection, suggested
+structure, and internal/external refs): "why?", "is it worth shooting?", "what
+should we steal?", "what should we not copy?", "what's the exact story structure?",
+"what videos should we use?" (external references tied to the semantic
+connection), "how do we improve it?" / "rewrite it" / "make it more BodyShield"
+(returns a sharper hook, story structure, 4–6 shot beats, CTA, and steal/not-copy
+— a Slack answer only; never written back to Notion or as a new idea row), and
+"what should I tell the team?" (a short **Team takeaway** — verdict, 3 whys, the
+one change, one inspo). Follow-ups never write.
 
 `IDEA_EVALUATION_SCORE = 25% internal-evidence-fit + 20% semantic-connection-fit
 + 15% inspiration-alignment + 15% storytelling-structure-fit + 10% product/ICP-fit
@@ -640,10 +660,10 @@ external-as-proof, no invented links, no famous-player/match footage — invalid
 output falls back to a deterministic summary). **Internal evidence fit comes from
 Storelli internal proof only** — external inspiration can never lift it; with no
 internal evidence an idea can be an interesting *test* but never a strong *Shoot*.
-Evaluations are stored in the `ADHOC_IDEA_EVALUATIONS` tab (idempotent upsert by
-`NOTION_PAGE_ID` + `CONTENT_HASH`; a changed page becomes a new hash version).
-Also available as `python src/main.py evaluate-notion-idea --url "<url>"` and
-`POST /run/evaluate-notion-idea` (`{"url": "..."}`).
+Artifacts use an idempotent upsert by `NOTION_PAGE_ID` + `CONTENT_HASH` (a changed
+page becomes a new hash version). Also available as `python src/main.py
+evaluate-notion-idea --url "<url>" [--dry-run]` and `POST /run/evaluate-notion-idea`
+(`{"url": "...", "dry_run": false}`).
 
 ### Notion content-calendar idea rating (read-only Notion)
 
