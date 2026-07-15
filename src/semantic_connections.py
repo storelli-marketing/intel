@@ -332,8 +332,11 @@ def _now_iso() -> str:
 
 
 def _connection_id(concept: dict, externals: list[dict]) -> str:
-    ext = ";".join(sorted(str(r.get("SOURCE_ID", "")).strip() for r in externals))
-    return "SC-" + hashlib.sha1(f"{concept.get('CONCEPT_KEY')}|{ext}".encode()).hexdigest()[:12]
+    # Stable per CONCEPT (not per external-reference set) so a refreshed pool
+    # UPDATES the existing connection row in place instead of creating a
+    # duplicate — the upsert is keyed by CONNECTION_ID. `externals` is kept in
+    # the signature for call-site compatibility but no longer part of the id.
+    return "SC-" + hashlib.sha1(str(concept.get("CONCEPT_KEY", "")).encode()).hexdigest()[:12]
 
 
 def build_connection_row(concept: dict, externals: list[dict], profile_conf: str,

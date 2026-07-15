@@ -81,6 +81,20 @@ class TestConnectionBuild(unittest.TestCase):
     def test_score_formula(self):
         self.assertEqual(sc.connection_score(100, 100, 100, 100, 100), 100.0)
 
+    def test_connection_id_stable_when_references_change(self):
+        # A refreshed/improved external-reference pool must UPDATE the same
+        # connection row (stable id), not create a duplicate concept row.
+        concept = sc._concept_from_profile(_profile(), "Fear / Risk")
+        row_a = sc.build_connection_row(concept, [_insp("a", "90")], "High", gemini=None)
+        row_b = sc.build_connection_row(concept, [_insp("b", "95"), _insp("c", "92")], "High", gemini=None)
+        self.assertEqual(row_a["CONNECTION_ID"], row_b["CONNECTION_ID"])       # same concept -> same id
+        self.assertNotEqual(row_a["EXTERNAL_REFERENCE_URLS"], row_b["EXTERNAL_REFERENCE_URLS"])
+        sheets = FakeSheets()
+        sheets.upsert_semantic_connections([row_a])
+        sheets.upsert_semantic_connections([row_b])           # refresh -> update, not append
+        self.assertEqual(sheets.upserts, [[row_a], [row_b]])
+        self.assertEqual(row_a["CONNECTION_ID"], row_b["CONNECTION_ID"])
+
 
 class FakeSheets:
     def __init__(self, connections=None):
