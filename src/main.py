@@ -709,6 +709,29 @@ def _fmt_notion_summary(summary: dict) -> str:
             f"ICP learnings updated: {tot('ICP Learnings')}")
 
 
+def cmd_evaluate_notion_idea(url: str | None) -> int:
+    """Evaluate a single pasted Notion idea page against the Storelli brain and
+    store the result in ADHOC_IDEA_EVALUATIONS. Read-only w.r.t. Notion and all
+    internal Storelli rows; external inspiration is reference only, never proof."""
+    import adhoc_idea_evaluator
+
+    if not url:
+        print("Provide a Notion page URL: python -m src.main evaluate-notion-idea --url \"<url>\"")
+        return 1
+    result = adhoc_idea_evaluator.evaluate_notion_url(url)
+    if result.get("error"):
+        print(f"Evaluation skipped: {result['error']}")
+        return 1
+    print("\nAd-hoc Notion idea evaluation complete.\n")
+    print(f"Evaluation ID:  {result.get('EVALUATION_ID')}")
+    print(f"Idea:           {result.get('IDEA_TITLE')}")
+    print(f"Score:          {result.get('IDEA_EVALUATION_SCORE')}/100  "
+          f"({result.get('RECOMMENDATION')}, {result.get('CONFIDENCE')} confidence)")
+    print(f"Stored:         created={result.get('_created')} updated={result.get('_updated')}\n")
+    print(result.get("_render", ""))
+    return 0
+
+
 def cmd_notion_sync() -> int:
     try:
         summary = notion_sync()
@@ -837,7 +860,9 @@ def main() -> int:
                                  "build-winning-profiles", "match-inspiration",
                                  "quality-review-inspiration", "generate-ideas",
                                  "refine-ideas", "rate-calendar-ideas",
-                                 "build-semantic-connections"])
+                                 "build-semantic-connections", "evaluate-notion-idea"])
+    parser.add_argument("--url", type=str, default=None, metavar="URL",
+                        help="Notion page URL for evaluate-notion-idea")
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -900,6 +925,9 @@ def main() -> int:
 
         elif args.command == "build-semantic-connections":
             return cmd_build_semantic_connections()
+
+        elif args.command == "evaluate-notion-idea":
+            return cmd_evaluate_notion_idea(args.url)
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

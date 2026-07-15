@@ -49,6 +49,24 @@ SEMANTIC_CONNECTIONS_HEADERS = [
     "SAFETY_SCORE", "REVIEW_STATUS",
 ]
 
+ADHOC_IDEA_EVALUATIONS_TAB = "ADHOC_IDEA_EVALUATIONS"
+
+ADHOC_IDEA_EVALUATIONS_HEADERS = [
+    "EVALUATION_ID", "EVALUATED_AT", "SOURCE_TYPE", "SOURCE_URL", "NOTION_PAGE_ID",
+    "NOTION_PAGE_TITLE", "IDEA_TITLE", "PRODUCT", "ICP", "PLATFORM", "FORMAT", "HOOK",
+    "CONCEPT_TEXT", "NORMALIZED_IDEA_TEXT", "CLOSEST_WINNING_PROFILE_ID",
+    "CLOSEST_WINNING_PROFILE_NAME", "CLOSEST_SEMANTIC_CONNECTION_ID",
+    "CLOSEST_SEMANTIC_CONNECTION_NAME", "CLOSEST_RATED_IDEA_ID", "CLOSEST_RATED_IDEA_TITLE",
+    "INTERNAL_EVIDENCE_URLS", "EXTERNAL_REFERENCE_URLS", "IDEA_EVALUATION_SCORE",
+    "INTERNAL_EVIDENCE_FIT_SCORE", "SEMANTIC_CONNECTION_FIT_SCORE",
+    "INSPIRATION_ALIGNMENT_SCORE", "STORYTELLING_STRUCTURE_SCORE", "PRODUCT_FIT_SCORE",
+    "ICP_FIT_SCORE", "HOOK_STRENGTH_SCORE", "SHOOTABILITY_SCORE", "NOVELTY_SCORE",
+    "COPYRIGHT_SAFETY_SCORE", "RECOMMENDATION", "CONFIDENCE", "WHY", "WHAT_WORKS",
+    "WHAT_IS_WEAK", "HOW_TO_IMPROVE", "SUGGESTED_STORY_STRUCTURE",
+    "VIDEOS_TO_TAKE_INSPO_FROM", "WHAT_TO_STEAL", "WHAT_NOT_TO_COPY", "RISK_NOTES",
+    "REVIEW_STATUS", "CONTENT_HASH",
+]
+
 CALENDAR_RATINGS_HEADERS = [
     "RATING_ID", "RATED_AT", "NOTION_PAGE_ID", "NOTION_PAGE_URL", "CALENDAR_TITLE",
     "CALENDAR_STATUS", "PLATFORM", "PRODUCT", "ICP", "PROPOSED_IDEA_TEXT",
@@ -587,6 +605,60 @@ class InspirationSheets:
                 updated += 1
             else:
                 appends.append([str(c.get(h, "")) for h in headers])
+                created += 1
+        for i in range(0, len(updates), 5000):
+            ws.batch_update(updates[i:i + 5000])
+        if appends:
+            ws.append_rows(appends, value_input_option="RAW")
+        return created, updated
+
+    # ---- ad-hoc Notion idea evaluations ----------------------------------
+    def ensure_adhoc_evaluations_tab(self) -> bool:
+        titles = [ws.title for ws in self._sh.worksheets()]
+        if ADHOC_IDEA_EVALUATIONS_TAB in titles:
+            return False
+        ws = self._sh.add_worksheet(title=ADHOC_IDEA_EVALUATIONS_TAB, rows=1000,
+                                    cols=len(ADHOC_IDEA_EVALUATIONS_HEADERS))
+        ws.update(range_name="A1", values=[ADHOC_IDEA_EVALUATIONS_HEADERS],
+                  value_input_option="RAW")
+        self._ws_cache[ADHOC_IDEA_EVALUATIONS_TAB] = ws
+        return True
+
+    def read_adhoc_evaluations(self) -> list[dict]:
+        try:
+            _, rows = self._read_table(self._ws(ADHOC_IDEA_EVALUATIONS_TAB))
+        except gspread.WorksheetNotFound:
+            return []
+        return [r for r in rows if str(r.get("EVALUATION_ID", "")).strip()]
+
+    def upsert_adhoc_evaluations(self, evaluations: list[dict]) -> tuple[int, int]:
+        """Idempotent upsert keyed by EVALUATION_ID (page id + content hash). A
+        changed page yields a new hash -> a new version row. Returns
+        (created, updated)."""
+        if not evaluations:
+            return 0, 0
+        self.ensure_adhoc_evaluations_tab()
+        ws = self._ws(ADHOC_IDEA_EVALUATIONS_TAB)
+        headers = [h.strip() for h in ws.row_values(1)]
+        col = {name: i + 1 for i, name in enumerate(headers) if name}
+        _, existing = self._read_table(ws)
+        id_to_row = {str(r.get("EVALUATION_ID", "")).strip(): r["_row"]
+                     for r in existing if str(r.get("EVALUATION_ID", "")).strip()}
+        updates, appends = [], []
+        created = updated = 0
+        for ev in evaluations:
+            eid = str(ev.get("EVALUATION_ID", "")).strip()
+            if not eid:
+                continue
+            if eid in id_to_row:
+                ri = id_to_row[eid]
+                for name, val in ev.items():
+                    if name in col:
+                        updates.append({"range": gspread.utils.rowcol_to_a1(ri, col[name]),
+                                        "values": [[val]]})
+                updated += 1
+            else:
+                appends.append([str(ev.get(h, "")) for h in headers])
                 created += 1
         for i in range(0, len(updates), 5000):
             ws.batch_update(updates[i:i + 5000])

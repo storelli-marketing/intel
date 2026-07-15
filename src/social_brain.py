@@ -1087,7 +1087,17 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     # Follow-up transforms (e.g. "turn this into a brief") are NOT idea queries
     # and fall through to the existing conversational engine below.
     try:
-        # Semantic inspiration layer first: "what videos should we take
+        # Ad-hoc Notion idea evaluation first: a pasted Notion page URL + eval
+        # language ("evaluate this idea <url>", "is this worth shooting?") — or a
+        # follow-up ("why?", "how do we improve it?") on a previously evaluated
+        # page — is scored against the brain. Read-only w.r.t. Notion.
+        import adhoc_idea_evaluator as ev
+        if ev.is_evaluation_query(text, context):
+            evaluated = ev.answer_evaluation(text, context)
+            if evaluated:
+                return _finish_conversational(evaluated, text, skip_polish=True)
+
+        # Semantic inspiration layer next: "what videos should we take
         # inspiration from" must return external reference videos, not the idea
         # list. Read-only.
         import semantic_connections as sc

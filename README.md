@@ -139,6 +139,7 @@ python src/main.py generate-ideas                 # rated Storelli creative idea
 python src/main.py refine-ideas                   # creative-director polish (refinement columns only)
 python src/main.py rate-calendar-ideas            # rate proposed Notion calendar ideas (read-only Notion)
 python src/main.py build-semantic-connections     # link internal proof <-> external inspiration videos
+python src/main.py evaluate-notion-idea --url "<notion-page-url>"   # score one pasted Notion idea (read-only Notion)
 ```
 
 (`python -m src.main <command>` works too.)
@@ -613,6 +614,36 @@ idea list) with why each maps, what to steal, what not to copy, the storytelling
 structure, and `[S#]` internal proof / `[E#]` external reference sources. It
 resolves "related to the ideas you proposed" from the prior turn, and says
 "external = execution reference only" once. Read-only from Slack.
+
+### Ad-hoc Notion idea evaluation (read-only Notion)
+
+Paste any Notion idea page into Slack — "*@Marketing Brain evaluate this idea:
+`<notion-url>`*", "*is this concept worth shooting? `<url>`*", "*score this idea
+and tell me how to improve it: `<url>`*", "*compare this to our BodyShield
+learnings: `<url>`*" — and the bot reads the page (**read-only**; never changes
+the page or its status), normalizes it into a structured idea, runs RAG against
+the whole brain (winning profiles, semantic connections, external inspiration
+references, rated/refined ideas, calendar ratings), and returns a concise CEO
+answer: **recommendation** (Shoot / Revise then shoot / Keep as test / Needs more
+info / Do not prioritize), **score**, why, what to fix, a suggested story
+structure, 2–3 inspiration videos, and `[N#]` Notion / `[S#]` internal proof /
+`[C#]` semantic connection / `[E#]` external reference / `[I#]` similar-idea
+sources. Follow-ups ("why?", "how do we improve it?", "what videos should we
+use?") resolve back to the last evaluated page from thread memory.
+
+`IDEA_EVALUATION_SCORE = 25% internal-evidence-fit + 20% semantic-connection-fit
++ 15% inspiration-alignment + 15% storytelling-structure-fit + 10% product/ICP-fit
++ 10% shootability + 5% copyright-safety`. Scores are deterministic and
+reproducible; Gemini only enriches the narrative and picks which reference videos
+to call out (validated: source IDs must exist in the evidence pack, no
+external-as-proof, no invented links, no famous-player/match footage — invalid
+output falls back to a deterministic summary). **Internal evidence fit comes from
+Storelli internal proof only** — external inspiration can never lift it; with no
+internal evidence an idea can be an interesting *test* but never a strong *Shoot*.
+Evaluations are stored in the `ADHOC_IDEA_EVALUATIONS` tab (idempotent upsert by
+`NOTION_PAGE_ID` + `CONTENT_HASH`; a changed page becomes a new hash version).
+Also available as `python src/main.py evaluate-notion-idea --url "<url>"` and
+`POST /run/evaluate-notion-idea` (`{"url": "..."}`).
 
 ### Notion content-calendar idea rating (read-only Notion)
 

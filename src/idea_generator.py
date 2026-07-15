@@ -19,6 +19,7 @@ This is idea suggestion + rating (Milestone 4A). It does not change Slack.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -110,7 +111,9 @@ def copyright_recheck(text: str) -> tuple[bool, str]:
     t = str(text or "").lower()
     for label, bank in (("famous player", FAMOUS_PLAYERS), ("match/broadcast footage", IDEA_MATCH_TERMS),
                         ("league/competition", LEAGUE_TERMS), ("off-domain", OFF_DOMAIN_TERMS)):
-        h = next((x for x in bank if x and x in t), None)
+        # Word-boundary match so short banked tokens (e.g. "epl", "ucl", "vs")
+        # don't false-positive inside larger words ("epl" in "replay").
+        h = next((x for x in bank if x and re.search(r"\b" + re.escape(x.strip()) + r"\b", t)), None)
         if h:
             return False, f"idea text references {label} '{h.strip()}'"
     return True, ""

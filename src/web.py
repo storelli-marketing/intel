@@ -262,6 +262,30 @@ def _do_build_semantic_connections() -> None:
         _fail(str(e))
 
 
+def _do_evaluate_notion_idea(url: str) -> None:
+    """Evaluate a single pasted Notion idea page into ADHOC_IDEA_EVALUATIONS.
+    Read-only w.r.t. Notion; never writes to the page, internal rows, profiles,
+    or calendar ratings. External inspiration is reference only, never proof."""
+    import adhoc_idea_evaluator
+    try:
+        _begin("evaluate-notion-idea")
+        result = adhoc_idea_evaluator.evaluate_notion_url(url)
+        if result.get("error"):
+            _fail(result["error"])
+            return
+        with _LOCK:
+            STATE["inspiration"] = {
+                "RUN_TYPE": "AdHocIdeaEvaluation",
+                "IDEA_TITLE": result.get("IDEA_TITLE"),
+                "IDEA_EVALUATION_SCORE": result.get("IDEA_EVALUATION_SCORE"),
+                "RECOMMENDATION": result.get("RECOMMENDATION"),
+                "CONFIDENCE": result.get("CONFIDENCE"),
+            }
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
 def _do_rate_calendar_ideas() -> None:
     """Rate proposed Notion calendar ideas into CONTENT_CALENDAR_IDEA_RATINGS.
     Read-only w.r.t. Notion; never writes to the calendar, internal rows, or
@@ -603,6 +627,19 @@ def run_build_semantic_connections(background: BackgroundTasks,
                                    x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     return _guarded(_do_build_semantic_connections, background)
+
+
+class EvaluateNotionReq(BaseModel):
+    url: str
+
+
+@app.post("/run/evaluate-notion-idea", status_code=202)
+def run_evaluate_notion_idea(req: EvaluateNotionReq, background: BackgroundTasks,
+                             x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    if not (req.url or "").strip():
+        raise HTTPException(400, "url is required")
+    return _guarded(lambda: _do_evaluate_notion_idea(req.url.strip()), background)
 
 
 @app.post("/run/notion-sync", status_code=202)
