@@ -654,6 +654,18 @@ def cmd_rate_calendar_ideas() -> int:
     return 0
 
 
+def cmd_build_semantic_connections() -> int:
+    """Link internal winning profiles/learnings (proof) to safe external
+    inspiration videos (execution reference only) via storytelling structures.
+    Writes to SEMANTIC_CONNECTIONS. Read-only w.r.t. internal Storelli rows."""
+    import semantic_connections
+
+    run = semantic_connections.build_semantic_connections(
+        products=["BodyShield GK Leggings", "Pants & Leggings", "Gloves"], max_concepts=10)
+    semantic_connections.print_connections_summary(run)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # notion-sync (Notion Brain — structured synthesized intelligence only)
 # ---------------------------------------------------------------------------
@@ -824,7 +836,8 @@ def main() -> int:
                                  "analyze-inspiration", "discover-inspiration",
                                  "build-winning-profiles", "match-inspiration",
                                  "quality-review-inspiration", "generate-ideas",
-                                 "refine-ideas", "rate-calendar-ideas"])
+                                 "refine-ideas", "rate-calendar-ideas",
+                                 "build-semantic-connections"])
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -884,6 +897,9 @@ def main() -> int:
 
         elif args.command == "rate-calendar-ideas":
             return cmd_rate_calendar_ideas()
+
+        elif args.command == "build-semantic-connections":
+            return cmd_build_semantic_connections()
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

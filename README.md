@@ -138,6 +138,7 @@ python src/main.py quality-review-inspiration     # QC external candidates for i
 python src/main.py generate-ideas                 # rated Storelli creative ideas (internal-anchored)
 python src/main.py refine-ideas                   # creative-director polish (refinement columns only)
 python src/main.py rate-calendar-ideas            # rate proposed Notion calendar ideas (read-only Notion)
+python src/main.py build-semantic-connections     # link internal proof <-> external inspiration videos
 ```
 
 (`python -m src.main <command>` works too.)
@@ -581,6 +582,37 @@ Candidate ranking priority: (1) safety/copyright cleanliness, (2) creative
 mechanism relevance, (3) view/follower ratio, (4) absolute views, (5) novelty.
 The view/follower ratio is a **discovery-priority signal only — never Storelli
 proof**. Caps: 25/query, 100/run (`APIFY_MAX_RESULTS_PER_*`).
+
+### Semantic connection layer (internal proof ↔ external inspiration)
+
+`python src/main.py build-semantic-connections` (or **Build Semantic
+Connections**) links internal Storelli winning profiles/learnings (**proof**) to
+safe, high-quality external inspiration videos (**execution reference only, never
+proof**) through a **storytelling structure**, and writes rows to the
+`SEMANTIC_CONNECTIONS` tab (idempotent upsert; logged to `INSPIRATION_RUNS` as
+`RUN_TYPE=SemanticConnections`).
+
+Structures anchor the bridge, e.g. `Curiosity Gap → Demo → Pain Reveal → Product
+Protection Reveal → CTA` or `Fear/Risk → Story-Demo → Pain Moment → Protected
+Replay → CTA`. Each connection records `WHY_THIS_CONNECTION`, `WHAT_TO_STEAL`,
+`WHAT_NOT_TO_COPY`, `STORELLI_ADAPTATION`, `SHOOTING_NOTES`, `COPYRIGHT_RISK_NOTES`,
+and `CONNECTION_SCORE = 30% evidence-fit + 25% story-structure-fit + 20%
+inspiration-fit + 15% adaptation-clarity + 10% safety`. **Evidence fit comes from
+the internal winning profile only** — external quality can raise inspiration fit
+but never evidence fit. Build = deterministic concept/shortlist + an LLM semantic
+judge (validated: no invented sources, no external-as-proof, no famous-player/
+match footage, must include ≥1 internal evidence URL and ≥1 external reference
+URL and a clear structure) with deterministic fallback. No blind row×row pairing
+— shortlist first, then judge; top 3–5 external videos per concept.
+
+**Slack:** ask "what videos should we take inspiration from for BodyShield?",
+"show me inspo for the turf-burn concept", "which videos map to the Dive Without
+The Sting idea?", "what storytelling structure should we use?", "how do we adapt
+this without copying it?" — the bot returns **specific external videos** (not the
+idea list) with why each maps, what to steal, what not to copy, the storytelling
+structure, and `[S#]` internal proof / `[E#]` external reference sources. It
+resolves "related to the ideas you proposed" from the prior turn, and says
+"external = execution reference only" once. Read-only from Slack.
 
 ### Notion content-calendar idea rating (read-only Notion)
 

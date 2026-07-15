@@ -1087,7 +1087,16 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     # Follow-up transforms (e.g. "turn this into a brief") are NOT idea queries
     # and fall through to the existing conversational engine below.
     try:
-        # Conversational RAG orchestrator first: reasoning-heavy intents (urgent
+        # Semantic inspiration layer first: "what videos should we take
+        # inspiration from" must return external reference videos, not the idea
+        # list. Read-only.
+        import semantic_connections as sc
+        if sc.is_inspiration_query(text):
+            insp = sc.answer_inspiration(text, context)
+            if insp:
+                return _finish_conversational(insp, text, skip_polish=True)
+
+        # Conversational RAG orchestrator: reasoning-heavy intents (urgent
         # tests, deep-dive on a prior/named idea, compare) with thread memory.
         # Returns None for everything else -> the concise retrieval paths below.
         import slack_conversation_orchestrator as orch

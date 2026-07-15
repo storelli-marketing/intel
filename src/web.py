@@ -244,6 +244,24 @@ def _do_build_winning_profiles() -> None:
         _fail(str(e))
 
 
+def _do_build_semantic_connections() -> None:
+    """Build semantic connections (internal proof -> external inspiration via
+    storytelling structure). Writes only to SEMANTIC_CONNECTIONS; internal
+    Storelli rows untouched; external inspiration never proof."""
+    import semantic_connections
+    try:
+        _begin("build-semantic-connections")
+        run = semantic_connections.build_semantic_connections(
+            products=["BodyShield GK Leggings", "Pants & Leggings", "Gloves"], max_concepts=10)
+        for k in ("_connections", "_weak"):
+            run.pop(k, None)
+        with _LOCK:
+            STATE["inspiration"] = run
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
 def _do_rate_calendar_ideas() -> None:
     """Rate proposed Notion calendar ideas into CONTENT_CALENDAR_IDEA_RATINGS.
     Read-only w.r.t. Notion; never writes to the calendar, internal rows, or
@@ -578,6 +596,13 @@ def run_rate_calendar_ideas(background: BackgroundTasks,
                             x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
     _check_secret(x_run_secret)
     return _guarded(_do_rate_calendar_ideas, background)
+
+
+@app.post("/run/build-semantic-connections", status_code=202)
+def run_build_semantic_connections(background: BackgroundTasks,
+                                   x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(_do_build_semantic_connections, background)
 
 
 @app.post("/run/notion-sync", status_code=202)
@@ -938,6 +963,8 @@ _HTML = """<!doctype html>
             style="width:100%;height:52px;margin-top:12px">Refine Creative Ideas</button>
     <button class="btn-secondary" id="btnCalRate" onclick="run('rate-calendar-ideas')"
             style="width:100%;height:52px;margin-top:12px">Rate Notion Calendar Ideas</button>
+    <button class="btn-secondary" id="btnSemantic" onclick="run('build-semantic-connections')"
+            style="width:100%;height:52px;margin-top:12px">Build Semantic Connections</button>
     <button class="btn-secondary" id="btnAnalyzeInsp" onclick="run('analyze-inspiration')"
             style="width:100%;height:52px;margin-top:12px">Analyze Inspiration Content</button>
     <button class="btn-secondary" id="btnScanInsp" onclick="run('scan-inspiration')"
@@ -992,7 +1019,7 @@ async function poll(){
     const j = await (await fetch('/status')).json();
     const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
     const busy = (j.status==='queued'||j.status==='running');
-    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles','btnMatch','btnQuality','btnIdeas','btnRefine','btnCalRate'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
+    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles','btnMatch','btnQuality','btnIdeas','btnRefine','btnCalRate','btnSemantic'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
     const s=j.stats||{};
     const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0)+(s.skipped_no_link||0);
     $('s_scanned').textContent = s.scanned ?? '–';
@@ -1089,7 +1116,8 @@ async function run(action){
                  'quality-review-inspiration':'/run/quality-review-inspiration',
                  'generate-ideas':'/run/generate-ideas',
                  'refine-ideas':'/run/refine-ideas',
-                 'rate-calendar-ideas':'/run/rate-calendar-ideas'};
+                 'rate-calendar-ideas':'/run/rate-calendar-ideas',
+                 'build-semantic-connections':'/run/build-semantic-connections'};
   const path = paths[action];
   const body = (action==='social' || action==='analyze-all')
     ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';

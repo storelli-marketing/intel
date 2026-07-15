@@ -35,6 +35,19 @@ APIFY_DISCOVERY_QUERIES_TAB = "APIFY_DISCOVERY_QUERIES"
 WINNING_FORMAT_PROFILES_TAB = "WINNING_FORMAT_PROFILES"
 INSPIRATION_IDEAS_TAB = "INSPIRATION_IDEAS"
 CONTENT_CALENDAR_IDEA_RATINGS_TAB = "CONTENT_CALENDAR_IDEA_RATINGS"
+SEMANTIC_CONNECTIONS_TAB = "SEMANTIC_CONNECTIONS"
+
+SEMANTIC_CONNECTIONS_HEADERS = [
+    "CONNECTION_ID", "CREATED_AT", "CONCEPT_KEY", "CONCEPT_NAME", "PRODUCT", "ICP",
+    "STORYTELLING_STRUCTURE", "HOOK_ARCHETYPE", "FORMAT_ARCHETYPE", "PROBLEM_TYPE",
+    "SOLUTION_TYPE", "FUNNEL_STAGE", "INTERNAL_LEARNING_IDS", "INTERNAL_LEARNING_SUMMARY",
+    "WINNING_PROFILE_ID", "WINNING_PROFILE_NAME", "INTERNAL_EVIDENCE_URLS",
+    "EXTERNAL_CONTENT_IDS", "EXTERNAL_REFERENCE_URLS", "EXTERNAL_CREATORS",
+    "WHY_THIS_CONNECTION", "WHAT_TO_STEAL", "WHAT_NOT_TO_COPY", "STORELLI_ADAPTATION",
+    "SHOOTING_NOTES", "COPYRIGHT_RISK_NOTES", "CONNECTION_SCORE", "EVIDENCE_FIT_SCORE",
+    "STORY_STRUCTURE_FIT_SCORE", "INSPIRATION_FIT_SCORE", "ADAPTATION_CLARITY_SCORE",
+    "SAFETY_SCORE", "REVIEW_STATUS",
+]
 
 CALENDAR_RATINGS_HEADERS = [
     "RATING_ID", "RATED_AT", "NOTION_PAGE_ID", "NOTION_PAGE_URL", "CALENDAR_TITLE",
@@ -523,6 +536,57 @@ class InspirationSheets:
                 updated += 1
             else:
                 appends.append([str(rt.get(h, "")) for h in headers])
+                created += 1
+        for i in range(0, len(updates), 5000):
+            ws.batch_update(updates[i:i + 5000])
+        if appends:
+            ws.append_rows(appends, value_input_option="RAW")
+        return created, updated
+
+    # ---- semantic connections --------------------------------------------
+    def ensure_semantic_connections_tab(self) -> bool:
+        titles = [ws.title for ws in self._sh.worksheets()]
+        if SEMANTIC_CONNECTIONS_TAB in titles:
+            return False
+        ws = self._sh.add_worksheet(title=SEMANTIC_CONNECTIONS_TAB, rows=1000,
+                                    cols=len(SEMANTIC_CONNECTIONS_HEADERS))
+        ws.update(range_name="A1", values=[SEMANTIC_CONNECTIONS_HEADERS], value_input_option="RAW")
+        self._ws_cache[SEMANTIC_CONNECTIONS_TAB] = ws
+        return True
+
+    def read_semantic_connections(self) -> list[dict]:
+        try:
+            _, rows = self._read_table(self._ws(SEMANTIC_CONNECTIONS_TAB))
+        except gspread.WorksheetNotFound:
+            return []
+        return [r for r in rows if str(r.get("CONNECTION_ID", "")).strip()]
+
+    def upsert_semantic_connections(self, connections: list[dict]) -> tuple[int, int]:
+        """Idempotent upsert keyed by CONNECTION_ID. Returns (created, updated)."""
+        if not connections:
+            return 0, 0
+        self.ensure_semantic_connections_tab()
+        ws = self._ws(SEMANTIC_CONNECTIONS_TAB)
+        headers = [h.strip() for h in ws.row_values(1)]
+        col = {name: i + 1 for i, name in enumerate(headers) if name}
+        _, existing = self._read_table(ws)
+        id_to_row = {str(r.get("CONNECTION_ID", "")).strip(): r["_row"]
+                     for r in existing if str(r.get("CONNECTION_ID", "")).strip()}
+        updates, appends = [], []
+        created = updated = 0
+        for c in connections:
+            cid = str(c.get("CONNECTION_ID", "")).strip()
+            if not cid:
+                continue
+            if cid in id_to_row:
+                ri = id_to_row[cid]
+                for name, val in c.items():
+                    if name in col:
+                        updates.append({"range": gspread.utils.rowcol_to_a1(ri, col[name]),
+                                        "values": [[val]]})
+                updated += 1
+            else:
+                appends.append([str(c.get(h, "")) for h in headers])
                 created += 1
         for i in range(0, len(updates), 5000):
             ws.batch_update(updates[i:i + 5000])
