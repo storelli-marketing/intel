@@ -49,6 +49,15 @@ SEMANTIC_CONNECTIONS_HEADERS = [
     "SAFETY_SCORE", "REVIEW_STATUS",
 ]
 
+EVIDENCE_GAPS_TAB = "EVIDENCE_GAPS"
+
+EVIDENCE_GAPS_HEADERS = [
+    "GAP_ID", "GAP_NAME", "PRODUCT", "ICP", "CURRENT_INTERNAL_EVIDENCE_COUNT",
+    "GREAT_COUNT", "BEST_INTERNAL_URLS", "EXISTING_EXTERNAL_REFERENCES",
+    "CURRENT_CONFIDENCE", "WHY_IT_MATTERS", "WHAT_PROOF_IS_MISSING",
+    "RECOMMENDED_TESTS", "PRIORITY", "STATUS", "AUDITED_AT",
+]
+
 ADHOC_IDEA_EVALUATIONS_TAB = "ADHOC_IDEA_EVALUATIONS"
 
 ADHOC_IDEA_EVALUATIONS_HEADERS = [
@@ -659,6 +668,57 @@ class InspirationSheets:
                 updated += 1
             else:
                 appends.append([str(ev.get(h, "")) for h in headers])
+                created += 1
+        for i in range(0, len(updates), 5000):
+            ws.batch_update(updates[i:i + 5000])
+        if appends:
+            ws.append_rows(appends, value_input_option="RAW")
+        return created, updated
+
+    # ---- evidence gaps (audit artifact — never internal Storelli rows) ----
+    def ensure_evidence_gaps_tab(self) -> bool:
+        titles = [ws.title for ws in self._sh.worksheets()]
+        if EVIDENCE_GAPS_TAB in titles:
+            return False
+        ws = self._sh.add_worksheet(title=EVIDENCE_GAPS_TAB, rows=200,
+                                    cols=len(EVIDENCE_GAPS_HEADERS))
+        ws.update(range_name="A1", values=[EVIDENCE_GAPS_HEADERS], value_input_option="RAW")
+        self._ws_cache[EVIDENCE_GAPS_TAB] = ws
+        return True
+
+    def read_evidence_gaps(self) -> list[dict]:
+        try:
+            _, rows = self._read_table(self._ws(EVIDENCE_GAPS_TAB))
+        except gspread.WorksheetNotFound:
+            return []
+        return [r for r in rows if str(r.get("GAP_ID", "")).strip()]
+
+    def upsert_evidence_gaps(self, gaps: list[dict]) -> tuple[int, int]:
+        """Idempotent upsert keyed by GAP_ID. Returns (created, updated)."""
+        if not gaps:
+            return 0, 0
+        self.ensure_evidence_gaps_tab()
+        ws = self._ws(EVIDENCE_GAPS_TAB)
+        headers = [h.strip() for h in ws.row_values(1)]
+        col = {name: i + 1 for i, name in enumerate(headers) if name}
+        _, existing = self._read_table(ws)
+        id_to_row = {str(r.get("GAP_ID", "")).strip(): r["_row"]
+                     for r in existing if str(r.get("GAP_ID", "")).strip()}
+        updates, appends = [], []
+        created = updated = 0
+        for g in gaps:
+            gid = str(g.get("GAP_ID", "")).strip()
+            if not gid:
+                continue
+            if gid in id_to_row:
+                ri = id_to_row[gid]
+                for name, val in g.items():
+                    if name in col:
+                        updates.append({"range": gspread.utils.rowcol_to_a1(ri, col[name]),
+                                        "values": [[val]]})
+                updated += 1
+            else:
+                appends.append([str(g.get(h, "")) for h in headers])
                 created += 1
         for i in range(0, len(updates), 5000):
             ws.batch_update(updates[i:i + 5000])

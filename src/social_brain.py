@@ -1122,6 +1122,16 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
             if insp:
                 return _finish_conversational(insp, text, skip_polish=True)
 
+        # Parents/youth evidence-gap audit: "what proof are we missing?", "should
+        # we make Parents content?", "what Parents/youth tests should we run?" get
+        # a disciplined, evidence-first answer (external is never proof). Read-only
+        # except the EVIDENCE_GAPS artifact (only via the CLI, not from Slack).
+        import evidence_audit as ea
+        if ea.is_evidence_gap_query(text, context):
+            gap = ea.answer_evidence_gap(text, context)
+            if gap:
+                return _finish_conversational(gap, text, skip_polish=True)
+
         # Social strategist skill pack: practical strategy questions (comment
         # drivers, test hypotheses, concept references, idea diagnosis, calendar
         # doctor, learning->action, content gaps, shot briefs). Read-only; returns

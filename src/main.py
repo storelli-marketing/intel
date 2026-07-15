@@ -737,6 +737,34 @@ def cmd_evaluate_notion_idea(url: str | None, dry_run: bool = False) -> int:
     return 0
 
 
+def cmd_audit_evidence_gaps() -> int:
+    """Audit internal Parents/youth evidence and write the EVIDENCE_GAPS artifact.
+    Read-only w.r.t. internal Storelli rows, profiles, and Notion; never creates a
+    winning profile. External inspiration is reference only, never proof."""
+    import evidence_audit
+
+    r = evidence_audit.run_audit()
+    a = r["audit"]
+    print("\nParents / Youth internal evidence audit\n")
+    print(f"Parents/youth internal rows:  {a['parents_rows']}  "
+          f"(Great {a['great']} · Ok {a['good']} · Weak {a['weak']})")
+    print(f"Products:                     {a['products']}")
+    print(f"Great hooks:                  {a['hooks']}")
+    print(f"Great formats:                {a['formats']}")
+    print(f"Parents winning profile?      {'YES' if a['has_parents_profile'] else 'NO'}")
+    print(f"Parents calendar items:       {a['parents_calendar']}")
+    print(f"\nParents winning profile justified?  {'YES' if r['profile_justified'] else 'NO'}")
+    print(f"  {r['reason']}")
+    print(f"\nEvidence gaps written:        created={r['created']} updated={r['updated']}")
+    for g in r["gaps"]:
+        print(f"  [{g['PRIORITY']:6}] {g['GAP_NAME']:38} internal={g['CURRENT_INTERNAL_EVIDENCE_COUNT']} "
+              f"great={g['GREAT_COUNT']} conf={g['CURRENT_CONFIDENCE']}")
+    print(f"\nEvidence-building tests recommended: {len(r['tests'])}")
+    for t in r["tests"]:
+        print(f"  - {t['test_name']} ({t['product']} / {t['icp']})")
+    return 0
+
+
 def cmd_notion_sync() -> int:
     try:
         summary = notion_sync()
@@ -865,7 +893,8 @@ def main() -> int:
                                  "build-winning-profiles", "match-inspiration",
                                  "quality-review-inspiration", "generate-ideas",
                                  "refine-ideas", "rate-calendar-ideas",
-                                 "build-semantic-connections", "evaluate-notion-idea"])
+                                 "build-semantic-connections", "evaluate-notion-idea",
+                                 "audit-evidence-gaps"])
     parser.add_argument("--url", type=str, default=None, metavar="URL",
                         help="Notion page URL for evaluate-notion-idea")
     parser.add_argument("--dry-run", action="store_true",
@@ -935,6 +964,9 @@ def main() -> int:
 
         elif args.command == "evaluate-notion-idea":
             return cmd_evaluate_notion_idea(args.url, args.dry_run)
+
+        elif args.command == "audit-evidence-gaps":
+            return cmd_audit_evidence_gaps()
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

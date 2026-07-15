@@ -599,6 +599,17 @@ copyright/famous-player/match-footage/fan-edit guardrails strict (they're
 enforced in `inspiration_discovery`), and preferring creator/coach/training/
 product-demo/youth-safety/injury-prevention/protection/confidence content.
 
+> **Query-family guidance (learned from the last two batches).** The soccer-GK
+> query bank is largely exhausted, and the loosest rings pulled off-domain
+> cross-sport gear. Going forward: **stop expanding** the R5 generic
+> protection-gear queries (they drift to taekwondo/MMA/motocross/volleyball/
+> running), the R6 mental/confidence queries (low quality), and the generic
+> cross-sport R7 queries ("I wish I knew", "3 things athletes"). **Prioritize
+> only** goalkeeper / soccer / youth-soccer / coach-led queries if more scraping
+> happens later. More external volume will **not** close the biggest gap
+> (Parents/youth internal proof) — external is reference only; see
+> `audit-evidence-gaps`.
+
 Per batch (≈100–150 discovered):
 1. Activate ~10–15 `APIFY_DISCOVERY_QUERIES` rows across the **matryoshka rings**
    (1 goalkeeper fear/landing/injury/turf/diving-confidence → 2 youth soccer/
@@ -811,6 +822,27 @@ logged to `INSPIRATION_RUNS` (`RUN_TYPE = Discovery`).
 individual URLs) still works and is unchanged — use it for hand-picked posts.
 Discovery is the automated, research-driven feeder. Both converge on the same
 `INSPIRATION_CONTENT` schema and dedup keyspace.
+
+### Parents / Youth evidence-gap audit (`audit-evidence-gaps`)
+
+`python src/main.py audit-evidence-gaps` (`src/evidence_audit.py`) audits the
+**internal** Storelli evidence base (analyzed rows, winning profiles,
+`latest_learnings.md`, calendar ratings) for Parents/youth signals and writes an
+**`EVIDENCE_GAPS`** artifact (read-only w.r.t. internal rows, profiles, and
+Notion — it never creates a profile). It reports how many internal Parents/youth
+rows exist, how many are Great, and whether a Parents/youth **winning profile is
+justified** — and it only says yes with real, sufficient internal proof (≥3 Great
+in one product cluster). Today the honest answer is **no**: ~2 Great across ~5
+Parents rows (largest single-product cluster = 1) — a real but thin signal, a
+hypothesis to test, not proof. External inspiration can never close this gap.
+
+When proof is thin it emits **evidence-building tests** (explicitly labelled
+tests, not proven ideas): e.g. *Parent POV: The Moment They Hesitate*,
+*Before/After: The Turf-Burn a Parent Never Sees*, *Coach's Warning*. **Slack**:
+"what proof are we missing?", "should we make Parents content?", "what
+Parents/youth tests should we run?", "what would we need to prove before scaling
+Parents?" return a cautious, source-linked decision trace (internal proof → gap →
+test needed → my move), never treating external refs as proof.
 
 ### Winning Format Profiles (internal evidence only)
 
