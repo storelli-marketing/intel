@@ -12,6 +12,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import json
+
 import slack_conversation_orchestrator as orch
 import idea_retrieval as ir
 import calendar_retrieval as cret
@@ -62,14 +64,14 @@ class TestMemoryAndReference(unittest.TestCase):
         # Failure #2: naming the BodyShield idea must NOT fall back to Gloves.
         out = orch.answer(
             "you suggested to shoot BodyShield GK Leggings: Dive Without The Sting first — "
-            "can you tell me more about it?", context=[], ideas=IDEAS)
+            "can you tell me more about it?", context=[], ideas=IDEAS, gemini=None)
         self.assertIsNotNone(out)
         self.assertIn("Dive Without The Sting", out)
         self.assertNotIn("Wet Weather Grip", out)
         self.assertIn("BodyShield GK Leggings / Adult Amateur", out)   # right profile
 
     def test_missing_context_asks_clarifying(self):
-        out = orch.answer("tell me more about it", context=[], ideas=IDEAS)
+        out = orch.answer("tell me more about it", context=[], ideas=IDEAS, gemini=None)
         self.assertIsNotNone(out)
         self.assertIn("missing the previous item", out.lower())
 
@@ -77,7 +79,7 @@ class TestMemoryAndReference(unittest.TestCase):
 class TestUrgentReasoning(unittest.TestCase):
     def test_urgent_uses_reasoning_not_raw_score(self):
         out = orch.answer("what are the most urgent ideas we should test and why?",
-                          context=[], ideas=IDEAS)
+                          context=[], ideas=IDEAS, gemini=None)
         self.assertIsNotNone(out)
         # Reasoned language, not a bare score list.
         self.assertRegex(out.lower(), r"shootable|internal proof|learning|priority|value")
@@ -90,7 +92,7 @@ class TestUrgentReasoning(unittest.TestCase):
 
 class TestReasoningReturnsNoneForSimple(unittest.TestCase):
     def test_plain_idea_list_not_intercepted(self):
-        self.assertIsNone(orch.answer("give me 5 gloves ideas", context=[], ideas=IDEAS))
+        self.assertIsNone(orch.answer("give me 5 gloves ideas", context=[], ideas=IDEAS, gemini=None))
 
     def test_read_only(self):
         class RO:
@@ -98,11 +100,11 @@ class TestReasoningReturnsNoneForSimple(unittest.TestCase):
             def read_ideas(self): return IDEAS
             def append_ideas(self, *a, **k): self.writes += 1
         ro = RO()
-        orch.answer("what are the most urgent ideas to test?", context=[], sheets=ro)
+        orch.answer("what are the most urgent ideas to test?", context=[], sheets=ro, gemini=None)
         self.assertEqual(ro.writes, 0)
 
     def test_external_not_proof(self):
-        out = orch.answer("what are the most urgent ideas we should test?", context=[], ideas=IDEAS)
+        out = orch.answer("what are the most urgent ideas we should test?", context=[], ideas=IDEAS, gemini=None)
         self.assertIn("not proof", out.lower())
 
 
@@ -147,6 +149,73 @@ class TestCalendarKISS(unittest.TestCase):
         self.assertIn("Fix:", out)
         self.assertIn("enough internal proof for Parents", out)
         self.assertNotIn("…", out.split("Sources:")[0].split("Fix:")[-1][:5])  # fix not mid-word cut at start
+
+
+class _FakeGemini:
+    def __init__(self, resp):
+        self.resp = resp
+        self.calls = 0
+
+    def summarize_findings(self, prompt):
+        self.calls += 1
+        return self.resp
+
+
+_GOOD = json.dumps({
+    "lead": "Shoot the BodyShield dive idea next.",
+    "bullets": ["Strong internal proof [S1].", "Fresh angle for adult amateurs.", "Shootable now."],
+    "my_move": "Greenlight it this week.", "confidence": "High",
+    "source_ids_used": ["S1"],
+    "memory_update": {"last_recommended_idea_ids": ["IDEA-bs-1"], "last_answer_summary": "dive"}})
+
+_CTX = [{"role": "assistant",
+         "text": "*My move:* Shoot *BodyShield GK Leggings: Dive Without The Sting* first."}]
+
+
+class TestLLMSynthesis(unittest.TestCase):
+    def test_tell_me_more_uses_llm_when_valid(self):
+        g = _FakeGemini(_GOOD)
+        out = orch.answer("tell me more about it", context=_CTX, ideas=IDEAS, gemini=g)
+        self.assertEqual(g.calls, 1)
+        self.assertIn("Shoot the BodyShield dive idea next", out)   # LLM lead used
+        self.assertIn("[S1]", out)
+
+    def test_why_this_idea_uses_llm(self):
+        g = _FakeGemini(_GOOD)
+        out = orch.answer("why this idea?", context=_CTX, ideas=IDEAS, gemini=g)
+        self.assertEqual(g.calls, 1)
+        self.assertIn("Shoot the BodyShield dive idea next", out)
+
+    def test_urgent_uses_deterministic_ranking_plus_llm(self):
+        g = _FakeGemini(_GOOD)
+        out = orch.answer("most urgent ideas to test and why?", context=[], ideas=IDEAS, gemini=g)
+        self.assertEqual(g.calls, 1)
+        self.assertIn("Shoot the BodyShield dive idea next", out)
+
+    def test_invalid_json_falls_back_deterministic(self):
+        out = orch.answer("tell me more about it", context=_CTX, ideas=IDEAS,
+                          gemini=_FakeGemini("this is not json {{"))
+        self.assertIn("rundown on", out.lower())          # deterministic deep-dive
+
+    def test_hallucinated_source_rejected(self):
+        bad = json.dumps({"lead": "x", "bullets": ["a", "b"], "my_move": "go",
+                          "confidence": "High", "source_ids_used": ["S9"],  # not in pack
+                          "memory_update": {}})
+        out = orch.answer("tell me more about it", context=_CTX, ideas=IDEAS, gemini=_FakeGemini(bad))
+        self.assertIn("rundown on", out.lower())          # fell back
+
+    def test_external_as_proof_rejected(self):
+        bad = json.dumps({"lead": "x", "bullets": ["External inspiration [E1] proves it works."],
+                          "my_move": "go", "confidence": "High", "source_ids_used": ["E1"],
+                          "memory_update": {}})
+        out = orch.answer("tell me more about it", context=_CTX, ideas=IDEAS, gemini=_FakeGemini(bad))
+        self.assertIn("rundown on", out.lower())          # rejected -> deterministic
+
+    def test_simple_list_stays_deterministic_no_llm(self):
+        g = _FakeGemini(_GOOD)
+        # A plain list ask must not invoke the LLM synthesizer.
+        self.assertIsNone(orch.answer("give me 5 gloves ideas", context=[], ideas=IDEAS, gemini=g))
+        self.assertEqual(g.calls, 0)
 
 
 class TestUnfurlsDisabled(unittest.TestCase):
