@@ -63,6 +63,25 @@ only, never a fake link — and the final answer shows only the 1-3 strongest
 proof links (5 if the user asks for more), each a real, clickable Slack
 `<url|label>` link, never a raw source ID dump.
 
+**Social analytics + creative test planning path** (`src/social_analytics.py`,
+Slack read-only): routed by `social_brain.answer_conversation` BEFORE the
+generic idea/strategy routes. Handles three question families — trial vs
+standard reels / demographics, highest-performing reel duration, and "give me N
+ideas to test" / "what should we test next". It reads the internal POC sheet
+through the same read-only `SheetsClient` path the rest of the brain uses, and
+builds test plans from the existing brain (winning profiles, semantic
+connections, refined ideas via `InspirationSheets`). Core discipline: it never
+invents a metric — if demographics, duration, or comment counts are absent it
+says so plainly and names the exact field/backfill to add (e.g. store
+`duration_seconds` from yt-dlp metadata, no re-analysis); performance uses a
+metric hierarchy (engagement rate → saves/comments/shares → views/likes → the
+manual Great/Good/Weak label); every test is internal-anchored with external
+inspiration as execution reference only (never proof); and every KPI line is a
+labelled proxy/inferred bet (KPI outcomes aren't tracked). Answers are built
+with `decision_trace` (Data check → Cohort split → Metric used → Pattern found →
+KPI caveat for analytics; Analysis anchor → Inspo cue → Creative bridge → KPI
+bet for tests). Read-only: no Sheet writes, no Notion writes, no analysis.
+
 **Analysis pipeline path** (CLI only, never Slack): `python src/main.py
 analyze` / `analyze-all` → `src/sheets_client.py` reads eligible rows →
 `src/analyzer.py` + `src/gemini_client.py` download the reel (yt-dlp),

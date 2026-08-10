@@ -20,7 +20,9 @@ import gemini_client
 import inspiration_sheets
 import notion_idea_ingest as ni
 import slack_response_style as st
+import social_analytics
 import social_brain
+import taxonomy
 import adhoc_idea_evaluator as ae
 
 MOCK_PAGE_ID = "1a2b3c4d5e6f7890abcdef1234567890"
@@ -128,6 +130,30 @@ class FakeSheets:
         raise AttributeError(name)
 
 
+# --- seed the internal POC sheet (for the analytics prompts) --------------- #
+# Rows carry a Reel Type + Views but NO demographics and NO duration, so the
+# analytics answers must be honest about what's missing.
+_ANALYTICS_COLS = ["ID", "LINK", "PERFORMANCE", "Storytelling structure", "ICP",
+                   "Product", "Status", "Reel Type", "Views"]
+
+
+def _arow(n, perf, rtype, views, hook, fmt):
+    r = {"_row": n, "LINK": f"https://www.instagram.com/storellisoccer/reel/{n}/",
+         "PERFORMANCE": perf, "Storytelling structure": "Demo", "ICP": "Aspiring Pro",
+         "Product": "Gloves", "Status": "completed", "Reel Type": rtype, "Views": views}
+    for c in taxonomy.all_signal_columns():
+        r[c] = ""
+    r[taxonomy.column_for("hook", hook)] = "1"
+    r[taxonomy.column_for("format", fmt)] = "1"
+    return r
+
+
+_ANALYTICS_ROWS = [_arow(3, "Great", "Trial", "20000", "Curiosity Gap", "Demo"),
+                   _arow(4, "Underdog", "Standard", "3000", "Fear / Risk", "Story"),
+                   _arow(5, "Good", "Trial", "9000", "Curiosity Gap", "Demo"),
+                   _arow(6, "Ok", "Standard", "6000", "Authority", "Tutorial")]
+
+
 def _boom(*a, **k):
     raise RuntimeError("Gemini disabled in golden tests")
 
@@ -150,6 +176,11 @@ class GoldenBase(unittest.TestCase):
         # Mock Notion ingest (no network).
         self._real_ingest = ni.ingest
         ni.ingest = lambda *a, **k: (dict(_MOCK_IDEA), None)
+        # Point the analytics layer's internal-sheet reader at the seeded rows
+        # (offline; no Google Sheets).
+        self._real_internal = social_analytics._internal_sheet
+        social_analytics._internal_sheet = lambda: (
+            [dict(r) for r in _ANALYTICS_ROWS], list(_ANALYTICS_COLS), "")
         # Skip the LLM strategist fallback branch.
         self._real_key = config.GEMINI_API_KEY
         config.GEMINI_API_KEY = ""
@@ -160,6 +191,7 @@ class GoldenBase(unittest.TestCase):
         inspiration_sheets.InspirationSheets = self._real_sheets
         gemini_client.GeminiClient = self._real_gem
         ni.ingest = self._real_ingest
+        social_analytics._internal_sheet = self._real_internal
         config.GEMINI_API_KEY = self._real_key
         ae._EVAL_CACHE.clear()
 
@@ -317,6 +349,70 @@ class TestGoldenPrompts(GoldenBase):
                   "what should we revise in the calendar?",
                   "where is the evidence thin?", "what can you do?"):
             self.run_prompt(t, _BODYSHIELD_CTX)
+        self.assertEqual(FakeSheets.writes, 0)
+
+    # --- Social Analytics + Creative Test Planning golden prompts ----------- #
+    def test_15_trial_vs_standard_no_demographic_hallucination(self):
+        text = ("Can you show the difference between posts on our trial reels vs "
+                "standard reels in terms of demographic?")
+        out = self.run_prompt(text)
+        low = out.lower()
+        # honest about the missing dimension, never invents demographic values
+        self.assertTrue("not demographic" in low or "demographic fields aren't" in low
+                        or "demographic fields not" in low)
+        self.assertNotRegex(low, r"\b\d+%\s*(male|female|men|women|aged)\b")
+        # still compares what exists
+        self.assertIn("performance", low)
+        self.assertTrue("trial" in low and "standard" in low)
+        self.assertEqual(FakeSheets.writes, 0)
+        self.assertQuality(text, out)
+
+    def test_16_duration_missing_is_honest_with_backfill(self):
+        text = "How many seconds long are our highest-performing reels?"
+        out = self.run_prompt(text)
+        low = out.lower()
+        self.assertIn("no duration field", low)
+        self.assertIn("yt-dlp", low)                     # names the exact backfill source
+        self.assertNotRegex(low, r"median\s*\d")         # never fabricates seconds
+        self.assertEqual(FakeSheets.writes, 0)
+        self.assertQuality(text, out)
+
+    def test_17_twenty_test_ideas_not_generic_dump(self):
+        text = "Give me a list of 20 ideas we should test."
+        out = self.run_prompt(text)
+        body, src = st.split_sources(out)
+        # a numbered plan, not a 3-bullet answer
+        self.assertRegex(body, r"(?m)^1\. ")
+        self.assertRegex(body, r"(?m)^2\. ")
+        # every idea is anchored + carries a proxy-labelled KPI, external is ref only
+        self.assertIn("(proxy)", out)
+        self.assertIn("internal proof", out.lower())
+        self.assertIn("execution reference only", out.lower())
+        self.assertIn(social_analytics._NOT_PROOF, out)
+        self.assertNotRegex(out.lower(),
+                            r"(external|inspiration|reference)[^.]{0,40}prov(e|es|en|ing)")
+        self.assertNotRegex(out.lower(), r"\b\d+\s*(comments|saves|shares|likes)\b")
+        self.assertIn("*Sources:*", out)
+        self.assertLess(out.index("1."), out.index("*Sources:*"))
+        naked = re.sub(r"<[^>]*>", "", body)
+        self.assertNotIn("http", naked)                  # links only as hyperlinks
+        self.assertEqual(FakeSheets.writes, 0)           # read-only
+
+    def test_18_what_should_we_test_next_routes_to_plan(self):
+        text = "What should we test next based on the data?"
+        out = self.run_prompt(text)
+        self.assertRegex(st.split_sources(out)[0], r"(?m)^1\. ")
+        self.assertIn("(proxy)", out)
+        self.assertEqual(FakeSheets.writes, 0)
+
+    def test_19_formats_to_test_for_comments_is_inference(self):
+        text = "Which formats should we test for comments?"
+        out = self.run_prompt(text)
+        low = out.lower()
+        self.assertRegex(st.split_sources(out)[0], r"(?m)^1\. ")
+        # comments aren't tracked -> proxy/inference, never a hard comment count
+        self.assertIn("(proxy)", out)
+        self.assertNotRegex(low, r"\b\d+\s*comments\b")
         self.assertEqual(FakeSheets.writes, 0)
 
 

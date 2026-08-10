@@ -113,6 +113,7 @@ def route_debug(text: str, context: Optional[list] = None) -> str:
             import adhoc_idea_evaluator as ev
             import notion_idea_ingest as ni
             import semantic_connections as sc
+            import social_analytics as sa
             import social_strategy_skills as strat
             import slack_conversation_orchestrator as orch
             import calendar_retrieval as cret
@@ -120,7 +121,18 @@ def route_debug(text: str, context: Optional[list] = None) -> str:
         except Exception:  # noqa: BLE001
             return "route_debug unavailable (import error)."
 
-        if ev.is_evaluation_query(q, context):
+        if sa.is_social_analytics_query(q, context):
+            route = "social_analytics"
+            intent = ("duration" if any(k in q.lower() for k in sa._DURATION_KW)
+                      else "trial_vs_standard" if any(k in q.lower() for k in sa._TRIAL_KW)
+                      else "demographics" if any(k in q.lower() for k in sa._DEMO_KW)
+                      else "metrics_audit")
+            sources = "[S#] internal reels (Sheet)"
+        elif sa.is_creative_test_plan_query(q, context):
+            route = "creative_test_plan"
+            intent = "test_plan"
+            sources = "[S#] internal proof · [E#] external reference"
+        elif ev.is_evaluation_query(q, context):
             has_url = bool(ni.find_notion_url(q))
             route = "adhoc_notion_evaluator"
             intent = "dry_run_evaluate" if ev.is_dry_run(q) else ("evaluate" if has_url else "followup")

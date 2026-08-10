@@ -1101,6 +1101,24 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     # Follow-up transforms (e.g. "turn this into a brief") are NOT idea queries
     # and fall through to the existing conversational engine below.
     try:
+        # Social Analytics + Creative Test Planning (read-only). Placed before
+        # the generic idea/strategy routes so these specific questions — trial
+        # vs standard, demographics, reel duration, "give me N ideas to test",
+        # "what should we test next" — aren't grabbed by an overlapping keyword
+        # elsewhere (e.g. a "comments" test-plan ask vs the comment-drivers
+        # skill). Honest about missing data; never writes the Sheet or Notion.
+        import social_analytics as sa
+        if sa.is_social_analytics_query(text, context):
+            analytics = sa.answer_social_analytics_question(text, context)
+            if analytics:
+                return _finish_conversational(analytics, text, skip_polish=True)
+        if sa.is_creative_test_plan_query(text, context):
+            # Returned already fully finished (sized to DEEP so a 20-item list
+            # survives, not trimmed to the default word cap).
+            plan = sa.answer_creative_test_plan(text, context)
+            if plan:
+                return plan
+
         # Ad-hoc Notion idea evaluation first: a pasted Notion page URL + eval
         # language ("evaluate this idea <url>", "is this worth shooting?") — or a
         # follow-up ("why?", "how do we improve it?", "what should I tell the

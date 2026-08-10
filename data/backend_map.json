@@ -59,6 +59,64 @@
     }
   ],
   "files": {
+    "src/adhoc_idea_evaluator.py": {
+      "functions": [
+        "_num",
+        "_clamp",
+        "_split",
+        "_as_item",
+        "closest_semantic_connection",
+        "connection_external_refs",
+        "semantic_connection_fit",
+        "storytelling_structure_fit",
+        "evaluation_score",
+        "_is_vague",
+        "recommend",
+        "confidence_label",
+        "_facts",
+        "_validate_synth",
+        "llm_synth",
+        "_handle",
+        "_now_iso",
+        "_content_hash",
+        "_eval_id",
+        "_det_narrative",
+        "evaluate_idea",
+        "_closest_calendar",
+        "_videos_payload",
+        "_join",
+        "_videos_text",
+        "_short",
+        "_sources_block",
+        "_with_sources",
+        "_verdict",
+        "render_evaluation",
+        "render_why",
+        "render_worth",
+        "render_videos",
+        "render_steal",
+        "render_not_copy",
+        "_pain_phrase",
+        "_sharper_hook",
+        "_shot_beats",
+        "_cta",
+        "render_improve",
+        "render_team",
+        "build_memory",
+        "_remember",
+        "is_dry_run",
+        "is_evaluation_query",
+        "_prior_eval_url",
+        "_followup_intent",
+        "_load_brain",
+        "_build_gemini",
+        "_resolve_prior_eval",
+        "_render_intent",
+        "answer_evaluation",
+        "evaluate_notion_url"
+      ],
+      "classes": []
+    },
     "src/analyzer.py": {
       "functions": [
         "render_taxonomy",
@@ -71,12 +129,61 @@
       ],
       "classes": []
     },
+    "src/calendar_rater.py": {
+      "functions": [
+        "_num",
+        "_clamp",
+        "_family",
+        "_tokens",
+        "closest_profile",
+        "matching_inspiration",
+        "closest_rated_idea",
+        "internal_evidence_fit",
+        "inspiration_alignment",
+        "_has_specific_signal",
+        "hook_strength",
+        "format_fit",
+        "shootability",
+        "product_icp_fit",
+        "novelty",
+        "calendar_idea_score",
+        "recommendation",
+        "strategic_priority",
+        "_rating_id",
+        "_now_iso",
+        "rate_item",
+        "excluded_row",
+        "_narrative",
+        "rate_calendar_ideas",
+        "print_calendar_summary"
+      ],
+      "classes": []
+    },
+    "src/calendar_retrieval.py": {
+      "functions": [
+        "is_calendar_query",
+        "_num",
+        "_load",
+        "_rated",
+        "_handle",
+        "_sources_block",
+        "_line",
+        "_first",
+        "_weak_because",
+        "_fix",
+        "_recurring_weakness",
+        "answer_calendar"
+      ],
+      "classes": []
+    },
     "src/config.py": {
       "functions": [
         "_require",
         "clean_notion_id",
+        "_int_env",
         "require_sheets",
         "require_gemini",
+        "require_apify",
         "require_notion",
         "require_slack_bot"
       ],
@@ -96,6 +203,24 @@
         "weak",
         "fmt_pct",
         "fmt_lift"
+      ],
+      "classes": []
+    },
+    "src/decision_trace.py": {
+      "functions": [
+        "_trim_label",
+        "_trim_value",
+        "step",
+        "label_ok",
+        "kpi_value",
+        "kpi_step",
+        "risk_step",
+        "bullets",
+        "render",
+        "claims_hard_kpi",
+        "external_as_proof",
+        "validate_trace",
+        "_looks_like_kpi"
       ],
       "classes": []
     },
@@ -124,6 +249,38 @@
         "BuildRequest"
       ]
     },
+    "src/evidence_audit.py": {
+      "functions": [
+        "_norm",
+        "_perf",
+        "_is_parents",
+        "_signals",
+        "audit",
+        "profile_justified",
+        "_product_evidence",
+        "_gap_id",
+        "_now",
+        "evidence_gaps",
+        "evidence_building_tests",
+        "control_cut",
+        "_tracker_row",
+        "test_tracker_rows",
+        "logging_convention",
+        "render_logging_convention",
+        "seed_test_tracker",
+        "is_evidence_gap_query",
+        "_wants_logging",
+        "_wants_test_plan",
+        "_load_audit",
+        "_safe",
+        "_read_learnings",
+        "answer_evidence_gap",
+        "_render_verdict",
+        "_render_test_plan",
+        "run_audit"
+      ],
+      "classes": []
+    },
     "src/gemini_client.py": {
       "functions": [
         "_is_unavailable",
@@ -134,6 +291,210 @@
         "VideoDownloadError",
         "QuotaExhaustedError",
         "GeminiClient"
+      ]
+    },
+    "src/idea_generator.py": {
+      "functions": [
+        "_num",
+        "eligible_inspiration",
+        "eligible_profiles",
+        "top_refs_for_profile",
+        "copyright_recheck",
+        "_clamp",
+        "evidence_fit_from_profile",
+        "compute_idea_scores",
+        "self_critique_pass",
+        "_profile_pattern",
+        "build_generation_prompt",
+        "_now_iso",
+        "build_ideas",
+        "_idea_row",
+        "generate_ideas",
+        "print_ideas_summary"
+      ],
+      "classes": []
+    },
+    "src/idea_refiner.py": {
+      "functions": [
+        "scrub_generic",
+        "has_generic",
+        "original_weakness",
+        "build_refine_prompt",
+        "_fallback_refine",
+        "refine_row",
+        "_now_iso",
+        "refine_ideas",
+        "print_refine_summary"
+      ],
+      "classes": []
+    },
+    "src/idea_retrieval.py": {
+      "functions": [
+        "_first_sentence",
+        "is_idea_query",
+        "_family_for",
+        "parse_query",
+        "_num",
+        "_has",
+        "_is_refined",
+        "_field",
+        "_uses_refined",
+        "_dedup_weakness",
+        "eligible",
+        "_product_matches",
+        "_is_adjacent",
+        "_matches_filters",
+        "_shoot_priority_key",
+        "rank_ideas",
+        "generic_language_flags",
+        "critique_points",
+        "suggest_sharper_hook",
+        "_handle_from_url",
+        "_split",
+        "_cite_idea",
+        "_cap",
+        "_display_risk",
+        "_idea_line",
+        "_render_list",
+        "_render_shoot_first",
+        "_render_critique",
+        "_render_generic",
+        "_render_evidence",
+        "_load_ideas",
+        "answer_ideas"
+      ],
+      "classes": [
+        "SourceRegistry"
+      ]
+    },
+    "src/inspiration_analyzer.py": {
+      "functions": [
+        "eligible_for_analysis",
+        "_has",
+        "has_caption",
+        "has_thumbnail",
+        "has_structural_metadata",
+        "decide_confidence",
+        "status_for_confidence",
+        "_taxonomy_block",
+        "build_metadata_prompt",
+        "validate_tags",
+        "_tags_to_cells",
+        "analyze_row",
+        "_full_video_generate",
+        "analyze_inspiration",
+        "print_analyze_summary"
+      ],
+      "classes": []
+    },
+    "src/inspiration_discovery.py": {
+      "functions": [
+        "_first",
+        "_to_int",
+        "_hashtags_str",
+        "normalize_instagram",
+        "normalize_tiktok",
+        "_iso_from_ts",
+        "_blob",
+        "_avoid_terms",
+        "assess_safety",
+        "_should_find_terms",
+        "mechanism_relevance",
+        "view_follower_ratio",
+        "_ratio_score",
+        "_absolute_view_score",
+        "priority_score",
+        "rank_candidate",
+        "decide_candidate",
+        "_num",
+        "build_actor_input",
+        "_normalizer_for",
+        "candidate_to_row",
+        "_effective_max",
+        "discover_inspiration",
+        "print_discovery_summary"
+      ],
+      "classes": [
+        "DiscoveryCandidate",
+        "ApifyClient"
+      ]
+    },
+    "src/inspiration_matcher.py": {
+      "functions": [
+        "_tags",
+        "_coverage",
+        "_token_overlap",
+        "_num",
+        "eligible_external",
+        "active_profiles",
+        "_layer_overlaps",
+        "product_icp_relevance",
+        "context_fit",
+        "match_score",
+        "novelty_score",
+        "final_score",
+        "looks_unsafe_content",
+        "_match_confidence",
+        "match_row",
+        "match_inspiration",
+        "print_match_summary"
+      ],
+      "classes": []
+    },
+    "src/inspiration_quality.py": {
+      "functions": [
+        "_tags",
+        "_num",
+        "_blob",
+        "eligible_for_review",
+        "creative_mechanism",
+        "mechanism_clarity",
+        "adaptability_score",
+        "_keyword_relevance",
+        "storelli_relevance_score",
+        "risk_assessment",
+        "ratio_signal",
+        "quality_score",
+        "review_row",
+        "_inspect_media",
+        "quality_review_inspiration",
+        "print_quality_summary"
+      ],
+      "classes": []
+    },
+    "src/inspiration_scanner.py": {
+      "functions": [
+        "_post_type_from_url",
+        "make_source_id",
+        "get_provider",
+        "_int",
+        "resolve_limits",
+        "post_is_duplicate",
+        "remember_post",
+        "dedup_posts",
+        "post_to_row",
+        "_now_iso",
+        "_run_id",
+        "_new_run",
+        "_finalize_and_log_run",
+        "scan_channels",
+        "process_queue",
+        "_queue_channel",
+        "print_scan_summary",
+        "print_queue_summary"
+      ],
+      "classes": [
+        "InspirationPost",
+        "InspirationProvider",
+        "YtDlpInstagramProvider"
+      ]
+    },
+    "src/inspiration_sheets.py": {
+      "functions": [
+        "_is_true"
+      ],
+      "classes": [
+        "InspirationSheets"
       ]
     },
     "src/interpretation.py": {
@@ -179,8 +540,21 @@
         "_group_counts",
         "cmd_synthesize",
         "cmd_reset_incomplete",
+        "cmd_scan_inspiration",
+        "cmd_process_inspiration_queue",
+        "cmd_analyze_inspiration",
+        "cmd_discover_inspiration",
+        "cmd_build_winning_profiles",
+        "cmd_match_inspiration",
+        "cmd_quality_review_inspiration",
+        "cmd_generate_ideas",
+        "cmd_refine_ideas",
+        "cmd_rate_calendar_ideas",
+        "cmd_build_semantic_connections",
         "notion_sync",
         "_fmt_notion_summary",
+        "cmd_evaluate_notion_idea",
+        "cmd_audit_evidence_gaps",
         "cmd_notion_sync",
         "_example_link",
         "gather_slack_inputs",
@@ -208,6 +582,20 @@
         "NotionBrain"
       ]
     },
+    "src/notion_calendar.py": {
+      "functions": [
+        "_headers",
+        "fetch_calendar_pages",
+        "_prop_value",
+        "_find",
+        "has_camera_emoji",
+        "_derive",
+        "normalize_page",
+        "should_rate",
+        "read_ratable_calendar_items"
+      ],
+      "classes": []
+    },
     "src/notion_client.py": {
       "functions": [
         "_load_notion_sdk",
@@ -218,6 +606,26 @@
       ],
       "classes": [
         "NotionDashboard"
+      ]
+    },
+    "src/notion_idea_ingest.py": {
+      "functions": [
+        "find_notion_url",
+        "extract_page_id",
+        "_dash",
+        "_headers",
+        "fetch_page",
+        "_prop_value",
+        "_find_prop",
+        "_block_text",
+        "_derive",
+        "_multiselect_tags",
+        "normalize",
+        "_has_enough_detail",
+        "ingest"
+      ],
+      "classes": [
+        "NotionAccessError"
       ]
     },
     "src/notion_retrieval.py": {
@@ -246,8 +654,49 @@
       ],
       "classes": []
     },
+    "src/semantic_connections.py": {
+      "functions": [
+        "_num",
+        "_family",
+        "_first_tag",
+        "structure_for",
+        "_split",
+        "_handle",
+        "concept_candidates",
+        "_concept_from_profile",
+        "_slug",
+        "_concept_terms",
+        "eligible_inspiration",
+        "shortlist",
+        "_steal_for",
+        "_adaptation_for",
+        "_det_connection",
+        "_evidence_fit",
+        "_profile_conf",
+        "connection_score",
+        "_facts",
+        "_validate_judge",
+        "llm_judge",
+        "_now_iso",
+        "_connection_id",
+        "build_connection_row",
+        "_clamp",
+        "build_semantic_connections",
+        "print_connections_summary",
+        "is_inspiration_query",
+        "_resolve_family",
+        "answer_inspiration",
+        "_short",
+        "_assemble",
+        "_render_from_connection",
+        "_render_onthefly"
+      ],
+      "classes": []
+    },
     "src/sheets_client.py": {
-      "functions": [],
+      "functions": [
+        "load_permanent_failure_links"
+      ],
       "classes": [
         "SheetsClient"
       ]
@@ -271,12 +720,119 @@
         "ProgressReporter"
       ]
     },
+    "src/slack_conversation_orchestrator.py": {
+      "functions": [
+        "_num",
+        "_norm",
+        "_title",
+        "build_memory",
+        "resolve_idea_reference",
+        "detect_intent",
+        "_shootability",
+        "_product_priority",
+        "urgency_score",
+        "_urgency_reasons",
+        "_handle",
+        "_idea_ids",
+        "_conf",
+        "_pack_urgent",
+        "_pack_deep_dive",
+        "_pack_compare",
+        "_clarify",
+        "_validate",
+        "_synthesize",
+        "_finalize",
+        "_load_ideas",
+        "_resolve_gemini",
+        "_resolve_compare",
+        "answer"
+      ],
+      "classes": [
+        "_SrcMap"
+      ]
+    },
+    "src/slack_help.py": {
+      "functions": [
+        "is_help_query",
+        "capability_menu",
+        "is_route_debug",
+        "_clean",
+        "_ctx_family",
+        "route_debug"
+      ],
+      "classes": []
+    },
     "src/slack_report.py": {
       "functions": [
         "build_message",
         "post"
       ],
       "classes": []
+    },
+    "src/slack_response_style.py": {
+      "functions": [
+        "detect_response_mode",
+        "split_sources",
+        "_wc",
+        "remove_canned_endings",
+        "enforce_length",
+        "simplify_bullets",
+        "compact_sources",
+        "render_ceo_summary",
+        "compact_slack_response",
+        "_source_links",
+        "_strip_bullet",
+        "format_trace_answer"
+      ],
+      "classes": []
+    },
+    "src/social_analytics.py": {
+      "functions": [
+        "_lower",
+        "_num",
+        "_row_get_ci",
+        "_column_for_field",
+        "_parse_seconds",
+        "_duration_bucket",
+        "_internal_sheet",
+        "_brain",
+        "detect_available_metrics",
+        "audit_metrics_schema",
+        "_render_audit_report",
+        "_can_classify_reel_type",
+        "classify_reel_type",
+        "choose_metric",
+        "_metric_value",
+        "find_top_performing_posts",
+        "analyze_winning_reel_duration",
+        "compare_trial_vs_standard",
+        "_perf_split",
+        "_hook_format_mix",
+        "_group_mix",
+        "_avg_duration",
+        "_split_urls",
+        "_active_profiles",
+        "_product_family",
+        "_matches_focus",
+        "_connection_for",
+        "generate_creative_test_plan",
+        "_first",
+        "_build_test",
+        "_handle",
+        "_fmt_split",
+        "_render_trial_vs_standard",
+        "_render_demographics",
+        "_render_duration",
+        "_render_test_plan",
+        "is_social_analytics_query",
+        "is_creative_test_plan_query",
+        "_parse_count",
+        "answer_social_analytics_question",
+        "answer_creative_test_plan"
+      ],
+      "classes": [
+        "_Sources"
+      ]
     },
     "src/social_brain.py": {
       "functions": [
@@ -368,6 +924,52 @@
         "Source"
       ]
     },
+    "src/social_strategy_skills.py": {
+      "functions": [
+        "_num",
+        "_split",
+        "_lower",
+        "_family",
+        "_product_label",
+        "_handle",
+        "_pain_phrase",
+        "_sources_tail",
+        "_short",
+        "_ceo",
+        "_rd",
+        "_load_brain",
+        "_active_profiles",
+        "_best_profile",
+        "_best_connection",
+        "_top_refined_idea",
+        "_external_refs",
+        "_subject_from_eval",
+        "_subject_from_brain",
+        "_last_evaluated",
+        "_resolve_subject",
+        "_subject_sources",
+        "_validate_strategy",
+        "_synthesize",
+        "_render_strategy",
+        "_resolve_gemini",
+        "_skill_comment_drivers",
+        "_skill_test_hypothesis",
+        "_skill_concept_references",
+        "_skill_idea_diagnosis",
+        "_skill_calendar_doctor",
+        "_skill_learning_to_action",
+        "_skill_content_gap",
+        "_skill_shot_brief",
+        "_top_learning",
+        "_clarify",
+        "detect_skill",
+        "is_strategy_query",
+        "answer"
+      ],
+      "classes": [
+        "_Src"
+      ]
+    },
     "src/synthesizer.py": {
       "functions": [
         "_great_count",
@@ -411,6 +1013,18 @@
         "_maybe_slack",
         "_do_social",
         "_do_analyze_all",
+        "_do_scan_inspiration",
+        "_do_process_inspiration_queue",
+        "_do_discover_inspiration",
+        "_do_build_winning_profiles",
+        "_do_build_semantic_connections",
+        "_do_evaluate_notion_idea",
+        "_do_rate_calendar_ideas",
+        "_do_refine_ideas",
+        "_do_generate_ideas",
+        "_do_quality_review_inspiration",
+        "_do_match_inspiration",
+        "_do_analyze_inspiration",
         "_do_notion_sync",
         "_do_slack",
         "_do_correlations",
@@ -424,6 +1038,18 @@
         "run_analyze_all",
         "run_correlations",
         "run_synthesize",
+        "run_scan_inspiration",
+        "run_process_inspiration_queue",
+        "run_analyze_inspiration",
+        "run_discover_inspiration",
+        "run_build_winning_profiles",
+        "run_match_inspiration",
+        "run_quality_review_inspiration",
+        "run_generate_ideas",
+        "run_refine_ideas",
+        "run_rate_calendar_ideas",
+        "run_build_semantic_connections",
+        "run_evaluate_notion_idea",
         "run_notion_sync",
         "run_slack_report",
         "run_generate_social_ideas",
@@ -434,8 +1060,23 @@
       ],
       "classes": [
         "SocialReq",
+        "EvaluateNotionReq",
         "GuidelineReq"
       ]
+    },
+    "src/winning_profiles.py": {
+      "functions": [
+        "_is_external",
+        "_dominant_tags",
+        "_supporting_signal_ids",
+        "_confidence",
+        "build_profiles",
+        "_profile_id",
+        "_now_iso",
+        "build_winning_profiles",
+        "print_profiles_summary"
+      ],
+      "classes": []
     }
   },
   "routes": [
@@ -466,6 +1107,54 @@
     {
       "method": "POST",
       "path": "/run/synthesize"
+    },
+    {
+      "method": "POST",
+      "path": "/run/scan-inspiration"
+    },
+    {
+      "method": "POST",
+      "path": "/run/process-inspiration-queue"
+    },
+    {
+      "method": "POST",
+      "path": "/run/analyze-inspiration"
+    },
+    {
+      "method": "POST",
+      "path": "/run/discover-inspiration"
+    },
+    {
+      "method": "POST",
+      "path": "/run/build-winning-profiles"
+    },
+    {
+      "method": "POST",
+      "path": "/run/match-inspiration"
+    },
+    {
+      "method": "POST",
+      "path": "/run/quality-review-inspiration"
+    },
+    {
+      "method": "POST",
+      "path": "/run/generate-ideas"
+    },
+    {
+      "method": "POST",
+      "path": "/run/refine-ideas"
+    },
+    {
+      "method": "POST",
+      "path": "/run/rate-calendar-ideas"
+    },
+    {
+      "method": "POST",
+      "path": "/run/build-semantic-connections"
+    },
+    {
+      "method": "POST",
+      "path": "/run/evaluate-notion-idea"
     },
     {
       "method": "POST",
@@ -500,9 +1189,25 @@
     "notion-sync",
     "slack-report",
     "run-all",
-    "reset-incomplete"
+    "reset-incomplete",
+    "scan-inspiration",
+    "process-inspiration-queue",
+    "analyze-inspiration",
+    "discover-inspiration",
+    "build-winning-profiles",
+    "match-inspiration",
+    "quality-review-inspiration",
+    "generate-ideas",
+    "refine-ideas",
+    "rate-calendar-ideas",
+    "build-semantic-connections",
+    "evaluate-notion-idea",
+    "audit-evidence-gaps"
   ],
   "env_vars": [
+    "APIFY_INSTAGRAM_ACTOR_ID",
+    "APIFY_TIKTOK_ACTOR_ID",
+    "APIFY_TOKEN",
     "BUILD_REQUEST_TARGET",
     "DASHBOARD_URL",
     "GEMINI_API_KEY",
@@ -514,6 +1219,7 @@
     "GOOGLE_SERVICE_ACCOUNT_JSON_PATH",
     "GOOGLE_SHEET_ID",
     "GOOGLE_WORKSHEET_NAME",
+    "INSPIRATION_PROVIDER",
     "NOTION_API_KEY",
     "NOTION_DASHBOARD_URL",
     "NOTION_PARENT_PAGE_ID",
