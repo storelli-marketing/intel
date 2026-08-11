@@ -1710,7 +1710,7 @@ def insert_poc_metric_columns(include_optional: bool = True, apply: bool = False
         ws = sh.worksheet(config.GOOGLE_WORKSHEET_NAME)
         # each inserted column: [row1 blank category, row2 name]; data cells empty
         new_cols = [["", name] for name in plan["columns"]]
-        ws.insert_cols(new_cols, col=plan["insert_at_col"])
+        ws.insert_cols(new_cols, col=plan["insert_at_col"], value_input_option="RAW")
         return {"ok": True, "wrote": True, "inserted": len(plan["columns"]), "plan": plan}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "wrote": False, "plan": plan,
