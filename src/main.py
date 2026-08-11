@@ -795,6 +795,16 @@ def cmd_import_social_metrics(dry_run: bool) -> int:
     return 0
 
 
+def cmd_insert_social_schema(apply: bool, include_optional: bool = True) -> int:
+    """Auto-insert the metric columns between Status and HOOK. DRY-RUN by
+    default (prints the plan, writes nothing); pass --apply to perform the write
+    (guarded: refuses on an unsafe boundary or if the columns already exist)."""
+    import social_analytics
+    r = social_analytics.insert_poc_metric_columns(include_optional=include_optional, apply=apply)
+    print(social_analytics.render_insert_result(r))
+    return 0 if r.get("ok") else 1
+
+
 def cmd_audit_duration_buckets() -> int:
     """Read-only: report Content audit duration-bucket coverage + which bucket
     performs best by PERFORMANCE label. Writes nothing."""
@@ -970,7 +980,7 @@ def main() -> int:
                                  "audit-evidence-gaps", "audit-social-metrics",
                                  "backfill-duration-metadata", "preflight-social-schema",
                                  "setup-metrics-staging", "import-social-metrics",
-                                 "audit-duration-buckets"])
+                                 "audit-duration-buckets", "insert-social-schema"])
     parser.add_argument("--url", type=str, default=None, metavar="URL",
                         help="Notion page URL for evaluate-notion-idea")
     parser.add_argument("--dry-run", action="store_true",
@@ -978,6 +988,11 @@ def main() -> int:
     parser.add_argument("--probe", action="store_true",
                         help="backfill-duration-metadata --dry-run: also probe a small "
                              "yt-dlp metadata sample (metadata only, no writes)")
+    parser.add_argument("--apply", action="store_true",
+                        help="insert-social-schema: perform the column insertion "
+                             "(default is a dry-run that writes nothing)")
+    parser.add_argument("--no-optional", action="store_true",
+                        help="insert-social-schema: insert the 14 required columns only")
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -1064,6 +1079,9 @@ def main() -> int:
 
         elif args.command == "audit-duration-buckets":
             return cmd_audit_duration_buckets()
+
+        elif args.command == "insert-social-schema":
+            return cmd_insert_social_schema(args.apply, include_optional=not args.no_optional)
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

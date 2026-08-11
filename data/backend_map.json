@@ -559,6 +559,7 @@
         "cmd_preflight_social_schema",
         "cmd_setup_metrics_staging",
         "cmd_import_social_metrics",
+        "cmd_insert_social_schema",
         "cmd_audit_duration_buckets",
         "cmd_audit_evidence_gaps",
         "cmd_notion_sync",
@@ -858,6 +859,8 @@
         "_col_letter",
         "insertion_plan",
         "render_insertion_plan",
+        "insert_poc_metric_columns",
+        "render_insert_result",
         "staging_tab_status",
         "ensure_staging_tab",
         "validate_import_value",
@@ -1244,7 +1247,8 @@
     "preflight-social-schema",
     "setup-metrics-staging",
     "import-social-metrics",
-    "audit-duration-buckets"
+    "audit-duration-buckets",
+    "insert-social-schema"
   ],
   "env_vars": [
     "APIFY_INSTAGRAM_ACTOR_ID",

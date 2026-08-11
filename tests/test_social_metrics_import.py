@@ -90,6 +90,49 @@ class TestInsertionPlan(unittest.TestCase):
         self.assertIn("NOTHING WRITTEN", out)
 
 
+class TestAutoInserter(_Guard):
+    def test_dry_run_plans_but_writes_nothing(self):
+        sa._internal_sheet = self._i        # not used; inserter reads _poc_values
+        sa._poc_values = lambda: [list(_ROW1), list(_ROW2)]
+        try:
+            r = sa.insert_poc_metric_columns(apply=False)
+        finally:
+            pass
+        self.assertTrue(r["ok"])
+        self.assertFalse(r["wrote"])
+        self.assertTrue(r["dry_run"])
+        self.assertIn("DRY-RUN", sa.render_insert_result(r))
+
+    def test_refuses_unsafe_boundary(self):
+        # Status NOT immediately before HOOK (a stray metadata col between them)
+        row1 = ["", "", "", "", "", "", "", "", "HOOK"]
+        row2 = ["ID", "LINK", "PERFORMANCE", "Storytelling structure", "ICP", "Product",
+                "Status", "StrayCol", "Curiosity Gap"]
+        sa._poc_values = lambda: [row1, row2]
+        r = sa.insert_poc_metric_columns(apply=True)     # even with apply, must refuse
+        self.assertFalse(r["ok"])
+        self.assertFalse(r["wrote"])
+        self.assertIn("unsafe", r["error"].lower())
+
+    def test_idempotent_when_columns_present(self):
+        row2 = list(_ROW2)
+        row2.insert(7, "VIEWS")            # a target column already exists
+        row1 = list(_ROW1)
+        row1.insert(7, "")
+        sa._poc_values = lambda: [row1, row2]
+        r = sa.insert_poc_metric_columns(apply=True)     # must NOT insert
+        self.assertFalse(r["wrote"])
+        self.assertIn("VIEWS", r["already_present"])
+
+    def setUp(self):
+        super().setUp()
+        self._pv = sa._poc_values
+
+    def tearDown(self):
+        sa._poc_values = self._pv
+        super().tearDown()
+
+
 # --------------------------------------------------------------------------- #
 # Task 3 — staging tab schema
 # --------------------------------------------------------------------------- #

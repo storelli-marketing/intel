@@ -1666,6 +1666,72 @@ def render_insertion_plan(plan: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# POC column auto-inserter — dry-run by default; the real write is gated behind
+# apply=True AND passes safety + idempotency guards. Inserts BEFORE the first
+# taxonomy category so the two-row header stays intact and taxonomy shifts right
+# (values preserved; taxonomy is matched by (category, option) each run).
+# ---------------------------------------------------------------------------
+def insert_poc_metric_columns(include_optional: bool = True, apply: bool = False) -> dict:
+    """Plan (and, only when apply=True + guards pass, perform) the insertion of
+    the metric columns between Status and HOOK.
+
+    Guards that block a write: header unreadable, Status NOT immediately before
+    HOOK (unsafe boundary), or ANY target column already present (idempotent —
+    never double-inserts). New columns get a blank row-1 category and the name in
+    row 2; data cells are left empty (no fabricated values). Existing analyzed
+    data is shifted right, never overwritten."""
+    values = _poc_values()
+    plan = insertion_plan(include_optional, values)
+    if not plan["ok"]:
+        return {"ok": False, "error": "POC header unreadable", "wrote": False}
+    # Idempotency FIRST: if the columns are already there, a re-run is a no-op —
+    # and after a real insert Status is no longer adjacent to HOOK, so this check
+    # must precede the boundary guard to give a clear message instead of "unsafe".
+    row2 = [str(c).strip() for c in values[1]]
+    already = [c for c in plan["columns"] if c in row2]
+    if already:
+        return {"ok": True, "wrote": False, "plan": plan, "already_present": already,
+                "note": "some/all target columns already exist — nothing to insert (idempotent)"}
+    pf = plan["preflight"]
+    if not (pf["safe"] and pf["status_immediately_before_hook"]):
+        return {"ok": False, "wrote": False, "plan": plan,
+                "error": "unsafe insertion boundary (Status is not immediately before HOOK)"}
+    if not apply:
+        return {"ok": True, "wrote": False, "dry_run": True, "plan": plan}
+    # ---- APPLY (gated) ----------------------------------------------------
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        creds = Credentials.from_service_account_file(
+            config.GOOGLE_SERVICE_ACCOUNT_JSON_PATH,
+            scopes=["https://www.googleapis.com/auth/spreadsheets"])
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(config.GOOGLE_SHEET_ID)
+        ws = sh.worksheet(config.GOOGLE_WORKSHEET_NAME)
+        # each inserted column: [row1 blank category, row2 name]; data cells empty
+        new_cols = [["", name] for name in plan["columns"]]
+        ws.insert_cols(new_cols, col=plan["insert_at_col"])
+        return {"ok": True, "wrote": True, "inserted": len(plan["columns"]), "plan": plan}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "wrote": False, "plan": plan,
+                "error": f"insert failed: {type(e).__name__}: {e}"}
+
+
+def render_insert_result(r: dict) -> str:
+    if not r.get("ok"):
+        base = f"insert-social-schema: {r.get('error')}"
+        return base + ("\n\n" + render_insertion_plan(r["plan"]) if r.get("plan") else "")
+    if r.get("already_present"):
+        return ("insert-social-schema: columns already present, nothing inserted "
+                f"({', '.join(r['already_present'])}). Idempotent — safe to re-run.")
+    if r.get("wrote"):
+        return (f"insert-social-schema: INSERTED {r['inserted']} columns between Status and HOOK "
+                "(row 1 blank, row 2 = names). Taxonomy shifted right; data preserved.")
+    return (render_insertion_plan(r["plan"])
+            + "\n\n  DRY-RUN — no write performed. Re-run with --apply to execute.")
+
+
+# ---------------------------------------------------------------------------
 # Task 3 — staging tab (create is a WRITE; status check is read-only)
 # ---------------------------------------------------------------------------
 def staging_tab_status() -> dict:
