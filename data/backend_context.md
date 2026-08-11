@@ -96,6 +96,19 @@ receive DURATION_SECONDS; metadata-only; NO write mode exists yet). New metric
 columns must be inserted between `Status` and the first taxonomy category `HOOK`
 with row 1 blank, or the header forward-fill misreads them as taxonomy columns.
 
+**Metrics import + schema setup** (`src/social_analytics.py`): `preflight-social-schema`
+(read-only) prints the exact insertion plan (columns between Status and HOOK, row
+1 blank); `setup-metrics-staging` is the ONE write command — it creates the
+`SOCIAL_METRICS_IMPORT_STAGING` tab (header only; a new tab, never touches POC/
+taxonomy) and is operator-invoked only; `import-social-metrics --dry-run` matches
+staging rows to POC by LINK and reports matched/unmatched/would-fill/already-
+populated/parse-errors, writing NOTHING (no non-dry-run mode); `audit-duration-buckets`
+(read-only) reports Content audit bucket coverage + the best bucket by
+PERFORMANCE Great-rate. Import never overwrites a populated POC cell and never
+imports an unmatched link. Slack answers: "what metrics are missing?", "how do I
+import IG metrics?", "can we use the Content audit duration buckets?", "what
+duration bucket performs best?" (all read-only, decision-traced).
+
 **Analysis pipeline path** (CLI only, never Slack): `python src/main.py
 analyze` / `analyze-all` → `src/sheets_client.py` reads eligible rows →
 `src/analyzer.py` + `src/gemini_client.py` download the reel (yt-dlp),

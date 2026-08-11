@@ -438,6 +438,21 @@ class TestGoldenPrompts(GoldenBase):
         self.assertEqual(FakeSheets.writes, 0)
         self.assertQuality(text, out)
 
+    def test_22_how_to_import_ig_metrics(self):
+        text = "How do I import IG metrics?"
+        out = self.run_prompt(text)
+        self.assertIn("SOCIAL_METRICS_IMPORT_STAGING", out)
+        self.assertIn("dry-run", out.lower())
+        self.assertEqual(FakeSheets.writes, 0)
+        self.assertQuality(text, out)
+
+    def test_23_what_metrics_are_missing(self):
+        text = "What metrics are missing?"
+        out = self.run_prompt(text)
+        self.assertIn("missing", out.lower())
+        self.assertEqual(FakeSheets.writes, 0)
+        self.assertQuality(text, out)
+
 
 if __name__ == "__main__":
     unittest.main()

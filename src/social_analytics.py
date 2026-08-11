@@ -118,6 +118,26 @@ _RECOMMENDED_COLUMNS = {
 _OPTIONAL_COLUMNS = ("REACH", "IMPRESSIONS", "PROFILE_VISITS", "WEBSITE_CLICKS",
                      "PRODUCT_CLICKS", "TRIAL_CLICKS", "QUALIFIED_DMS")
 
+# Required metric columns to add to the POC tab, in insertion order.
+_REQUIRED_METRIC_COLUMNS = ("REEL_TYPE", "DURATION_SECONDS", "POST_DATE", "VIEWS", "LIKES",
+                            "COMMENTS", "SAVES", "SHARES", "ENGAGEMENT_RATE",
+                            "FOLLOWERS_AT_POST", "AGE_SPLIT", "GENDER_SPLIT",
+                            "LOCATION_SPLIT", "FOLLOWER_NONFOLLOWER_SPLIT")
+
+# Manual IG-export paste tab (never written into POC automatically).
+STAGING_TAB = "SOCIAL_METRICS_IMPORT_STAGING"
+STAGING_COLUMNS = ("LINK", *_REQUIRED_METRIC_COLUMNS, *_OPTIONAL_COLUMNS,
+                   "SOURCE", "IMPORTED_AT", "NOTES")
+
+# Which staging columns validate as numbers vs demographic split strings vs text.
+_NUMERIC_METRIC_COLUMNS = {"DURATION_SECONDS", "VIEWS", "LIKES", "COMMENTS", "SAVES", "SHARES",
+                           "ENGAGEMENT_RATE", "FOLLOWERS_AT_POST", "REACH", "IMPRESSIONS",
+                           "PROFILE_VISITS", "WEBSITE_CLICKS", "PRODUCT_CLICKS", "TRIAL_CLICKS",
+                           "QUALIFIED_DMS"}
+_SPLIT_METRIC_COLUMNS = {"AGE_SPLIT", "GENDER_SPLIT", "LOCATION_SPLIT",
+                         "FOLLOWER_NONFOLLOWER_SPLIT"}
+_TEXT_METRIC_COLUMNS = {"REEL_TYPE", "POST_DATE", "SOURCE", "IMPORTED_AT", "NOTES", "LINK"}
+
 # Performance metric hierarchy (best first). Tier 1: engagement rate. Tier 2:
 # saves/comments/shares. Tier 3: views/likes. Tier 4: the manual Great/Good/
 # Weak label when no raw metric exists.
@@ -1151,6 +1171,17 @@ _SCHEMA_KW = ("need to add", "need to track", "fields do we need", "columns do w
               "what data do we need", "schema plan", "what do we need to add",
               "what metrics should we add", "what do we need to measure",
               "what do we need to collect")
+# Import + schema-setup Slack asks (kept narrow so they don't shadow other routes).
+_MISSING_METRICS_KW = ("what metrics are missing", "which metrics are missing", "missing metrics",
+                       "what metrics do we not have", "what metrics don't we have",
+                       "what social metrics are missing", "which social metrics are missing")
+_IMPORT_KW = ("how do i import", "how to import", "import ig metrics", "import metrics",
+              "import social metrics", "paste ig", "paste the ig", "upload ig metrics",
+              "how do we import", "import the metrics", "import instagram")
+_BUCKET_USE_KW = ("use the content audit", "content audit duration bucket", "content audit buckets",
+                  "use content audit", "can we use the content audit", "content-audit bucket")
+_BUCKET_PERF_KW = ("duration bucket performs", "bucket performs best", "best duration bucket",
+                   "which duration bucket", "what duration bucket", "best performing bucket")
 
 _TESTPLAN_STRONG = ("test plan", "creative test plan", "testing plan", "ideas to test",
                     "ideas we should test", "ideas we can test", "test ideas", "ideas to run as tests")
@@ -1176,6 +1207,8 @@ def _schema_focus(text: str) -> str:
 def is_social_analytics_query(text: str, context: Optional[list] = None) -> bool:
     t = " " + _lower(text) + " "
     if is_schema_plan_query(text, context):
+        return True
+    if any(k in t for k in _MISSING_METRICS_KW + _IMPORT_KW + _BUCKET_USE_KW + _BUCKET_PERF_KW):
         return True
     if any(k in t for k in _TRIAL_KW):
         return True
@@ -1263,15 +1296,104 @@ def render_schema_plan(text: str, context: Optional[list] = None) -> str:
         move=(f"{_INSERT_LOCATION} Optional extras: {', '.join(_OPTIONAL_COLUMNS)}."), mode=mode)
 
 
+def _render_missing_metrics(text: str) -> str:
+    mode = st.detect_response_mode(text)
+    a = audit_metrics_schema()
+    if not a.get("ok"):
+        return dt.render(f"I can't reach the sheet right now ({a.get('error')}).",
+                         [dt.step("Data check", "sheet unreachable", [], "risk", "Thin")],
+                         move="retry once Sheets is configured.", mode=mode)
+    miss = a["recommended_missing"]
+    steps = [
+        dt.step("Have", ", ".join(a["available"][:6]) or "none", [], "topic", "Medium"),
+        dt.step("Missing", ", ".join(miss[:8]) or "none", [], "risk", "Medium"),
+        dt.step("Duration proxy",
+                "Content audit buckets" if a["duration_present"] is False else "exact",
+                [], "inference", "Thin"),
+    ]
+    return dt.render(
+        f"We're missing {len(miss)} of the key social-metrics fields in the sheet.",
+        steps,
+        move="ask 'what fields do we need to add?' for the exact columns + where to put them, "
+             "then paste an IG export into SOCIAL_METRICS_IMPORT_STAGING.", mode=mode)
+
+
+def _render_import_howto(text: str) -> str:
+    mode = st.detect_response_mode(text)
+    steps = [
+        dt.step("Step 1", "add the metric columns to the POC tab (schema plan)", [], "topic", "Medium"),
+        dt.step("Step 2", f"paste the IG export into the {STAGING_TAB} tab", [], "topic", "Medium"),
+        dt.step("Step 3", "run import-social-metrics --dry-run to preview matches", [], "internal", "Medium"),
+        dt.step("Safety", "matched by LINK; never overwrites filled cells; nothing auto-writes",
+                [], "risk", "Medium"),
+    ]
+    return dt.render(
+        "Import IG metrics via the staging tab, not by editing analyzed rows directly.",
+        steps,
+        move=f"paste your IG Insights export columns into {STAGING_TAB} (one row per reel, LINK "
+             "required), then I'll dry-run the match before anything is written.", mode=mode)
+
+
+def _render_bucket_usability(text: str) -> str:
+    mode = st.detect_response_mode(text)
+    a = audit_duration_buckets()
+    cov = (f"{a['rows_with_bucket']}/{a['total_rows']}" if a.get("ok") else "some")
+    steps = [
+        dt.step("Proxy", "Content audit video-length buckets", [], "internal", "Medium"),
+        dt.step("Coverage", f"{cov} analyzed reels have a bucket", [], "topic", "Medium"),
+        dt.step("Caveat", "coarse buckets, not exact seconds", [], "risk", "Thin"),
+    ]
+    return dt.render(
+        "Yes — we can use the Content audit duration buckets as a coarse proxy while exact "
+        "seconds are missing.",
+        steps,
+        move="I already fall back to them for duration questions; add DURATION_SECONDS when you "
+             "want exact medians.", mode=mode)
+
+
+def _render_best_bucket(text: str) -> str:
+    mode = st.detect_response_mode(text)
+    a = audit_duration_buckets()
+    if not a.get("ok") or not a.get("distribution"):
+        return dt.render(
+            "I don't have Content audit duration buckets matched to performance yet.",
+            [dt.step("Data check", "no bucket/performance overlap", [], "risk", "Thin")],
+            move="add DURATION_SECONDS (or populate Content audit buckets) for a length read.",
+            mode=mode)
+    steps = [
+        dt.step("Metric used", "PERFORMANCE label (no raw metrics)", [], "internal", "Medium"),
+        dt.step("Duration proxy", "Content audit bucket", [], "topic", "Medium"),
+    ]
+    if a["best_bucket"]:
+        steps.append(dt.step("Best bucket", f"{a['best_bucket']} ({a['best_great_rate']}% Great)",
+                             [], "internal", "Medium"))
+        lead = f"Best-performing length bucket so far: *{a['best_bucket']}*."
+    else:
+        steps.append(dt.step("Caveat", "too few reels per bucket (n<2)", [], "risk", "Thin"))
+        lead = "I can't reliably pick a best length bucket yet — too few reels per bucket."
+    steps.append(dt.step("Caveat", "bucketed, not exact seconds", [], "risk", "Thin"))
+    return dt.render(lead, steps,
+                     move="add DURATION_SECONDS for an exact median, then re-check.", mode=mode)
+
+
 def answer_social_analytics_question(text: str, context: Optional[list] = None) -> Optional[str]:
-    """Slack entrypoint for analytics questions (schema plan, trial/standard,
-    demographics, duration, metrics audit). Returns None if it doesn't own it."""
+    """Slack entrypoint for analytics questions (schema plan, import/staging,
+    duration buckets, trial/standard, demographics, duration, metrics audit).
+    Returns None if it doesn't own it."""
     t = _lower(text)
     try:
         # Schema-plan asks first — "what do we need to track to answer X" mentions
         # duration/demographics but wants the columns-to-add answer, not the data.
         if is_schema_plan_query(text, context):
             return render_schema_plan(text, context)
+        if any(k in t for k in _MISSING_METRICS_KW):
+            return _render_missing_metrics(text)
+        if any(k in t for k in _IMPORT_KW):
+            return _render_import_howto(text)
+        if any(k in t for k in _BUCKET_PERF_KW):     # before generic duration
+            return _render_best_bucket(text)
+        if any(k in t for k in _BUCKET_USE_KW):
+            return _render_bucket_usability(text)
         if any(k in t for k in _DURATION_KW):
             return _render_duration(text, analyze_winning_reel_duration())
         if any(k in t for k in _TRIAL_KW):
@@ -1430,3 +1552,323 @@ def _probe_duration_metadata(url: str) -> Optional[float]:
         return float(d) if d is not None else None
     except Exception:  # noqa: BLE001
         return None
+
+
+# ===========================================================================
+# Sheet-schema setup + metrics import workflow (Import + Schema Setup)
+# ===========================================================================
+def _norm_link(u) -> str:
+    """Normalize an IG/TikTok URL for matching (drop query/trailing slash/case)."""
+    return str(u or "").strip().lower().split("?")[0].rstrip("/")
+
+
+# ---------------------------------------------------------------------------
+# Task 1/2 — preflight the POC header + build the exact insertion plan
+# ---------------------------------------------------------------------------
+def _poc_values() -> Optional[list]:
+    """Raw get_all_values() of the POC worksheet (read-only). None on failure."""
+    try:
+        from sheets_client import SheetsClient
+        return SheetsClient().values
+    except Exception as e:  # noqa: BLE001
+        log.warning("social_analytics: POC preflight read failed: %s", e)
+        return None
+
+
+def preflight_poc_structure(values: Optional[list] = None) -> dict:
+    """Read the two-row POC header and locate the safe insertion point.
+
+    Returns Status column, the first taxonomy category column (HOOK), the
+    metadata columns, and whether Status sits immediately before HOOK (the safe
+    insertion boundary). Read-only.
+    """
+    if values is None:
+        values = _poc_values()
+    if not values or len(values) < 2:
+        return {"ok": False, "error": "POC header unreadable"}
+    row1, row2 = values[0], values[1]
+    status_col = next((i + 1 for i, c in enumerate(row2) if str(c).strip() == "Status"), None)
+    hook_col = next((i + 1 for i, c in enumerate(row1) if str(c).strip()), None)
+    metadata = [str(c).strip() for i, c in enumerate(row2)
+                if str(c).strip() and (hook_col is None or i < hook_col - 1)]
+    safe = bool(status_col and hook_col and status_col < hook_col)
+    return {
+        "ok": True,
+        "status_col": status_col,
+        "hook_col": hook_col,
+        "first_category": row1[hook_col - 1].strip() if hook_col else None,
+        "metadata_columns": metadata,
+        "total_columns": len(row2),
+        "insert_after_col": status_col,
+        "insert_before_col": hook_col,
+        "status_immediately_before_hook": bool(status_col and hook_col
+                                               and status_col == hook_col - 1),
+        "safe": safe,
+    }
+
+
+def _col_letter(n: int) -> str:
+    """1-based column index -> A1 letter(s)."""
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def insertion_plan(include_optional: bool = True, values: Optional[list] = None) -> dict:
+    """The exact plan for adding the metric columns between Status and HOOK.
+
+    Read-only (computes the plan; performs no write)."""
+    pf = preflight_poc_structure(values)
+    cols = list(_REQUIRED_METRIC_COLUMNS) + (list(_OPTIONAL_COLUMNS) if include_optional else [])
+    plan = {"ok": pf["ok"], "preflight": pf, "columns": cols, "count": len(cols),
+            "row1_value": "(blank)", "include_optional": include_optional}
+    if pf["ok"]:
+        start = pf["insert_before_col"]                 # insert before HOOK
+        plan["insert_at_col"] = start
+        plan["insert_at_a1"] = f"{_col_letter(start)} (before {_col_letter(pf['hook_col'])}=HOOK)"
+        plan["new_hook_col_after"] = pf["hook_col"] + len(cols)
+        plan["positions"] = [{"col": start + i, "a1_row2": f"{_col_letter(start + i)}2",
+                              "name": name} for i, name in enumerate(cols)]
+    return plan
+
+
+def render_insertion_plan(plan: dict) -> str:
+    pf = plan.get("preflight", {})
+    if not plan.get("ok"):
+        return "Could not read the POC header to build an insertion plan."
+    lines = [
+        "SOCIAL METRICS — POC insertion plan (NOTHING WRITTEN)",
+        f"  Worksheet metadata columns (row 2): {', '.join(pf['metadata_columns'])}",
+        f"  Status column: {_col_letter(pf['status_col'])} (col {pf['status_col']})",
+        f"  First taxonomy category HOOK: {_col_letter(pf['hook_col'])} (col {pf['hook_col']})",
+        f"  Status immediately before HOOK: {'YES (safe)' if pf['status_immediately_before_hook'] else 'NO — review'}",
+        "",
+        f"  INSERT {plan['count']} new columns starting at {plan['insert_at_a1']},",
+        "  pushing the taxonomy block right. For every new column: row 1 (category) = BLANK,",
+        "  row 2 = the column name. Do NOT append to the far right.",
+        "",
+        f"  Required ({len(_REQUIRED_METRIC_COLUMNS)}): {', '.join(_REQUIRED_METRIC_COLUMNS)}",
+    ]
+    if plan["include_optional"]:
+        lines.append(f"  Optional ({len(_OPTIONAL_COLUMNS)}): {', '.join(_OPTIONAL_COLUMNS)}")
+    lines += ["",
+              "  Column placement:"]
+    for p in plan["positions"]:
+        lines.append(f"    {p['a1_row2']:>5}  {p['name']}   (row 1 blank)")
+    lines += ["",
+              f"  After insertion, HOOK moves to column {plan['new_hook_col_after']} "
+              f"({_col_letter(plan['new_hook_col_after'])}).",
+              "  Taxonomy columns are matched by (category, option) each run, so shifting is safe.",
+              "  No write performed — approve to execute."]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — staging tab (create is a WRITE; status check is read-only)
+# ---------------------------------------------------------------------------
+def staging_tab_status() -> dict:
+    """Read-only: does SOCIAL_METRICS_IMPORT_STAGING exist and have the header?"""
+    vals = _read_named_worksheet(STAGING_TAB)
+    if vals is None:
+        return {"exists": False, "reason": "not found / unreachable"}
+    header = [str(c).strip() for c in (vals[0] if vals else []) if str(c).strip()]
+    return {"exists": True, "header": header,
+            "header_ok": header == list(STAGING_COLUMNS),
+            "row_count": max(0, len(vals) - 1)}
+
+
+def ensure_staging_tab() -> dict:
+    """WRITE: create SOCIAL_METRICS_IMPORT_STAGING with the header row if absent.
+    Non-destructive (new tab only; never touches POC/taxonomy). Only ever called
+    from the explicit `setup-metrics-staging` CLI after operator approval."""
+    status = staging_tab_status()
+    if status.get("exists"):
+        return {"created": False, "reason": "already exists", "status": status}
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        creds = Credentials.from_service_account_file(
+            config.GOOGLE_SERVICE_ACCOUNT_JSON_PATH,
+            scopes=["https://www.googleapis.com/auth/spreadsheets"])
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(config.GOOGLE_SHEET_ID)
+        ws = sh.add_worksheet(title=STAGING_TAB, rows=500, cols=len(STAGING_COLUMNS))
+        ws.update(range_name="A1", values=[list(STAGING_COLUMNS)])
+        return {"created": True, "columns": list(STAGING_COLUMNS)}
+    except Exception as e:  # noqa: BLE001
+        return {"created": False, "reason": f"error: {type(e).__name__}: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — validation helpers
+# ---------------------------------------------------------------------------
+def validate_import_value(column: str, value) -> tuple:
+    """(ok, parsed_or_error) for a staging cell. Empty is OK (skipped). Numeric
+    columns must parse as numbers; split columns must parse as 'L pct%'; text is
+    accepted as-is. Never coerces a bad value into a fake one."""
+    v = str(value or "").strip()
+    if not v:
+        return True, ""                                  # empty -> nothing to import
+    if column in _NUMERIC_METRIC_COLUMNS:
+        n = _num(v)
+        return (n is not None, n if n is not None else f"not numeric: {v!r}")
+    if column in _SPLIT_METRIC_COLUMNS:
+        d = _parse_split(v)
+        return (bool(d), d if d else f"unparseable split: {v!r}")
+    return True, v
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — dry-run import (reads staging, matches to POC, writes nothing)
+# ---------------------------------------------------------------------------
+def import_social_metrics_dry_run() -> dict:
+    """Match SOCIAL_METRICS_IMPORT_STAGING rows to POC by LINK and report what a
+    real import WOULD do. Writes nothing; there is no non-dry-run mode."""
+    staging = _read_named_worksheet(STAGING_TAB)
+    if staging is None:
+        return {"ok": False, "error": f"{STAGING_TAB} tab not found / unreachable"}
+    if len(staging) < 2:
+        return {"ok": True, "empty": True, "matched": 0, "unmatched": [], "no_link": 0,
+                "would_fill": {}, "already_populated": {}, "parse_errors": []}
+    header = [str(c).strip() for c in staging[0]]
+    idx = {name: i for i, name in enumerate(header)}
+    link_i = idx.get("LINK")
+    poc_rows, poc_cols, err = _internal_sheet()
+    if err:
+        return {"ok": False, "error": f"POC unreachable: {err}"}
+    poc_by_link = {_norm_link(r.get("LINK", "")): r for r in poc_rows
+                   if str(r.get("LINK", "")).strip()}
+    metric_cols = [c for c in header
+                   if c in _REQUIRED_METRIC_COLUMNS or c in _OPTIONAL_COLUMNS]
+
+    matched, no_link = 0, 0
+    unmatched, parse_errors = [], []
+    would_fill: dict[str, int] = {}
+    already: dict[str, int] = {}
+    for raw in staging[1:]:
+        if not any(str(c).strip() for c in raw):
+            continue
+        link = raw[link_i].strip() if link_i is not None and link_i < len(raw) else ""
+        if not link:
+            no_link += 1
+            continue
+        poc = poc_by_link.get(_norm_link(link))
+        if not poc:
+            unmatched.append(link)
+            continue
+        matched += 1
+        for col in metric_cols:
+            i = idx[col]
+            val = raw[i].strip() if i < len(raw) else ""
+            if not val:
+                continue
+            ok, parsed = validate_import_value(col, val)
+            if not ok:
+                parse_errors.append({"link": link, "column": col, "value": val})
+                continue
+            # would we fill or is the POC cell already populated (never overwrite)?
+            if col in poc_cols and str(poc.get(col, "")).strip():
+                already[col] = already.get(col, 0) + 1
+            else:
+                would_fill[col] = would_fill.get(col, 0) + 1
+    return {"ok": True, "empty": False, "matched": matched, "unmatched": unmatched,
+            "no_link": no_link, "would_fill": would_fill, "already_populated": already,
+            "parse_errors": parse_errors,
+            "poc_missing_columns": [c for c in metric_cols if c not in poc_cols]}
+
+
+def render_import_dry_run(rep: dict) -> str:
+    if not rep.get("ok"):
+        return f"import-social-metrics --dry-run: {rep.get('error')}. Nothing written."
+    if rep.get("empty"):
+        return (f"import-social-metrics --dry-run: {STAGING_TAB} has only a header (no rows to "
+                "import). Nothing written.")
+    lines = ["import-social-metrics --dry-run (NO WRITES)",
+             f"  Matched to POC by LINK: {rep['matched']}",
+             f"  Unmatched links (skipped): {len(rep['unmatched'])}"]
+    for u in rep["unmatched"][:10]:
+        lines.append(f"    - {u}")
+    if len(rep["unmatched"]) > 10:
+        lines.append(f"    … and {len(rep['unmatched']) - 10} more")
+    if rep["no_link"]:
+        lines.append(f"  Rows with no LINK (skipped): {rep['no_link']}")
+    lines.append("  Fields that WOULD be filled (matched row, POC cell empty):")
+    for col, n in sorted(rep["would_fill"].items()):
+        note = "  [POC column not added yet]" if col in rep.get("poc_missing_columns", []) else ""
+        lines.append(f"    - {col}: {n}{note}")
+    if not rep["would_fill"]:
+        lines.append("    (none)")
+    if rep["already_populated"]:
+        lines.append("  Already-populated POC cells (would NOT overwrite):")
+        for col, n in sorted(rep["already_populated"].items()):
+            lines.append(f"    - {col}: {n}")
+    if rep["parse_errors"]:
+        lines.append(f"  Parse errors ({len(rep['parse_errors'])}):")
+        for e in rep["parse_errors"][:10]:
+            lines.append(f"    - {e['link']} [{e['column']}]: {e['value']}")
+    lines.append("")
+    lines.append("Dry-run only: nothing was written to the Sheet, Notion, or any row. "
+                 "(No non-dry-run mode exists.)")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — duration-bucket audit (read-only, from Content audit + PERFORMANCE)
+# ---------------------------------------------------------------------------
+def audit_duration_buckets(rows: Optional[list[dict]] = None,
+                           columns: Optional[list[str]] = None,
+                           audit_buckets: Optional[dict] = None) -> dict:
+    """Read-only: join the Content audit coarse video-length buckets to POC rows
+    and report the bucket distribution across Great/Good/Ok/Underdog and the
+    best-performing bucket by Great-rate. Caveat: bucketed, not exact seconds."""
+    if rows is None or columns is None:
+        rows, columns, err = _internal_sheet()
+    else:
+        err = ""
+    if err:
+        return {"ok": False, "error": err}
+    by_link = {str(r.get("LINK", "")).strip(): r for r in rows if str(r.get("LINK", "")).strip()}
+    if audit_buckets is None:
+        audit_buckets = content_audit_duration_buckets(set(by_link))
+    dist: dict[str, dict] = {}
+    matched = 0
+    for link, bucket in (audit_buckets or {}).items():
+        r = by_link.get(link)
+        if not r:
+            continue
+        matched += 1
+        label = str(r.get("PERFORMANCE", "")).strip().title()
+        d = dist.setdefault(bucket, {"Great": 0, "Good": 0, "Ok": 0, "Underdog": 0, "total": 0})
+        d["total"] += 1
+        if label in d:
+            d[label] += 1
+    reliable = [(b, d) for b, d in dist.items() if d["total"] >= 2]
+    best = max(reliable, key=lambda kv: kv[1]["Great"] / kv[1]["total"]) if reliable else None
+    return {"ok": True, "rows_with_bucket": matched, "total_rows": len(by_link),
+            "distribution": dist,
+            "best_bucket": best[0] if best else None,
+            "best_great_rate": round(100 * best[1]["Great"] / best[1]["total"]) if best else None,
+            "thin": not reliable}
+
+
+def render_duration_bucket_audit(a: dict) -> str:
+    if not a.get("ok"):
+        return f"audit-duration-buckets: {a.get('error')}. Nothing written."
+    lines = ["Duration bucket audit (read-only — from Content audit + PERFORMANCE label)",
+             f"  POC rows with a Content audit duration bucket: {a['rows_with_bucket']}/{a['total_rows']}"]
+    if not a["distribution"]:
+        lines.append("  No Content audit duration buckets matched POC reels (tab empty/unreachable).")
+        return "\n".join(lines)
+    lines.append("  Distribution (Great / Good / Ok / Underdog / total):")
+    for b, d in sorted(a["distribution"].items(), key=lambda kv: -kv[1]["total"]):
+        lines.append(f"    {b:12} {d['Great']} / {d['Good']} / {d['Ok']} / {d['Underdog']} / {d['total']}")
+    if a["best_bucket"]:
+        lines.append(f"  Highest-performing bucket (by Great-rate, n>=2): {a['best_bucket']} "
+                     f"({a['best_great_rate']}% Great)")
+    else:
+        lines.append("  Best bucket: too little data (no bucket has >=2 reels).")
+    lines.append("  Caveat: these are coarse buckets, NOT exact seconds. Add DURATION_SECONDS "
+                 "for exact analysis.")
+    return "\n".join(lines)

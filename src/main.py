@@ -760,6 +760,49 @@ def cmd_backfill_duration_metadata(dry_run: bool, probe: bool = False) -> int:
     return 0
 
 
+def cmd_preflight_social_schema() -> int:
+    """Read-only: print the POC header structure + the exact metric-column
+    insertion plan (between Status and HOOK, row 1 blank). Writes nothing."""
+    import social_analytics
+    plan = social_analytics.insertion_plan(include_optional=True)
+    print(social_analytics.render_insertion_plan(plan))
+    return 0
+
+
+def cmd_setup_metrics_staging() -> int:
+    """WRITE (operator-invoked): create the SOCIAL_METRICS_IMPORT_STAGING tab
+    (header only) if absent. Non-destructive — a new tab; never touches POC,
+    taxonomy, or analyzed rows."""
+    import social_analytics
+    r = social_analytics.ensure_staging_tab()
+    if r.get("created"):
+        print(f"Created tab '{social_analytics.STAGING_TAB}' with "
+              f"{len(r['columns'])} columns.")
+    else:
+        print(f"Staging tab not created: {r.get('reason')}.")
+    return 0
+
+
+def cmd_import_social_metrics(dry_run: bool) -> int:
+    """DRY-RUN ONLY: match SOCIAL_METRICS_IMPORT_STAGING rows to POC by LINK and
+    report what an import would do. No write mode exists yet."""
+    import social_analytics
+    if not dry_run:
+        print("import-social-metrics supports --dry-run only (no write mode yet). "
+              "Re-run with --dry-run.")
+        return 1
+    print(social_analytics.render_import_dry_run(social_analytics.import_social_metrics_dry_run()))
+    return 0
+
+
+def cmd_audit_duration_buckets() -> int:
+    """Read-only: report Content audit duration-bucket coverage + which bucket
+    performs best by PERFORMANCE label. Writes nothing."""
+    import social_analytics
+    print(social_analytics.render_duration_bucket_audit(social_analytics.audit_duration_buckets()))
+    return 0
+
+
 def cmd_audit_evidence_gaps() -> int:
     """Audit internal Parents/youth evidence and write the EVIDENCE_GAPS artifact.
     Read-only w.r.t. internal Storelli rows, profiles, and Notion; never creates a
@@ -925,7 +968,9 @@ def main() -> int:
                                  "refine-ideas", "rate-calendar-ideas",
                                  "build-semantic-connections", "evaluate-notion-idea",
                                  "audit-evidence-gaps", "audit-social-metrics",
-                                 "backfill-duration-metadata"])
+                                 "backfill-duration-metadata", "preflight-social-schema",
+                                 "setup-metrics-staging", "import-social-metrics",
+                                 "audit-duration-buckets"])
     parser.add_argument("--url", type=str, default=None, metavar="URL",
                         help="Notion page URL for evaluate-notion-idea")
     parser.add_argument("--dry-run", action="store_true",
@@ -1007,6 +1052,18 @@ def main() -> int:
 
         elif args.command == "backfill-duration-metadata":
             return cmd_backfill_duration_metadata(args.dry_run, args.probe)
+
+        elif args.command == "preflight-social-schema":
+            return cmd_preflight_social_schema()
+
+        elif args.command == "setup-metrics-staging":
+            return cmd_setup_metrics_staging()
+
+        elif args.command == "import-social-metrics":
+            return cmd_import_social_metrics(args.dry_run)
+
+        elif args.command == "audit-duration-buckets":
+            return cmd_audit_duration_buckets()
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()
