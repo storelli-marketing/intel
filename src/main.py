@@ -805,6 +805,17 @@ def cmd_insert_social_schema(apply: bool, include_optional: bool = True) -> int:
     return 0 if r.get("ok") else 1
 
 
+def cmd_pull_instagram_metrics(apply: bool) -> int:
+    """Automatic IG metrics ingestion for Storelli-owned media. DRY-RUN by
+    default (reports what would fill; writes nothing). --apply fills empty metric
+    cells only, gated on the dry-run safety verdict. Reports missing config
+    clearly and points to the staging fallback."""
+    import social_metrics_ingest as smi
+    rep = smi.pull_instagram_metrics(dry_run=not apply, apply=apply)
+    print(smi.render_pull_report(rep))
+    return 0 if rep.get("ok") else 1
+
+
 def cmd_audit_duration_buckets() -> int:
     """Read-only: report Content audit duration-bucket coverage + which bucket
     performs best by PERFORMANCE label. Writes nothing."""
@@ -980,7 +991,8 @@ def main() -> int:
                                  "audit-evidence-gaps", "audit-social-metrics",
                                  "backfill-duration-metadata", "preflight-social-schema",
                                  "setup-metrics-staging", "import-social-metrics",
-                                 "audit-duration-buckets", "insert-social-schema"])
+                                 "audit-duration-buckets", "insert-social-schema",
+                                 "pull-instagram-metrics"])
     parser.add_argument("--url", type=str, default=None, metavar="URL",
                         help="Notion page URL for evaluate-notion-idea")
     parser.add_argument("--dry-run", action="store_true",
@@ -1082,6 +1094,9 @@ def main() -> int:
 
         elif args.command == "insert-social-schema":
             return cmd_insert_social_schema(args.apply, include_optional=not args.no_optional)
+
+        elif args.command == "pull-instagram-metrics":
+            return cmd_pull_instagram_metrics(args.apply)
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

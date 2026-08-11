@@ -181,6 +181,8 @@
         "_require",
         "clean_notion_id",
         "_int_env",
+        "instagram_configured",
+        "instagram_missing_vars",
         "require_sheets",
         "require_gemini",
         "require_apify",
@@ -497,6 +499,17 @@
         "InspirationSheets"
       ]
     },
+    "src/instagram_insights_client.py": {
+      "functions": [
+        "_flatten_insight_values",
+        "_parse_demographic_breakdown",
+        "normalize_media"
+      ],
+      "classes": [
+        "InstagramConfigError",
+        "InstagramInsightsClient"
+      ]
+    },
     "src/interpretation.py": {
       "functions": [
         "_idea_confidence",
@@ -560,6 +573,7 @@
         "cmd_setup_metrics_staging",
         "cmd_import_social_metrics",
         "cmd_insert_social_schema",
+        "cmd_pull_instagram_metrics",
         "cmd_audit_duration_buckets",
         "cmd_audit_evidence_gaps",
         "cmd_notion_sync",
@@ -847,6 +861,8 @@
         "_render_import_howto",
         "_render_bucket_usability",
         "_render_best_bucket",
+        "_render_ig_ingest_status",
+        "_render_demographics_missing",
         "answer_social_analytics_question",
         "answer_creative_test_plan",
         "audit_social_metrics_report",
@@ -915,6 +931,24 @@
         "_finish_conversational",
         "_deterministic_conversation_answer",
         "answer_conversation"
+      ],
+      "classes": []
+    },
+    "src/social_metrics_ingest.py": {
+      "functions": [
+        "extract_instagram_shortcode",
+        "canonicalize_instagram_url",
+        "_poc_key",
+        "map_media_to_poc_rows",
+        "_num_str",
+        "build_metric_values",
+        "plan_fills",
+        "_load_poc",
+        "_safety",
+        "pull_instagram_metrics",
+        "_apply_fills",
+        "_write_account_insights",
+        "render_pull_report"
       ],
       "classes": []
     },
@@ -1067,6 +1101,7 @@
         "_do_notion_sync",
         "_do_slack",
         "_do_correlations",
+        "_do_pull_instagram_metrics",
         "_do_generate_social_ideas",
         "_do_synthesize",
         "_guarded",
@@ -1089,6 +1124,8 @@
         "run_rate_calendar_ideas",
         "run_build_semantic_connections",
         "run_evaluate_notion_idea",
+        "run_pull_ig_dry_run",
+        "run_pull_ig_apply",
         "run_notion_sync",
         "run_slack_report",
         "run_generate_social_ideas",
@@ -1197,6 +1234,14 @@
     },
     {
       "method": "POST",
+      "path": "/run/pull-instagram-metrics-dry-run"
+    },
+    {
+      "method": "POST",
+      "path": "/run/pull-instagram-metrics-apply"
+    },
+    {
+      "method": "POST",
       "path": "/run/notion-sync"
     },
     {
@@ -1248,7 +1293,8 @@
     "setup-metrics-staging",
     "import-social-metrics",
     "audit-duration-buckets",
-    "insert-social-schema"
+    "insert-social-schema",
+    "pull-instagram-metrics"
   ],
   "env_vars": [
     "APIFY_INSTAGRAM_ACTOR_ID",
@@ -1265,7 +1311,14 @@
     "GOOGLE_SERVICE_ACCOUNT_JSON_PATH",
     "GOOGLE_SHEET_ID",
     "GOOGLE_WORKSHEET_NAME",
+    "IG_USER_ID",
     "INSPIRATION_PROVIDER",
+    "INSTAGRAM_ACCESS_TOKEN",
+    "INSTAGRAM_BUSINESS_ACCOUNT_ID",
+    "META_ACCESS_TOKEN",
+    "META_API_VERSION",
+    "META_APP_ID",
+    "META_APP_SECRET",
     "NOTION_API_KEY",
     "NOTION_DASHBOARD_URL",
     "NOTION_PARENT_PAGE_ID",

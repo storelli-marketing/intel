@@ -218,6 +218,42 @@ GITHUB_REPO = os.getenv("GITHUB_REPO", "").strip()  # "owner/repo"
 GITHUB_DISPATCH_EVENT = os.getenv("GITHUB_DISPATCH_EVENT", "storelli_build_request").strip()
 
 
+# Instagram Insights — automatic owned-media metrics ingestion (PRIMARY path;
+# the manual SOCIAL_METRICS_IMPORT_STAGING paste is a FALLBACK only). Pulls
+# metrics ONLY for Storelli-owned Instagram media via the official Meta Graph
+# API — never scrapes, never uses cookies, never pulls competitor/inspiration
+# media. Required permissions on the token: instagram_manage_insights +
+# instagram_basic (and pages_read_engagement if using the Page-linked login
+# flow). Missing config fails cleanly with IG_INGEST_NOT_CONFIGURED_MSG.
+INSTAGRAM_ACCESS_TOKEN = (os.getenv("INSTAGRAM_ACCESS_TOKEN", "").strip()
+                          or os.getenv("META_ACCESS_TOKEN", "").strip())
+INSTAGRAM_BUSINESS_ACCOUNT_ID = (os.getenv("INSTAGRAM_BUSINESS_ACCOUNT_ID", "").strip()
+                                 or os.getenv("IG_USER_ID", "").strip())
+META_API_VERSION = os.getenv("META_API_VERSION", "").strip() or "v21.0"
+# Optional — only needed if token refresh/debug is wired up later.
+META_APP_ID = os.getenv("META_APP_ID", "").strip()
+META_APP_SECRET = os.getenv("META_APP_SECRET", "").strip()
+
+IG_INGEST_NOT_CONFIGURED_MSG = (
+    "Automatic IG metrics ingestion is not configured. Add Storelli Instagram API "
+    "credentials or use staging import fallback.")
+
+
+def instagram_configured() -> bool:
+    """True when a token + IG business account id are both present."""
+    return bool(INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_BUSINESS_ACCOUNT_ID)
+
+
+def instagram_missing_vars() -> list:
+    """The env vars still needed for automatic IG ingestion (empty when ready)."""
+    miss = []
+    if not INSTAGRAM_ACCESS_TOKEN:
+        miss.append("INSTAGRAM_ACCESS_TOKEN (or META_ACCESS_TOKEN)")
+    if not INSTAGRAM_BUSINESS_ACCOUNT_ID:
+        miss.append("INSTAGRAM_BUSINESS_ACCOUNT_ID (or IG_USER_ID)")
+    return miss
+
+
 def require_sheets() -> None:
     _require("GOOGLE_SHEET_ID")
     _require("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")

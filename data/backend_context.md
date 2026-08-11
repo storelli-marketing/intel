@@ -109,6 +109,23 @@ imports an unmatched link. Slack answers: "what metrics are missing?", "how do I
 import IG metrics?", "can we use the Content audit duration buckets?", "what
 duration bucket performs best?" (all read-only, decision-traced).
 
+**Automatic Instagram metrics ingestion** (PRIMARY path; manual staging is a
+fallback). `src/instagram_insights_client.py` calls the official Meta Graph API
+for the Storelli-OWNED IG business account only — never scrapes, never uses
+cookies, never pulls competitor/inspiration media. `src/social_metrics_ingest.py`
+maps owned media to POC rows by canonical LINK / Instagram shortcode ONLY (never
+row order, never fuzzy), then `pull-instagram-metrics --dry-run` reports
+media/matched/would-fill/already-populated/unavailable + a SAFE/NOT SAFE verdict
+and writes nothing; `--apply` is gated on that verdict and fills EMPTY metric
+cells only (never overwrites; only the metric columns; never taxonomy/Product/
+ICP/Status; snapshots + verifies). Unavailable API metrics are skipped, never
+fatal; nothing is fabricated. Account-level demographics go to a separate
+`INSTAGRAM_ACCOUNT_INSIGHTS` tab and are NEVER written as per-post demographics.
+Config: INSTAGRAM_ACCESS_TOKEN (or META_ACCESS_TOKEN) + INSTAGRAM_BUSINESS_ACCOUNT_ID
+(or IG_USER_ID), META_API_VERSION (default v21.0); missing config fails cleanly.
+Dashboard: "Pull Instagram Metrics — Dry Run" / "— Apply (gated, RUN_SECRET)".
+Slack answers config status only and NEVER applies a write.
+
 **Analysis pipeline path** (CLI only, never Slack): `python src/main.py
 analyze` / `analyze-all` → `src/sheets_client.py` reads eligible rows →
 `src/analyzer.py` + `src/gemini_client.py` download the reel (yt-dlp),

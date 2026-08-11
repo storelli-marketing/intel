@@ -427,6 +427,32 @@ def _do_correlations() -> None:
         _fail(str(e))
 
 
+def _do_pull_instagram_metrics(apply: bool) -> None:
+    """Automatic IG metrics ingestion (owned media only). Dry-run reports what
+    would fill and writes nothing; apply is gated on the dry-run safety verdict
+    and fills empty metric cells only (never overwrites, never touches taxonomy/
+    Product/ICP/Status). Missing config is reported cleanly, never crashes."""
+    import social_metrics_ingest as smi
+    try:
+        _begin("pull-instagram-metrics-apply" if apply else "pull-instagram-metrics-dry-run")
+        rep = smi.pull_instagram_metrics(dry_run=not apply, apply=apply)
+        summary = {
+            "RUN_TYPE": "InstagramMetrics" + ("Apply" if apply else "DryRun"),
+            "configured": rep.get("configured"),
+            "media_fetched": rep.get("media_fetched"),
+            "matched_rows": rep.get("matched_rows"),
+            "cells_to_fill": rep.get("cells_to_fill"),
+            "cells_written": rep.get("cells_written"),
+            "safe": rep.get("safe"),
+            "error": rep.get("error", ""),
+        }
+        with _LOCK:
+            STATE["inspiration"] = summary
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
 def _do_generate_social_ideas() -> None:
     """Generate grounded social ideas from the current context and persist
     them (Notion if configured, else data/generated_social_ideas.jsonl).
@@ -642,6 +668,23 @@ def run_evaluate_notion_idea(req: EvaluateNotionReq, background: BackgroundTasks
     if not (req.url or "").strip():
         raise HTTPException(400, "url is required")
     return _guarded(lambda: _do_evaluate_notion_idea(req.url.strip(), req.dry_run), background)
+
+
+@app.post("/run/pull-instagram-metrics-dry-run", status_code=202)
+def run_pull_ig_dry_run(background: BackgroundTasks,
+                        x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(lambda: _do_pull_instagram_metrics(apply=False), background)
+
+
+@app.post("/run/pull-instagram-metrics-apply", status_code=202)
+def run_pull_ig_apply(background: BackgroundTasks,
+                      x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    # Gated by RUN_SECRET here AND by the dry-run safety verdict inside
+    # pull_instagram_metrics(apply=True), which refuses when NOT SAFE and only
+    # ever fills empty metric cells.
+    _check_secret(x_run_secret)
+    return _guarded(lambda: _do_pull_instagram_metrics(apply=True), background)
 
 
 @app.post("/run/notion-sync", status_code=202)
@@ -1008,6 +1051,13 @@ _HTML = """<!doctype html>
             style="width:100%;height:52px;margin-top:12px">Analyze Inspiration Content</button>
     <button class="btn-secondary" id="btnScanInsp" onclick="run('scan-inspiration')"
             style="width:100%;height:52px;margin-top:12px">Scan Monitored Channels</button>
+    <button class="btn-secondary" id="btnIgDry" onclick="run('pull-instagram-metrics-dry-run')"
+            style="width:100%;height:52px;margin-top:12px">Pull Instagram Metrics — Dry Run</button>
+    <button class="btn-secondary" id="btnIgApply" onclick="run('pull-instagram-metrics-apply')"
+            style="width:100%;height:52px;margin-top:12px;border-color:rgba(228,240,0,.25);color:var(--gray)">Pull Instagram Metrics — Apply (gated)</button>
+    <div class="hint" style="margin-top:6px">Automatic IG ingestion pulls <b>Storelli-owned</b> media metrics only.
+      Dry Run writes nothing; Apply requires the run secret and only fills empty metric cells (never overwrites,
+      never touches taxonomy). Not configured until Instagram API credentials are set.</div>
     <div class="meta" id="inspSummary"></div>
     <div class="hint">Paste promising reel/post URLs into <b>INSPIRATION_URL_QUEUE</b> and click
       <b>Process Inspiration URL Queue</b> — each URL's metadata is fetched via yt-dlp + cookies
@@ -1058,7 +1108,7 @@ async function poll(){
     const j = await (await fetch('/status')).json();
     const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
     const busy = (j.status==='queued'||j.status==='running');
-    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles','btnMatch','btnQuality','btnIdeas','btnRefine','btnCalRate','btnSemantic'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
+    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles','btnMatch','btnQuality','btnIdeas','btnRefine','btnCalRate','btnSemantic','btnIgDry','btnIgApply'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
     const s=j.stats||{};
     const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0)+(s.skipped_no_link||0);
     $('s_scanned').textContent = s.scanned ?? '–';
@@ -1156,7 +1206,9 @@ async function run(action){
                  'generate-ideas':'/run/generate-ideas',
                  'refine-ideas':'/run/refine-ideas',
                  'rate-calendar-ideas':'/run/rate-calendar-ideas',
-                 'build-semantic-connections':'/run/build-semantic-connections'};
+                 'build-semantic-connections':'/run/build-semantic-connections',
+                 'pull-instagram-metrics-dry-run':'/run/pull-instagram-metrics-dry-run',
+                 'pull-instagram-metrics-apply':'/run/pull-instagram-metrics-apply'};
   const path = paths[action];
   const body = (action==='social' || action==='analyze-all')
     ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';

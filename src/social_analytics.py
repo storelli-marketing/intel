@@ -1182,6 +1182,17 @@ _BUCKET_USE_KW = ("use the content audit", "content audit duration bucket", "con
                   "use content audit", "can we use the content audit", "content-audit bucket")
 _BUCKET_PERF_KW = ("duration bucket performs", "bucket performs best", "best duration bucket",
                    "which duration bucket", "what duration bucket", "best performing bucket")
+# Automatic Instagram ingestion Slack asks (status only — Slack never applies).
+_IG_CONFIG_KW = ("instagram metrics configured", "ig metrics configured", "is instagram configured",
+                 "are ig metrics configured", "instagram api configured", "ig api configured",
+                 "are instagram metrics set up")
+_IG_PULL_KW = ("pull instagram metrics", "pull ig metrics", "refresh ig metrics",
+               "refresh instagram metrics", "update the metrics automatically",
+               "update metrics automatically", "automatically pull", "auto-pull",
+               "can you update the metrics", "fetch instagram metrics", "sync instagram metrics")
+_DEMO_MISSING_KW = ("why are demographics missing", "why is demographic data missing",
+                    "why no demographics", "demographics missing", "why are the demographics",
+                    "why don't we have demographics")
 
 _TESTPLAN_STRONG = ("test plan", "creative test plan", "testing plan", "ideas to test",
                     "ideas we should test", "ideas we can test", "test ideas", "ideas to run as tests")
@@ -1209,6 +1220,8 @@ def is_social_analytics_query(text: str, context: Optional[list] = None) -> bool
     if is_schema_plan_query(text, context):
         return True
     if any(k in t for k in _MISSING_METRICS_KW + _IMPORT_KW + _BUCKET_USE_KW + _BUCKET_PERF_KW):
+        return True
+    if any(k in t for k in _IG_CONFIG_KW + _IG_PULL_KW + _DEMO_MISSING_KW):
         return True
     if any(k in t for k in _TRIAL_KW):
         return True
@@ -1376,13 +1389,68 @@ def _render_best_bucket(text: str) -> str:
                      move="add DURATION_SECONDS for an exact median, then re-check.", mode=mode)
 
 
+def _render_ig_ingest_status(text: str) -> str:
+    """Config/status answer for automatic IG ingestion. Slack NEVER applies a
+    write — it reports status and points at the exact CLI/dashboard action."""
+    mode = st.detect_response_mode(text)
+    if config.instagram_configured():
+        steps = [
+            dt.step("Status", "Instagram API configured", [], "topic", "Medium"),
+            dt.step("Scope", "Storelli-owned media only (official API)", [], "internal", "Medium"),
+            dt.step("Safety", "dry-run first; apply is gated + fills empty cells only",
+                    [], "risk", "Medium"),
+        ]
+        return dt.render(
+            "Instagram metrics ingestion is configured — I can pull owned-media metrics.",
+            steps,
+            move="run `pull-instagram-metrics --dry-run` (CLI or the dashboard button) to preview, "
+                 "then `--apply` when it's SAFE. I never auto-apply from Slack.", mode=mode)
+    steps = [
+        dt.step("Status", "Instagram API not configured", [], "risk", "Medium"),
+        dt.step("Missing", ", ".join(config.instagram_missing_vars()), [], "risk", "Medium"),
+        dt.step("Permissions", "instagram_manage_insights + instagram_basic", [], "topic", "Thin"),
+    ]
+    return dt.render(
+        config.IG_INGEST_NOT_CONFIGURED_MSG,
+        steps,
+        move="add the Storelli Instagram API credentials (or paste an export into "
+             "SOCIAL_METRICS_IMPORT_STAGING as a fallback). I never apply writes from Slack.",
+        mode=mode)
+
+
+def _render_demographics_missing(text: str) -> str:
+    """Honest 'why are demographics missing' explanation — account-level only."""
+    mode = st.detect_response_mode(text)
+    configured = config.instagram_configured()
+    steps = [
+        dt.step("Why", "Instagram exposes demographics at the ACCOUNT level, not per reel",
+                [], "risk", "Medium"),
+        dt.step("Per-reel", "no per-reel demographic source exists", [], "inference", "Thin"),
+        dt.step("Config", "IG API connected" if configured else "IG API not connected yet",
+                [], "topic", "Medium"),
+    ]
+    lead = ("Demographics are missing because Instagram only gives audience splits at the "
+            "account level, never per individual reel.")
+    move = ("account-level splits go to the INSTAGRAM_ACCOUNT_INSIGHTS tab; per-reel demographics "
+            "aren't available, so I won't fake them."
+            if configured else
+            "connect the IG API for account-level demographics (stored separately, not per-reel) — "
+            "I won't fabricate per-reel splits.")
+    return dt.render(lead, steps, move=move, mode=mode)
+
+
 def answer_social_analytics_question(text: str, context: Optional[list] = None) -> Optional[str]:
-    """Slack entrypoint for analytics questions (schema plan, import/staging,
-    duration buckets, trial/standard, demographics, duration, metrics audit).
-    Returns None if it doesn't own it."""
+    """Slack entrypoint for analytics questions (IG ingest status, schema plan,
+    import/staging, duration buckets, trial/standard, demographics, duration,
+    metrics audit). Returns None if it doesn't own it."""
     t = _lower(text)
     try:
-        # Schema-plan asks first — "what do we need to track to answer X" mentions
+        # Automatic-ingestion status + demographics-why first (never applies).
+        if any(k in t for k in _IG_CONFIG_KW + _IG_PULL_KW):
+            return _render_ig_ingest_status(text)
+        if any(k in t for k in _DEMO_MISSING_KW):
+            return _render_demographics_missing(text)
+        # Schema-plan asks next — "what do we need to track to answer X" mentions
         # duration/demographics but wants the columns-to-add answer, not the data.
         if is_schema_plan_query(text, context):
             return render_schema_plan(text, context)
