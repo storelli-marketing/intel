@@ -216,9 +216,11 @@ class TestTrialVsStandard(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 class TestDuration(unittest.TestCase):
     def test_missing_duration_is_explicit_with_backfill(self):
-        d = sa.analyze_winning_reel_duration(_ROWS_BASE, _COLS_BASE)
+        # inject empty buckets so no live Content audit read is attempted
+        d = sa.analyze_winning_reel_duration(_ROWS_BASE, _COLS_BASE, audit_buckets={})
         self.assertFalse(d["duration_available"])
-        self.assertEqual(d["backfill_field"], "duration_seconds")
+        self.assertEqual(d["source"], "none")
+        self.assertEqual(d["backfill_field"], "DURATION_SECONDS")
         self.assertIn("yt-dlp", d["recommended_source"])
         out = sa._render_duration("how many seconds long are our highest-performing reels?", d)
         low = out.lower()
@@ -342,6 +344,195 @@ class TestReadOnly(unittest.TestCase):
             self.assertGreater(plan["returned"], 0)
         finally:
             inspiration_sheets.InspirationSheets = real
+
+
+# --------------------------------------------------------------------------- #
+# Hardening patch: aliases, content-audit fallback, demographics, schema, CLI
+# --------------------------------------------------------------------------- #
+class _GlobalPatchCase(unittest.TestCase):
+    """Restores the module's two network indirections after tests that patch them."""
+
+    def setUp(self):
+        self._orig_internal = sa._internal_sheet
+        self._orig_named_ws = sa._read_named_worksheet
+
+    def tearDown(self):
+        sa._internal_sheet = self._orig_internal
+        sa._read_named_worksheet = self._orig_named_ws
+
+
+class TestAliasPatch(unittest.TestCase):
+    def test_recommended_column_names_are_recognized(self):
+        cols = ["LINK", "PERFORMANCE", "DURATION_SECONDS", "FOLLOWERS_AT_POST", "AGE_SPLIT",
+                "GENDER_SPLIT", "LOCATION_SPLIT", "FOLLOWER_NONFOLLOWER_SPLIT", "REACH",
+                "IMPRESSIONS", "PROFILE_VISITS", "WEBSITE_CLICKS", "PRODUCT_CLICKS",
+                "TRIAL_CLICKS", "QUALIFIED_DMS", "POST_DATE"]
+        av = sa.detect_available_metrics(cols, [])
+        expect = {"duration": "DURATION_SECONDS", "followers": "FOLLOWERS_AT_POST",
+                  "demo_age": "AGE_SPLIT", "demo_gender": "GENDER_SPLIT",
+                  "demo_location": "LOCATION_SPLIT",
+                  "demo_follower_split": "FOLLOWER_NONFOLLOWER_SPLIT", "reach": "REACH",
+                  "impressions": "IMPRESSIONS", "profile_visits": "PROFILE_VISITS",
+                  "website_clicks": "WEBSITE_CLICKS", "product_clicks": "PRODUCT_CLICKS",
+                  "trial_clicks": "TRIAL_CLICKS", "qualified_dms": "QUALIFIED_DMS",
+                  "date": "POST_DATE"}
+        for field, col in expect.items():
+            self.assertTrue(av[field]["available"], f"{field} not recognized")
+            self.assertEqual(av[field]["column"], col)
+
+    def test_backward_compatible_short_aliases_still_work(self):
+        av = sa.detect_available_metrics(
+            ["duration", "followers", "age", "gender", "location", "follower split"], [])
+        for field in ("duration", "followers", "demo_age", "demo_gender", "demo_location",
+                      "demo_follower_split"):
+            self.assertTrue(av[field]["available"], f"{field} short alias broke")
+
+
+class TestAuditReadOnly(_GlobalPatchCase):
+    def test_audit_reports_coverage_and_comparison_capability(self):
+        a = sa.audit_metrics_schema(rows=_ROWS_BASE, columns=_COLS_BASE)
+        self.assertIn("coverage", a)
+        self.assertEqual(a["coverage"]["views"], 100)
+        self.assertFalse(a["demographic_comparison_possible"])
+        self.assertIn("AGE_SPLIT", a["missing_demographics"])
+        self.assertIn("DURATION_SECONDS", a["recommended_missing"])
+
+    def test_audit_report_is_read_only(self):
+        rows = copy.deepcopy(_ROWS_BASE)
+        snap = copy.deepcopy(rows)
+        sa._internal_sheet = lambda: ([dict(r) for r in rows], list(_COLS_BASE), "")
+        sa._read_named_worksheet = lambda title: None
+        try:
+            report = sa.audit_social_metrics_report()
+        finally:
+            pass
+        self.assertIn("read-only", report.lower())
+        self.assertIn("nothing written", report.lower())
+        self.assertEqual(rows, snap, "audit must not mutate rows")
+
+
+class TestContentAuditFallback(_GlobalPatchCase):
+    def _rows(self):
+        return [_row(3, "Great", hook="Curiosity Gap", fmt="Demo",
+                     **{"Reel Type": "Trial", "Views": "20000"}),
+                _row(5, "Good", hook="Curiosity Gap", fmt="Demo",
+                     **{"Reel Type": "Trial", "Views": "9000"})]
+
+    def test_exact_duration_preferred_over_buckets(self):
+        cols = _COLS_BASE + ["Duration"]
+        rows = [_row(3, "Great", **{"Reel Type": "Trial", "Views": "20000", "Duration": "8"})]
+        d = sa.analyze_winning_reel_duration(
+            rows, cols, audit_buckets={"https://www.instagram.com/storellisoccer/reel/3/": "> 60 sec"})
+        self.assertEqual(d["source"], "exact")     # exact wins even when a bucket exists
+
+    def test_content_audit_bucket_fallback(self):
+        rows = self._rows()
+        buckets = {"https://www.instagram.com/storellisoccer/reel/3/": "10-22 sec",
+                   "https://www.instagram.com/storellisoccer/reel/5/": "10-22 sec"}
+        d = sa.analyze_winning_reel_duration(rows, _COLS_BASE, audit_buckets=buckets)
+        self.assertEqual(d["source"], "content_audit_bucket")
+        self.assertEqual(d["dominant_bucket"], "10-22 sec")
+        out = sa._render_duration("how long are our best reels?", d)
+        low = out.lower()
+        self.assertIn("exact duration seconds yet", low)
+        self.assertTrue("bucket" in low)
+        self.assertIn("not exact seconds", low)        # clearly labelled proxy
+
+    def test_missing_when_no_buckets(self):
+        d = sa.analyze_winning_reel_duration(self._rows(), _COLS_BASE, audit_buckets={})
+        self.assertEqual(d["source"], "none")
+
+    def test_content_audit_reader_parses_buckets(self):
+        sa._read_named_worksheet = lambda title: [
+            ["ID", "LINK", "overall_videoLength_< 10 sec", "overall_videoLength_10-22 sec"],
+            ["1", "https://ig/a", "0", "1"], ["2", "https://ig/b", "1", "0"]]
+        try:
+            got = sa.content_audit_duration_buckets({"https://ig/a", "https://ig/b"})
+        finally:
+            pass
+        self.assertEqual(got, {"https://ig/a": "10-22 sec", "https://ig/b": "< 10 sec"})
+
+
+class TestDemographicParser(unittest.TestCase):
+    def test_parse_split_variants(self):
+        self.assertEqual(sa._parse_split("F 58% / M 42%"), {"F": 58.0, "M": 42.0})
+        self.assertEqual(sa._parse_split("18-24 34% / 25-34 41%"), {"18-24": 34.0, "25-34": 41.0})
+        self.assertEqual(sa._parse_split("US 60% / UK 12%"), {"US": 60.0, "UK": 12.0})
+        self.assertEqual(sa._parse_split(""), {})
+        self.assertEqual(sa._parse_split("no percentages here"), {})
+
+    def test_demographic_comparison_when_columns_exist(self):
+        cols = _COLS_BASE + ["GENDER_SPLIT"]
+        rows = [_row(3, "Great", hook="Curiosity Gap", fmt="Demo",
+                     **{"Reel Type": "Trial", "Views": "20000", "GENDER_SPLIT": "F 60% / M 40%"}),
+                _row(6, "Ok", hook="Authority", fmt="Tutorial",
+                     **{"Reel Type": "Standard", "Views": "6000", "GENDER_SPLIT": "F 45% / M 55%"})]
+        cmp = sa.compare_trial_vs_standard(rows, cols)
+        self.assertTrue(cmp["demographic_comparison_possible"])
+        self.assertIn("demo_gender", cmp["demographics"])
+        self.assertEqual(cmp["demographics"]["demo_gender"]["trial"], {"F": 60.0, "M": 40.0})
+        out = sa._render_trial_vs_standard("trial vs standard demographic", cmp)
+        self.assertNotIn("aren't in the current data", out)   # it DID compare demographics
+        self.assertIn("Gender", out)
+
+    def test_missing_demographics_still_honest(self):
+        cmp = sa.compare_trial_vs_standard(_ROWS_BASE, _COLS_BASE)
+        self.assertFalse(cmp["demographic_comparison_possible"])
+        out = sa._render_trial_vs_standard("trial vs standard demographic", cmp)
+        low = out.lower()
+        self.assertIn("not demographic", low)
+        self.assertIn("AGE_SPLIT", out)                       # names the exact missing columns
+
+
+class TestSchemaPlan(unittest.TestCase):
+    def test_schema_plan_all_has_insertion_location(self):
+        out = sa.render_schema_plan("what fields do we need to add?")
+        self.assertIn("between `Status` and the first taxonomy category `HOOK`", out)
+        self.assertIn("row 1", out.lower())
+        self.assertIn("DURATION_SECONDS", out)
+        self.assertIn("AGE_SPLIT", out)
+
+    def test_schema_plan_demographics_needs_ig_insights(self):
+        out = sa.render_schema_plan("what do we need to track to answer demographics?")
+        self.assertIn("AGE_SPLIT", out)
+        self.assertIn("IG Insights", out)
+        self.assertIn("between `Status` and the first taxonomy category `HOOK`", out)
+
+    def test_schema_plan_duration_names_column_and_backfill(self):
+        out = sa.render_schema_plan("what do we need to track to answer reel duration?")
+        self.assertIn("DURATION_SECONDS", out)
+        self.assertIn("yt-dlp", out)
+
+    def test_schema_routing_precedence(self):
+        # a schema ask that mentions "duration" must route to schema, not the data answer
+        self.assertTrue(sa.is_schema_plan_query("what do we need to track to answer reel duration?"))
+        self.assertEqual(sa._schema_focus("what do we need to track to answer reel duration?"),
+                         "duration")
+        self.assertEqual(sa._schema_focus("what fields do we need for demographics?"), "demographics")
+
+
+class TestBackfillDryRun(_GlobalPatchCase):
+    def test_dry_run_lists_candidates_and_never_writes(self):
+        rows = copy.deepcopy(_ROWS_BASE)
+        snap = copy.deepcopy(rows)
+        sa._internal_sheet = lambda: ([dict(r) for r in rows], list(_COLS_BASE), "")
+        out = sa.backfill_duration_dry_run(probe=False)
+        self.assertIn("NO WRITES", out)
+        self.assertIn("could receive DURATION_SECONDS", out)
+        self.assertIn("nothing was written", out.lower())
+        self.assertEqual(rows, snap, "dry-run must not mutate rows")
+
+    def test_candidates_exclude_external_and_already_filled(self):
+        cols = _COLS_BASE + ["DURATION_SECONDS", "Source Type"]
+        rows = [_row(3, "Great", **{"Reel Type": "Trial", "Views": "1", "DURATION_SECONDS": "8"}),
+                _row(4, "Good", **{"Reel Type": "Trial", "Views": "1", "DURATION_SECONDS": ""}),
+                _row(9, "Great", **{"Reel Type": "Trial", "Views": "1", "Source Type": "External"})]
+        sa._internal_sheet = lambda: ([dict(r) for r in rows], list(cols), "")
+        info = sa.duration_backfill_candidates()
+        links = [c["link"] for c in info["candidates"]]
+        self.assertIn("https://www.instagram.com/storellisoccer/reel/4/", links)   # empty -> candidate
+        self.assertNotIn("https://www.instagram.com/storellisoccer/reel/3/", links)  # already filled
+        self.assertNotIn("https://www.instagram.com/storellisoccer/reel/9/", links)  # external
 
 
 if __name__ == "__main__":

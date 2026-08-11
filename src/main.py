@@ -737,6 +737,29 @@ def cmd_evaluate_notion_idea(url: str | None, dry_run: bool = False) -> int:
     return 0
 
 
+def cmd_audit_social_metrics() -> int:
+    """Read-only audit of which social metrics exist in the live POC sheet, with
+    fill coverage, trial/standard classifiability, demographic-comparison
+    capability, exact-duration presence, Content audit bucket fallback, and the
+    recommended columns to add. Writes nothing."""
+    import social_analytics
+    print(social_analytics.audit_social_metrics_report())
+    return 0
+
+
+def cmd_backfill_duration_metadata(dry_run: bool, probe: bool = False) -> int:
+    """DRY-RUN ONLY: list POC rows that could receive DURATION_SECONDS (metadata
+    only, no Gemini, no re-tagging, no writes). A non-dry-run write mode is
+    intentionally NOT implemented yet."""
+    import social_analytics
+    if not dry_run:
+        print("backfill-duration-metadata currently supports --dry-run only "
+              "(no write mode yet). Re-run with --dry-run.")
+        return 1
+    print(social_analytics.backfill_duration_dry_run(probe=probe))
+    return 0
+
+
 def cmd_audit_evidence_gaps() -> int:
     """Audit internal Parents/youth evidence and write the EVIDENCE_GAPS artifact.
     Read-only w.r.t. internal Storelli rows, profiles, and Notion; never creates a
@@ -901,11 +924,15 @@ def main() -> int:
                                  "quality-review-inspiration", "generate-ideas",
                                  "refine-ideas", "rate-calendar-ideas",
                                  "build-semantic-connections", "evaluate-notion-idea",
-                                 "audit-evidence-gaps"])
+                                 "audit-evidence-gaps", "audit-social-metrics",
+                                 "backfill-duration-metadata"])
     parser.add_argument("--url", type=str, default=None, metavar="URL",
                         help="Notion page URL for evaluate-notion-idea")
     parser.add_argument("--dry-run", action="store_true",
-                        help="evaluate-notion-idea: return the answer without writing the artifact")
+                        help="evaluate-notion-idea / backfill-duration-metadata: don't write")
+    parser.add_argument("--probe", action="store_true",
+                        help="backfill-duration-metadata --dry-run: also probe a small "
+                             "yt-dlp metadata sample (metadata only, no writes)")
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -974,6 +1001,12 @@ def main() -> int:
 
         elif args.command == "audit-evidence-gaps":
             return cmd_audit_evidence_gaps()
+
+        elif args.command == "audit-social-metrics":
+            return cmd_audit_social_metrics()
+
+        elif args.command == "backfill-duration-metadata":
+            return cmd_backfill_duration_metadata(args.dry_run, args.probe)
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

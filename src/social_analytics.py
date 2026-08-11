@@ -33,6 +33,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+import config
 import decision_trace as dt
 import performance
 import slack_response_style as st
@@ -47,20 +48,28 @@ _NOT_PROOF = "_External inspiration is reference only — not proof it works for
 # metric field vocabulary — each logical field maps to the sheet column-name
 # aliases we recognize (case-insensitive, exact match on the header cell).
 # ---------------------------------------------------------------------------
+# Each logical field -> recognized column-name aliases (case-insensitive, exact
+# cell match). We keep BOTH the short backward-compatible names (duration,
+# followers, age, gender, location, follower split) AND the recommended
+# production column names (DURATION_SECONDS, FOLLOWERS_AT_POST, *_SPLIT, ...) so
+# adding the recommended columns lights the feature up with no further change.
 _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "url": ("link", "url", "post url", "post_url", "reel url", "permalink"),
-    "date": ("date", "posted", "post date", "published", "publish date", "posted at", "post_date"),
+    "date": ("date", "posted", "post date", "published", "publish date", "posted at",
+             "post_date"),
     "performance_label": ("performance", "performance label", "perf"),
-    "views": ("views", "view count", "view_count", "plays", "play count", "reach"),
+    "views": ("views", "view count", "view_count", "plays", "play count"),
     "likes": ("likes", "like count", "like_count"),
     "comments": ("comments", "comment count", "comment_count"),
     "saves": ("saves", "saved", "bookmarks", "save count"),
     "shares": ("shares", "share count", "sends", "share_count"),
     "engagement_rate": ("engagement rate", "engagement_rate", "er", "engagement %",
                         "engagement percent", "engagement"),
-    "followers": ("followers", "follower count", "follower_count", "audience size"),
+    "followers": ("followers", "follower count", "follower_count", "audience size",
+                  "followers_at_post", "followers at post"),
     "duration": ("duration", "length", "seconds", "video length", "duration (s)",
-                 "duration_sec", "runtime", "video_length", "reel length"),
+                 "duration_sec", "runtime", "video_length", "reel length",
+                 "duration_seconds", "duration seconds"),
     "post_type": ("post type", "post_type", "type", "content type", "media type", "media_type"),
     "reel_type": ("reel type", "reel_type", "trial", "trial reel", "trial/standard",
                   "distribution", "trial vs standard", "trial_or_standard"),
@@ -69,19 +78,45 @@ _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "storytelling_structure": ("storytelling structure", "story structure", "storytelling",
                                "structure"),
     # demographics (IG audience-export fields) — almost never present today.
-    "demo_age": ("age", "age range", "audience age", "age group"),
-    "demo_gender": ("gender", "audience gender", "sex"),
+    "demo_age": ("age", "age range", "audience age", "age group", "age_split", "age split"),
+    "demo_gender": ("gender", "audience gender", "sex", "gender_split", "gender split"),
     "demo_location": ("location", "country", "city", "top location", "audience location",
-                      "geo"),
+                      "geo", "location_split", "location split"),
     "demo_follower_split": ("follower vs non-follower", "non-follower reach", "from followers",
                             "follower_vs_nonfollower", "followers vs non-followers",
-                            "non follower reach"),
+                            "non follower reach", "follower split", "follower_split",
+                            "follower_nonfollower_split", "follower non-follower split",
+                            "follower vs nonfollower split"),
     "demo_reach_segment": ("reach by audience segment", "audience segment", "reach by segment",
-                           "audience breakdown"),
+                           "audience breakdown", "reach_by_segment"),
+    # optional funnel / distribution metrics (detected + reported; not part of the
+    # core performance-metric hierarchy).
+    "reach": ("reach",),
+    "impressions": ("impressions", "impression count"),
+    "profile_visits": ("profile visits", "profile_visits", "profile views"),
+    "website_clicks": ("website clicks", "website_clicks", "link clicks", "link_clicks",
+                       "external link taps"),
+    "product_clicks": ("product clicks", "product_clicks", "product taps"),
+    "trial_clicks": ("trial clicks", "trial_clicks", "trial cta clicks"),
+    "qualified_dms": ("qualified dms", "qualified_dms", "qualified d ms", "qualified messages"),
 }
 
 _DEMO_FIELDS = ("demo_age", "demo_gender", "demo_location", "demo_follower_split",
                 "demo_reach_segment")
+
+_OPTIONAL_FIELDS = ("reach", "impressions", "profile_visits", "website_clicks",
+                    "product_clicks", "trial_clicks", "qualified_dms")
+
+# Missing-field -> the exact column name we recommend adding (Task 5 / schema plan).
+_RECOMMENDED_COLUMNS = {
+    "reel_type": "REEL_TYPE", "duration": "DURATION_SECONDS", "date": "POST_DATE",
+    "views": "VIEWS", "likes": "LIKES", "comments": "COMMENTS", "saves": "SAVES",
+    "shares": "SHARES", "engagement_rate": "ENGAGEMENT_RATE", "followers": "FOLLOWERS_AT_POST",
+    "demo_age": "AGE_SPLIT", "demo_gender": "GENDER_SPLIT", "demo_location": "LOCATION_SPLIT",
+    "demo_follower_split": "FOLLOWER_NONFOLLOWER_SPLIT", "demo_reach_segment": "REACH_BY_SEGMENT",
+}
+_OPTIONAL_COLUMNS = ("REACH", "IMPRESSIONS", "PROFILE_VISITS", "WEBSITE_CLICKS",
+                     "PRODUCT_CLICKS", "TRIAL_CLICKS", "QUALIFIED_DMS")
 
 # Performance metric hierarchy (best first). Tier 1: engagement rate. Tier 2:
 # saves/comments/shares. Tier 3: views/likes. Tier 4: the manual Great/Good/
@@ -203,6 +238,70 @@ def _brain():
 
 
 # ---------------------------------------------------------------------------
+# Content-audit tab — a coarse video-length proxy (buckets, not seconds) that
+# already exists for ~half the analyzed reels. Read-only; single network
+# indirection so tests/golden run offline.
+# ---------------------------------------------------------------------------
+_CONTENT_AUDIT_TAB = "Content audit"
+_VIDEOLENGTH_PREFIX = "overall_videolength_"     # matched case-insensitively
+
+
+def _read_named_worksheet(title: str) -> Optional[list[list[str]]]:
+    """Read-only get_all_values() of a named tab in the configured spreadsheet.
+    Never raises; returns None when unconfigured/unreachable/absent."""
+    if not (config.GOOGLE_SHEET_ID and config.GOOGLE_SERVICE_ACCOUNT_JSON_PATH):
+        return None
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        creds = Credentials.from_service_account_file(
+            config.GOOGLE_SERVICE_ACCOUNT_JSON_PATH,
+            scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"])
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(config.GOOGLE_SHEET_ID)
+        return sh.worksheet(title).get_all_values()
+    except Exception as e:  # noqa: BLE001
+        log.warning("social_analytics: could not read tab %r: %s", title, e)
+        return None
+
+
+def _videolength_label(header: str) -> str:
+    """'overall_videoLength_< 10 sec' -> '< 10 sec'."""
+    return header.strip()[len(_VIDEOLENGTH_PREFIX):].strip() or header.strip()
+
+
+def content_audit_duration_buckets(links: Optional[set] = None) -> dict:
+    """Map LINK -> coarse video-length bucket label from the Content audit tab's
+    `overall_videoLength_*` one-hot columns. Read-only; fail-soft -> {}.
+
+    This is an *exact-duration proxy* (buckets, never seconds); it never becomes
+    a fabricated seconds value."""
+    vals = _read_named_worksheet(_CONTENT_AUDIT_TAB)
+    if not vals or len(vals) < 2:
+        return {}
+    header = vals[0]
+    link_idx = next((i for i, h in enumerate(header)
+                     if str(h).strip().lower() in ("link", "url")), None)
+    bucket_cols = [(i, _videolength_label(h)) for i, h in enumerate(header)
+                   if str(h).strip().lower().startswith(_VIDEOLENGTH_PREFIX)]
+    if link_idx is None or not bucket_cols:
+        return {}
+    want = set(links) if links else None
+    out: dict[str, str] = {}
+    for r in vals[1:]:
+        if link_idx >= len(r):
+            continue
+        link = str(r[link_idx]).strip()
+        if not link or (want is not None and link not in want):
+            continue
+        for ci, label in bucket_cols:
+            if ci < len(r) and str(r[ci]).strip() == "1":
+                out[link] = label
+                break
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Part A — metrics audit
 # ---------------------------------------------------------------------------
 def detect_available_metrics(columns: Optional[list[str]] = None,
@@ -241,30 +340,54 @@ def audit_metrics_schema(rows: Optional[list[dict]] = None,
     else:
         err = ""
     avail = detect_available_metrics(columns, rows)
+    rows = rows or []
+    n = len(rows)
+    tagged = sum(1 for r in rows if any(str(r.get(c, "")).strip() == "1"
+                                        for c in taxonomy.all_signal_columns()))
 
     # Everything the audit is asked to look for, in report order.
     order = ["url", "date", "performance_label", "views", "likes", "comments",
              "saves", "shares", "engagement_rate", "followers", "duration",
              "post_type", "reel_type", "product", "icp", "hook", "format",
              "storytelling_structure", "demo_age", "demo_gender", "demo_location",
-             "demo_follower_split", "demo_reach_segment"]
+             "demo_follower_split", "demo_reach_segment", *(_OPTIONAL_FIELDS)]
     available = [f for f in order if avail.get(f, {}).get("available")]
     missing = [f for f in order if not avail.get(f, {}).get("available")]
+
+    # Per-field fill coverage (%) — offline, computed from the rows we have.
+    coverage: dict[str, int] = {}
+    for f in available:
+        col = avail[f]["column"]
+        if col and col.startswith("taxonomy:"):
+            coverage[f] = round(100 * tagged / n) if n else 0
+        elif col:
+            filled = sum(1 for r in rows if str(r.get(col, "")).strip() != "")
+            coverage[f] = round(100 * filled / n) if n else 0
 
     demographics_present = any(avail.get(f, {}).get("available") for f in _DEMO_FIELDS)
     duration_present = avail.get("duration", {}).get("available", False)
     trial_classifiable = _can_classify_reel_type(avail)
+    missing_demographics = [_RECOMMENDED_COLUMNS[f] for f in _DEMO_FIELDS
+                            if not avail.get(f, {}).get("available")]
+    recommended_missing = [_RECOMMENDED_COLUMNS[f] for f in _RECOMMENDED_COLUMNS
+                           if not avail.get(f, {}).get("available")]
 
     result = {
         "ok": not err,
         "error": err,
-        "row_count": len(rows or []),
+        "row_count": n,
         "available": available,
         "missing": missing,
         "fields": avail,
+        "coverage": coverage,
         "demographics_present": demographics_present,
+        # comparison is possible only when at least one split column exists AND
+        # trial/standard cohorts can be separated.
+        "demographic_comparison_possible": demographics_present and trial_classifiable,
+        "missing_demographics": missing_demographics,
         "duration_present": duration_present,
         "reel_type_classifiable": trial_classifiable,
+        "recommended_missing": recommended_missing,
         "chosen_metric": choose_metric(avail),
     }
     result["report"] = _render_audit_report(result)
@@ -375,19 +498,25 @@ def find_top_performing_posts(rows: Optional[list[dict]] = None,
 
 
 def analyze_winning_reel_duration(rows: Optional[list[dict]] = None,
-                                  columns: Optional[list[str]] = None) -> dict:
-    """Analyze how long the highest-performing reels are.
+                                  columns: Optional[list[str]] = None,
+                                  audit_buckets: Optional[dict] = None) -> dict:
+    """Analyze how long the highest-performing reels are, honestly.
 
-    Uses the best available metric to pick winners, then real duration data if
-    present. Returns a structured dict; when duration is absent it says so and
-    names the exact backfill needed (never invents seconds).
+    Cascade (never invents seconds):
+      1. exact DURATION_SECONDS present -> median/avg/bucket (source='exact')
+      2. else the Content audit coarse video-length buckets, if any of the top
+         reels have one -> a clearly-labelled proxy read (source='content_audit_bucket')
+      3. else -> duration missing + the exact backfill needed (source='none')
+
+    `audit_buckets` (link->bucket label) can be injected for tests; when None and
+    exact duration is missing it is read live from the Content audit tab.
     """
     if rows is None or columns is None:
         rows, columns, err = _internal_sheet()
     else:
         err = ""
     if err:
-        return {"ok": False, "error": err, "duration_available": False}
+        return {"ok": False, "error": err, "duration_available": False, "source": "error"}
 
     avail = detect_available_metrics(columns, rows)
     metric = choose_metric(avail)
@@ -398,43 +527,57 @@ def analyze_winning_reel_duration(rows: Optional[list[dict]] = None,
     top_n = max(5, round(n_internal * 0.25)) if n_internal else 5
     winners = find_top_performing_posts(rows, columns, limit=top_n)
 
-    if not duration_col:
+    # ---- 1. exact seconds -------------------------------------------------
+    durations, examples = [], []
+    if duration_col:
+        for w in winners:
+            row = next((r for r in rows if r.get("_row") == w["_row"]), None)
+            secs = _parse_seconds(row.get(duration_col)) if row else None
+            if secs is None:
+                continue
+            durations.append(secs)
+            examples.append({"link": w["link"], "seconds": secs, "performance": w["performance"]})
+    if durations:
+        durations_sorted = sorted(durations)
+        n = len(durations_sorted)
+        median = (durations_sorted[n // 2] if n % 2
+                  else (durations_sorted[n // 2 - 1] + durations_sorted[n // 2]) / 2)
+        avg = sum(durations_sorted) / n
+        counts: dict[str, int] = {}
+        for s in durations_sorted:
+            counts[_duration_bucket(s)] = counts.get(_duration_bucket(s), 0) + 1
+        return {"ok": True, "error": "", "duration_available": True, "source": "exact",
+                "metric": metric, "count": n, "median": round(median, 1),
+                "average": round(avg, 1),
+                "common_bucket": max(counts.items(), key=lambda kv: kv[1])[0],
+                "bucket_counts": counts,
+                "examples": sorted(examples, key=lambda e: e["seconds"])[:3],
+                "winners": winners}
+
+    # ---- 2. Content audit coarse-bucket proxy -----------------------------
+    winner_links = {w["link"] for w in winners if w["link"]}
+    if audit_buckets is None:
+        audit_buckets = content_audit_duration_buckets(winner_links)
+    matched = {lk: b for lk, b in (audit_buckets or {}).items() if lk in winner_links}
+    if matched:
+        dist: dict[str, int] = {}
+        for b in matched.values():
+            dist[b] = dist.get(b, 0) + 1
+        dominant = max(dist.items(), key=lambda kv: kv[1])[0]
+        cov = round(100 * len(matched) / len(winner_links)) if winner_links else 0
         return {"ok": True, "error": "", "duration_available": False,
-                "metric": metric, "winners": winners,
-                "backfill_field": "duration_seconds",
+                "source": "content_audit_bucket", "metric": metric,
+                "bucket_distribution": dist, "dominant_bucket": dominant,
+                "coverage_pct": cov, "matched": len(matched),
+                "total_winners": len(winner_links), "winners": winners,
+                "backfill_field": "DURATION_SECONDS",
                 "recommended_source": "yt-dlp metadata (info['duration'])"}
 
-    durations = []
-    examples = []
-    for w in winners:
-        row = next((r for r in rows if r.get("_row") == w["_row"]), None)
-        secs = _parse_seconds(row.get(duration_col)) if row else None
-        if secs is None:
-            continue
-        durations.append(secs)
-        examples.append({"link": w["link"], "seconds": secs,
-                         "performance": w["performance"]})
-    if not durations:
-        return {"ok": True, "error": "", "duration_available": False,
-                "metric": metric, "winners": winners,
-                "backfill_field": "duration_seconds",
-                "recommended_source": "yt-dlp metadata (info['duration'])",
-                "note": "duration column exists but is empty for the top performers"}
-
-    durations.sort()
-    n = len(durations)
-    median = durations[n // 2] if n % 2 else (durations[n // 2 - 1] + durations[n // 2]) / 2
-    avg = sum(durations) / n
-    counts: dict[str, int] = {}
-    for s in durations:
-        b = _duration_bucket(s)
-        counts[b] = counts.get(b, 0) + 1
-    common_bucket = max(counts.items(), key=lambda kv: kv[1])[0]
-    return {"ok": True, "error": "", "duration_available": True, "metric": metric,
-            "count": n, "median": round(median, 1), "average": round(avg, 1),
-            "common_bucket": common_bucket, "bucket_counts": counts,
-            "examples": sorted(examples, key=lambda e: e["seconds"])[:3],
-            "winners": winners}
+    # ---- 3. genuinely missing --------------------------------------------
+    return {"ok": True, "error": "", "duration_available": False, "source": "none",
+            "metric": metric, "winners": winners,
+            "backfill_field": "DURATION_SECONDS",
+            "recommended_source": "yt-dlp metadata (info['duration'])"}
 
 
 # ---------------------------------------------------------------------------
@@ -466,15 +609,20 @@ def compare_trial_vs_standard(rows: Optional[list[dict]] = None,
 
     classifiable = bool(cohorts["trial"] or cohorts["standard"])
     demographics_present = any(avail.get(f, {}).get("available") for f in _DEMO_FIELDS)
+    missing_demographics = [_RECOMMENDED_COLUMNS[f] for f in _DEMO_FIELDS
+                            if not avail.get(f, {}).get("available")]
 
     result = {
         "ok": True, "error": "",
         "classifiable": classifiable,
         "demographics_present": demographics_present,
+        "demographic_comparison_possible": demographics_present and classifiable,
+        "missing_demographics": missing_demographics,
         "n_trial": len(cohorts["trial"]),
         "n_standard": len(cohorts["standard"]),
         "n_unknown": len(cohorts["unknown"]),
         "comparisons": {},
+        "demographics": {},
         "available_dims": [],
     }
     if not classifiable:
@@ -487,8 +635,18 @@ def compare_trial_vs_standard(rows: Optional[list[dict]] = None,
     if avail.get("duration", {}).get("available"):
         dcol = _column_for_field(columns, "duration")
         dims["duration"] = {c: _avg_duration(cohorts[c], dcol) for c in ("trial", "standard")}
+    # Demographic split comparison — only when the columns actually exist. Each
+    # cohort's split is parsed and averaged; never fabricated.
+    for field in _DEMO_FIELDS:
+        if not avail.get(field, {}).get("available"):
+            continue
+        col = avail[field]["column"]
+        comp = {c: _demo_compare(cohorts[c], col) for c in ("trial", "standard")}
+        if comp["trial"] or comp["standard"]:
+            result["demographics"][field] = comp
     result["available_dims"] = ["performance", "hook/format mix", "product mix"] + \
-        (["duration"] if "duration" in dims else []) + ["sample size"]
+        (["duration"] if "duration" in dims else []) + \
+        (["demographics"] if result["demographics"] else []) + ["sample size"]
     return result
 
 
@@ -522,6 +680,37 @@ def _group_mix(cohort: list[dict], key: str) -> dict:
 def _avg_duration(cohort: list[dict], dcol: str) -> Optional[float]:
     secs = [s for s in (_parse_seconds(r.get(dcol)) for r in cohort) if s is not None]
     return round(sum(secs) / len(secs), 1) if secs else None
+
+
+# Parses IG-style split strings: "F 58% / M 42%", "18-24 34% / 25-34 41%",
+# "US 60% / UK 12%" -> {label: pct}. Returns {} when nothing parses (never
+# fabricates a demographic).
+_SPLIT_PART_RE = re.compile(r"(.+?)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*%")
+
+
+def _parse_split(text) -> dict:
+    out: dict[str, float] = {}
+    for chunk in re.split(r"[/;,]", str(text or "")):
+        m = _SPLIT_PART_RE.search(chunk)
+        if not m:
+            continue
+        label = m.group(1).strip().strip("-–—:=•* ").strip()
+        if label:
+            out[label] = float(m.group(2))
+    return out
+
+
+def _demo_compare(cohort: list[dict], col: str) -> dict:
+    """Average of a demographic split across a cohort -> {label: mean pct}."""
+    agg: dict[str, float] = {}
+    n = 0
+    for r in cohort:
+        parsed = _parse_split(r.get(col, ""))
+        if parsed:
+            n += 1
+            for k, v in parsed.items():
+                agg[k] = agg.get(k, 0.0) + v
+    return {k: round(v / n, 1) for k, v in agg.items()} if n else {}
 
 
 # ---------------------------------------------------------------------------
@@ -743,6 +932,17 @@ def _fmt_split(split: dict) -> str:
     return (", ".join(parts) or "no labels") + f" (n={split.get('n', 0)})"
 
 
+_DEMO_LABELS = {"demo_age": "Age", "demo_gender": "Gender", "demo_location": "Location",
+                "demo_follower_split": "Followers", "demo_reach_segment": "Reach segment"}
+
+
+def _fmt_demo(split: Optional[dict]) -> str:
+    if not split:
+        return "n/a"
+    top = sorted(split.items(), key=lambda kv: kv[1], reverse=True)[:2]
+    return ", ".join(f"{k} {v:g}%" for k, v in top)
+
+
 def _render_trial_vs_standard(text: str, cmp: dict) -> str:
     mode = st.detect_response_mode(text)
     if not cmp.get("ok"):
@@ -763,11 +963,10 @@ def _render_trial_vs_standard(text: str, cmp: dict) -> str:
                  "then I can compare them.", mode=mode)
 
     dims = cmp["comparisons"]
+    demo = cmp.get("demographics", {})
     src = _Sources()
-    # cite the first available internal example so the answer is grounded
     perf = dims.get("performance", {})
     steps = [
-        dt.step("Data check", "demographic fields not in the data", [], "risk", "Thin"),
         dt.step("Cohort split",
                 f"trial n={cmp['n_trial']} vs standard n={cmp['n_standard']}", [], "topic", "Medium"),
         dt.step("Performance",
@@ -784,67 +983,105 @@ def _render_trial_vs_standard(text: str, cmp: dict) -> str:
         steps.append(dt.step("Duration",
                              f"trial {d.get('trial')}s vs standard {d.get('standard')}s avg",
                              [], "inference", "Medium"))
+
+    if demo:
+        # Real demographic comparison (columns exist and parsed).
+        for field, comp in list(demo.items())[:2]:
+            label = _DEMO_LABELS.get(field, field)
+            steps.append(dt.step(label, f"trial {_fmt_demo(comp.get('trial'))}; "
+                                         f"standard {_fmt_demo(comp.get('standard'))}",
+                                  [], "internal", "Medium"))
+        lead = "Here's trial vs standard, including the demographic split we have:"
+        move = "prioritize the cohort/segment that over-indexes on your target ICP."
+    else:
+        # Honest: no demographic data — say which columns are missing.
+        steps.insert(0, dt.step("Data check", "demographic fields not in the data",
+                                [], "risk", "Thin"))
+        lead = ("I can compare trial vs standard on the data we have, but *not demographics* — "
+                "demographic fields aren't in the current data.")
+        miss = ", ".join(cmp.get("missing_demographics", [])) or \
+            "AGE_SPLIT, GENDER_SPLIT, LOCATION_SPLIT, FOLLOWER_NONFOLLOWER_SPLIT"
+        move = (f"comparing {'; '.join(cmp['available_dims'])}. For a real demographic split, add "
+                f"{miss} from an IG audience export.")
     steps.append(dt.kpi_step("engagement"))
-    lead = ("I can compare trial vs standard on the data we have, but *not demographics* — "
-            "demographic fields aren't in the current data.")
-    dims_line = "; ".join(cmp["available_dims"])
-    return dt.render(lead, steps,
-                     move=f"comparing {dims_line}. Add IG audience-export fields "
-                          "(age, gender, location, follower vs non-follower) for a real "
-                          "demographic split.",
-                     sources=src.block(), mode=mode)
+    return dt.render(lead, steps, move=move, sources=src.block(), mode=mode)
 
 
 def _render_demographics(text: str, cmp: dict) -> str:
     """A pure demographics ask (no trial/standard framing)."""
     mode = st.detect_response_mode(text)
-    if cmp.get("ok") and cmp.get("demographics_present"):
+    if cmp.get("ok") and cmp.get("demographics") :
         return _render_trial_vs_standard(text, cmp)
+    miss = ", ".join(cmp.get("missing_demographics", [])) or \
+        "AGE_SPLIT, GENDER_SPLIT, LOCATION_SPLIT, FOLLOWER_NONFOLLOWER_SPLIT"
     steps = [
-        dt.step("Data check", "no age/gender/location/follower-split fields", [], "risk", "Thin"),
+        dt.step("Data check", f"missing: {miss}", [], "risk", "Thin"),
         dt.step("What we have", "performance, product/ICP, hook/format, structure", [], "topic", "Medium"),
     ]
     return dt.render(
         "I don't have demographic-level data for this yet — age, gender, location and "
         "follower-vs-non-follower aren't in the current data.",
         steps,
-        move="add the IG audience-export fields (or connect the IG Insights API) and I can "
+        move=f"add {miss} from an IG audience export (or connect the IG Insights API) and I can "
              "break audience down for real.", mode=mode)
 
 
 def _render_duration(text: str, d: dict) -> str:
     mode = st.detect_response_mode(text)
+    source = d.get("source")
     if not d.get("ok"):
         return dt.render(f"I can't reach the analysis sheet right now ({d.get('error', 'unknown')}).",
                          [dt.step("Data check", "internal sheet unreachable", [], "risk", "Thin")],
                          move="retry once Sheets is configured.", mode=mode)
-    if not d.get("duration_available"):
+
+    # ---- exact seconds ----------------------------------------------------
+    if source == "exact":
+        src = _Sources()
+        for ex in d.get("examples", [])[:3]:
+            src.add("S", ex["link"],
+                    f"Storelli reel — {ex['seconds']:.0f}s ({ex.get('performance') or 'top'})")
         steps = [
-            dt.step("Data check", "no duration/seconds field on the reels", [], "risk", "Thin"),
-            dt.step("Metric used", f"ranked winners by {d.get('metric')}", [], "internal", "Medium"),
+            dt.step("Metric used", f"top performers by {d['metric']}", [], "internal", "Medium"),
+            dt.step("Pattern found",
+                    f"median {d['median']:.0f}s, avg {d['average']:.0f}s across {d['count']} winners",
+                    [t for (t, _, _) in src.rows[:1]], "internal", "High"),
+            dt.step("Most common", f"{d['common_bucket']}", [], "topic", "Medium"),
+            dt.kpi_step("retention"),
         ]
-        return dt.render(
-            "I can't tell you the length of our best reels yet — there's no duration field in the data.",
-            steps,
-            move="store `duration_seconds` from yt-dlp metadata (`info['duration']`) going forward; "
-                 "a safe one-time backfill can read duration from each reel's metadata only "
-                 "(no video re-analysis, no re-tagging).", mode=mode)
-    src = _Sources()
-    for ex in d.get("examples", [])[:3]:
-        src.add("S", ex["link"], f"Storelli reel — {ex['seconds']:.0f}s ({ex.get('performance') or 'top'})")
+        lead = (f"Our highest-performing reels cluster around *{d['common_bucket']}* — "
+                f"median {d['median']:.0f}s, average {d['average']:.0f}s.")
+        return dt.render(lead, steps,
+                         move=f"keep top reels in the {d['common_bucket']} range; test a tighter "
+                              "cut against it.", sources=src.block(), mode=mode)
+
+    # ---- Content audit coarse-bucket proxy --------------------------------
+    if source == "content_audit_bucket":
+        steps = [
+            dt.step("Metric used", f"ranked winners by {d.get('metric')}", [], "internal", "Medium"),
+            dt.step("Duration proxy", "Content audit video-length bucket", [], "topic", "Medium"),
+            dt.step("Pattern", f"strongest reels mostly sit in {d['dominant_bucket']}",
+                    [], "internal", "Medium"),
+            dt.step("Caveat", "bucketed, not exact seconds", [], "risk", "Thin"),
+        ]
+        lead = (f"I don't have exact duration seconds yet, but I do have coarse video-length "
+                f"buckets for ~{d['coverage_pct']}% of the top reels ({d['matched']}/"
+                f"{d['total_winners']}).")
+        return dt.render(lead, steps,
+                         move="add a `DURATION_SECONDS` column for exact length analysis.",
+                         mode=mode)
+
+    # ---- genuinely missing ------------------------------------------------
     steps = [
-        dt.step("Metric used", f"top performers by {d['metric']}", [], "internal", "Medium"),
-        dt.step("Pattern found",
-                f"median {d['median']:.0f}s, avg {d['average']:.0f}s across {d['count']} winners",
-                [t for (t, _, _) in src.rows[:1]], "internal", "High"),
-        dt.step("Most common", f"{d['common_bucket']}", [], "topic", "Medium"),
-        dt.kpi_step("retention"),
+        dt.step("Data check", "no duration/seconds field on the reels", [], "risk", "Thin"),
+        dt.step("Metric used", f"ranked winners by {d.get('metric')}", [], "internal", "Medium"),
     ]
-    lead = (f"Our highest-performing reels cluster around *{d['common_bucket']}* — "
-            f"median {d['median']:.0f}s, average {d['average']:.0f}s.")
-    return dt.render(lead, steps,
-                     move=f"keep top reels in the {d['common_bucket']} range; test a tighter cut "
-                          "against it.", sources=src.block(), mode=mode)
+    return dt.render(
+        "I can't tell you the length of our best reels yet — there's no duration field, and the "
+        "Content audit length buckets don't cover the top reels.",
+        steps,
+        move="store `DURATION_SECONDS` from yt-dlp metadata (`info['duration']`) going forward; "
+             "a safe one-time backfill reads duration from each reel's metadata only "
+             "(no video re-analysis, no re-tagging).", mode=mode)
 
 
 def _render_test_plan(text: str, plan: dict) -> str:
@@ -906,7 +1143,14 @@ _DEMO_KW = ("demographic", "demographics", "audience split", "audience breakdown
 _TRIAL_KW = ("trial reel", "trial reels", "trial vs standard", "trial versus standard",
              "standard reels", "trial and standard")
 _AUDIT_KW = ("metrics audit", "audit our metrics", "what metrics do we", "what data do we have",
-             "what fields do we", "what analytics do we")
+             "what analytics do we")
+# Schema-plan asks ("what fields do we need to add", "what do we need to track…").
+_SCHEMA_KW = ("need to add", "need to track", "fields do we need", "columns do we need",
+              "what fields", "what columns", "what should we add", "what to add",
+              "which fields", "which columns", "fields to add", "columns to add",
+              "what data do we need", "schema plan", "what do we need to add",
+              "what metrics should we add", "what do we need to measure",
+              "what do we need to collect")
 
 _TESTPLAN_STRONG = ("test plan", "creative test plan", "testing plan", "ideas to test",
                     "ideas we should test", "ideas we can test", "test ideas", "ideas to run as tests")
@@ -915,8 +1159,24 @@ _TESTPLAN_ASK = ("what should we test", "what tests should we run", "what should
                  "what should we test based", "what do we test next", "what can we test")
 
 
+def is_schema_plan_query(text: str, context: Optional[list] = None) -> bool:
+    t = " " + _lower(text) + " "
+    return any(k in t for k in _SCHEMA_KW)
+
+
+def _schema_focus(text: str) -> str:
+    t = _lower(text)
+    if any(k in t for k in ("demographic", "audience", "age", "gender", "location", "follower")):
+        return "demographics"
+    if any(k in t for k in ("duration", "seconds", "length", "how long")):
+        return "duration"
+    return "all"
+
+
 def is_social_analytics_query(text: str, context: Optional[list] = None) -> bool:
     t = " " + _lower(text) + " "
+    if is_schema_plan_query(text, context):
+        return True
     if any(k in t for k in _TRIAL_KW):
         return True
     if any(k in t for k in _DEMO_KW):
@@ -952,11 +1212,66 @@ def _parse_count(text: str, default: int = 20) -> int:
     return max(1, min(n, 40))
 
 
+_INSERT_LOCATION = ("Insert them in the *Marketing brain POC* tab *between `Status` and the first "
+                    "taxonomy category `HOOK`* — leave the top category row (row 1) blank above "
+                    "each and put the column name in row 2. Don't append them to the far right "
+                    "(the header forward-fill would misread them as taxonomy columns).")
+
+
+def render_schema_plan(text: str, context: Optional[list] = None) -> str:
+    """Answer 'what fields do we need to add?' / '…to track demographics?' /
+    '…reel duration?' with required columns, the exact insertion location, and
+    what can be backfilled vs what needs IG Insights. Read-only."""
+    mode = st.detect_response_mode(text)
+    focus = _schema_focus(text)
+    if focus == "duration":
+        steps = [
+            dt.step("Add column", "`DURATION_SECONDS` (integer seconds)", [], "topic", "High"),
+            dt.step("Backfill", "yt-dlp metadata info['duration'] — may need cookies", [], "inference", "Medium"),
+            dt.step("Available now", "coarse Content audit length buckets (~half of reels)", [], "internal", "Medium"),
+            dt.step("Placement", "between Status and HOOK; row 1 blank", [], "topic", "Medium"),
+        ]
+        return dt.render(
+            "To answer reel-duration questions exactly, add one column: *DURATION_SECONDS*.",
+            steps, move=_INSERT_LOCATION, mode=mode)
+    if focus == "demographics":
+        cols = "AGE_SPLIT, GENDER_SPLIT, LOCATION_SPLIT, FOLLOWER_NONFOLLOWER_SPLIT"
+        steps = [
+            dt.step("Add columns", cols, [], "topic", "High"),
+            dt.step("Source", "IG Insights export/API — cannot come from video metadata", [], "risk", "Medium"),
+            dt.step("Format", "'F 58% / M 42%', '18-24 34% / 25-34 41%'", [], "topic", "Medium"),
+            dt.step("Placement", "between Status and HOOK; row 1 blank", [], "topic", "Medium"),
+        ]
+        return dt.render(
+            "To compare audience demographics I need four columns the sheet doesn't have yet.",
+            steps,
+            move=f"add {cols} from an IG audience export; {_INSERT_LOCATION}", mode=mode)
+    # focus == all
+    req = "REEL_TYPE, DURATION_SECONDS, POST_DATE, VIEWS, LIKES, COMMENTS, SAVES, SHARES, " \
+          "ENGAGEMENT_RATE, FOLLOWERS_AT_POST, AGE_SPLIT, GENDER_SPLIT, LOCATION_SPLIT, " \
+          "FOLLOWER_NONFOLLOWER_SPLIT"
+    steps = [
+        dt.step("Required", "14 columns: reel-type, duration, date, engagement, demographics",
+                [], "topic", "High"),
+        dt.step("Backfillable", "DURATION_SECONDS via yt-dlp metadata (cookie-gated)", [], "inference", "Medium"),
+        dt.step("Needs IG export", "views/likes/comments/saves/shares + all demographics", [], "risk", "Medium"),
+        dt.step("Placement", "between Status and HOOK; row 1 blank, row 2 = name", [], "topic", "Medium"),
+    ]
+    return dt.render(
+        f"To answer all the social-metrics questions, add these columns: {req}.",
+        steps,
+        move=(f"{_INSERT_LOCATION} Optional extras: {', '.join(_OPTIONAL_COLUMNS)}."), mode=mode)
+
+
 def answer_social_analytics_question(text: str, context: Optional[list] = None) -> Optional[str]:
-    """Slack entrypoint for analytics questions (trial/standard, demographics,
-    duration, metrics audit). Returns None if it doesn't own the question."""
+    """Slack entrypoint for analytics questions (schema plan, trial/standard,
+    demographics, duration, metrics audit). Returns None if it doesn't own it."""
     t = _lower(text)
     try:
+        # Schema-plan asks first — "what do we need to track to answer X" mentions
+        # duration/demographics but wants the columns-to-add answer, not the data.
+        if is_schema_plan_query(text, context):
+            return render_schema_plan(text, context)
         if any(k in t for k in _DURATION_KW):
             return _render_duration(text, analyze_winning_reel_duration())
         if any(k in t for k in _TRIAL_KW):
@@ -993,4 +1308,125 @@ def answer_creative_test_plan(text: str, context: Optional[list] = None) -> Opti
         return _render_test_plan(text, plan)
     except Exception as e:  # noqa: BLE001
         log.warning("social_analytics test plan failed: %s", e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# CLI: audit-social-metrics (read-only) + backfill-duration-metadata (dry-run)
+# ---------------------------------------------------------------------------
+def audit_social_metrics_report(check_content_audit: bool = True) -> str:
+    """Read-only plain-text audit for the CLI. Reads the live POC tab (and, if
+    reachable, the Content audit duration buckets). Writes nothing."""
+    rows, columns, err = _internal_sheet()
+    if err:
+        return f"audit-social-metrics: can't reach the sheet ({err}). Nothing written."
+    a = audit_metrics_schema(rows=rows, columns=columns)
+
+    # Content audit coarse duration buckets (read-only; may be unreachable).
+    ca_line = "Content audit duration buckets: not checked"
+    if check_content_audit:
+        links = {str(r.get("LINK", "")).strip() for r in rows if str(r.get("LINK", "")).strip()}
+        buckets = content_audit_duration_buckets(links)
+        if buckets:
+            cov = round(100 * len(buckets) / len(links)) if links else 0
+            ca_line = (f"Content audit duration buckets: PRESENT — {len(buckets)}/{len(links)} "
+                       f"linked reels ({cov}%), coarse buckets not exact seconds")
+        else:
+            ca_line = "Content audit duration buckets: none found (or tab unreachable)"
+
+    cov = a.get("coverage", {})
+    out = ["Social metrics audit (read-only — nothing written)",
+           f"Worksheet rows: {a['row_count']}",
+           "",
+           "AVAILABLE (with fill coverage):"]
+    for f in a["available"]:
+        out.append(f"  - {f:26} {cov.get(f, 0)}%")
+    out += ["", "MISSING:"]
+    for f in a["missing"]:
+        rec = _RECOMMENDED_COLUMNS.get(f)
+        out.append(f"  - {f}" + (f"  -> add {rec}" if rec else "  (optional)"))
+    out += ["",
+            f"Trial vs standard classifiable: {'YES' if a['reel_type_classifiable'] else 'NO'}",
+            f"Demographic comparison possible: {'YES' if a['demographic_comparison_possible'] else 'NO'}"
+            + ("" if a['demographic_comparison_possible']
+               else f" (missing {', '.join(a['missing_demographics'])})"),
+            f"Exact duration (DURATION_SECONDS): {'YES' if a['duration_present'] else 'NO'}",
+            ca_line,
+            f"Best available performance metric: {a['chosen_metric']}",
+            "",
+            "Recommended columns to add: " + (", ".join(a["recommended_missing"]) or "(none)"),
+            "Insert between Status and HOOK (row 1 blank, row 2 = column name)."]
+    return "\n".join(out)
+
+
+def duration_backfill_candidates() -> dict:
+    """Read-only: identify POC rows that COULD receive a DURATION_SECONDS value
+    (have a LINK, no existing exact duration). Writes nothing."""
+    rows, columns, err = _internal_sheet()
+    if err:
+        return {"ok": False, "error": err, "candidates": []}
+    dcol = _column_for_field(columns, "duration")
+    candidates = []
+    for r in rows:
+        link = str(r.get("LINK", "")).strip()
+        if not link or performance.is_reference_row(r):
+            continue
+        existing = _parse_seconds(r.get(dcol)) if dcol else None
+        if existing is None:
+            candidates.append({"row": r.get("_row"), "link": link})
+    return {"ok": True, "error": "", "has_duration_column": bool(dcol),
+            "candidates": candidates, "total": len(candidates)}
+
+
+def backfill_duration_dry_run(sample: int = 3, probe: bool = False) -> str:
+    """DRY-RUN ONLY. Lists rows that could receive DURATION_SECONDS. Metadata-only,
+    no Gemini, no taxonomy re-tagging, NO WRITES. Optionally probes a tiny sample
+    for yt-dlp `info['duration']` (metadata only, no cookies added); reports
+    cleanly if yt-dlp/IG metadata isn't reachable. There is no non-dry-run mode."""
+    info = duration_backfill_candidates()
+    if not info["ok"]:
+        return f"backfill-duration-metadata --dry-run: can't reach the sheet ({info['error']})."
+    lines = ["backfill-duration-metadata --dry-run (NO WRITES)",
+             f"DURATION_SECONDS column present: {'yes' if info['has_duration_column'] else 'no'}",
+             f"Rows that could receive DURATION_SECONDS: {info['total']}"]
+    for c in info["candidates"][:10]:
+        lines.append(f"  - row {c['row']}: {c['link']}")
+    if info["total"] > 10:
+        lines.append(f"  … and {info['total'] - 10} more")
+
+    if probe and info["candidates"]:
+        lines.append("")
+        lines.append(f"Metadata probe (sample of {min(sample, len(info['candidates']))}, "
+                     "metadata-only, no cookies added):")
+        try:
+            import yt_dlp  # noqa: F401
+        except Exception:  # noqa: BLE001
+            lines.append("  yt-dlp not available in this environment — cannot probe. "
+                         "(Metadata access may also require the IG cookie session.)")
+            return "\n".join(lines)
+        for c in info["candidates"][:sample]:
+            secs = _probe_duration_metadata(c["link"])
+            lines.append(f"  - row {c['row']}: "
+                         + (f"would set DURATION_SECONDS={secs:.0f}" if secs is not None
+                            else "metadata unavailable (likely needs cookies) — skipped"))
+    else:
+        lines.append("")
+        lines.append("Pass --probe to attempt a small metadata-only sample (no writes either way).")
+    lines.append("")
+    lines.append("Dry-run only: nothing was written to the Sheet, Notion, or any row.")
+    return "\n".join(lines)
+
+
+def _probe_duration_metadata(url: str) -> Optional[float]:
+    """Best-effort metadata-only duration via yt-dlp (no download, no cookies).
+    Returns seconds or None. Never raises."""
+    try:
+        import yt_dlp
+        opts = {"quiet": True, "no_warnings": True, "skip_download": True,
+                "noplaylist": True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            meta = ydl.extract_info(url, download=False)
+        d = meta.get("duration") if isinstance(meta, dict) else None
+        return float(d) if d is not None else None
+    except Exception:  # noqa: BLE001
         return None

@@ -181,6 +181,9 @@ class GoldenBase(unittest.TestCase):
         self._real_internal = social_analytics._internal_sheet
         social_analytics._internal_sheet = lambda: (
             [dict(r) for r in _ANALYTICS_ROWS], list(_ANALYTICS_COLS), "")
+        # No live Content audit tab read in tests (offline).
+        self._real_named_ws = social_analytics._read_named_worksheet
+        social_analytics._read_named_worksheet = lambda title: None
         # Skip the LLM strategist fallback branch.
         self._real_key = config.GEMINI_API_KEY
         config.GEMINI_API_KEY = ""
@@ -192,6 +195,7 @@ class GoldenBase(unittest.TestCase):
         gemini_client.GeminiClient = self._real_gem
         ni.ingest = self._real_ingest
         social_analytics._internal_sheet = self._real_internal
+        social_analytics._read_named_worksheet = self._real_named_ws
         config.GEMINI_API_KEY = self._real_key
         ae._EVAL_CACHE.clear()
 
@@ -414,6 +418,25 @@ class TestGoldenPrompts(GoldenBase):
         self.assertIn("(proxy)", out)
         self.assertNotRegex(low, r"\b\d+\s*comments\b")
         self.assertEqual(FakeSheets.writes, 0)
+
+    def test_20_schema_plan_demographics(self):
+        text = "What fields do we need to add to answer demographics?"
+        out = self.run_prompt(text)
+        self.assertIn("AGE_SPLIT", out)
+        self.assertIn("IG Insights", out)
+        self.assertIn("between `Status` and the first taxonomy category `HOOK`", out)
+        self.assertEqual(FakeSheets.writes, 0)
+        self.assertQuality(text, out)
+
+    def test_21_schema_plan_duration_not_the_data_answer(self):
+        text = "What do we need to track to answer reel duration?"
+        out = self.run_prompt(text)
+        # routed to the schema plan (columns to add), NOT the duration data answer
+        self.assertIn("DURATION_SECONDS", out)
+        self.assertIn("yt-dlp", out)
+        self.assertNotIn("cluster around", out)         # not the data-read answer
+        self.assertEqual(FakeSheets.writes, 0)
+        self.assertQuality(text, out)
 
 
 if __name__ == "__main__":

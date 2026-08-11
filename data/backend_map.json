@@ -554,6 +554,8 @@
         "notion_sync",
         "_fmt_notion_summary",
         "cmd_evaluate_notion_idea",
+        "cmd_audit_social_metrics",
+        "cmd_backfill_duration_metadata",
         "cmd_audit_evidence_gaps",
         "cmd_notion_sync",
         "_example_link",
@@ -796,6 +798,9 @@
         "_duration_bucket",
         "_internal_sheet",
         "_brain",
+        "_read_named_worksheet",
+        "_videolength_label",
+        "content_audit_duration_buckets",
         "detect_available_metrics",
         "audit_metrics_schema",
         "_render_audit_report",
@@ -810,6 +815,8 @@
         "_hook_format_mix",
         "_group_mix",
         "_avg_duration",
+        "_parse_split",
+        "_demo_compare",
         "_split_urls",
         "_active_profiles",
         "_product_family",
@@ -820,15 +827,23 @@
         "_build_test",
         "_handle",
         "_fmt_split",
+        "_fmt_demo",
         "_render_trial_vs_standard",
         "_render_demographics",
         "_render_duration",
         "_render_test_plan",
+        "is_schema_plan_query",
+        "_schema_focus",
         "is_social_analytics_query",
         "is_creative_test_plan_query",
         "_parse_count",
+        "render_schema_plan",
         "answer_social_analytics_question",
-        "answer_creative_test_plan"
+        "answer_creative_test_plan",
+        "audit_social_metrics_report",
+        "duration_backfill_candidates",
+        "backfill_duration_dry_run",
+        "_probe_duration_metadata"
       ],
       "classes": [
         "_Sources"
@@ -1202,7 +1217,9 @@
     "rate-calendar-ideas",
     "build-semantic-connections",
     "evaluate-notion-idea",
-    "audit-evidence-gaps"
+    "audit-evidence-gaps",
+    "audit-social-metrics",
+    "backfill-duration-metadata"
   ],
   "env_vars": [
     "APIFY_INSTAGRAM_ACTOR_ID",

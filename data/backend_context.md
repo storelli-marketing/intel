@@ -81,6 +81,20 @@ labelled proxy/inferred bet (KPI outcomes aren't tracked). Answers are built
 with `decision_trace` (Data check → Cohort split → Metric used → Pattern found →
 KPI caveat for analytics; Analysis anchor → Inspo cue → Creative bridge → KPI
 bet for tests). Read-only: no Sheet writes, no Notion writes, no analysis.
+Recognizes both short aliases (duration, followers, age…) and the recommended
+production column names (DURATION_SECONDS, FOLLOWERS_AT_POST, AGE_SPLIT,
+GENDER_SPLIT, LOCATION_SPLIT, FOLLOWER_NONFOLLOWER_SPLIT, plus optional
+REACH/IMPRESSIONS/PROFILE_VISITS/WEBSITE_CLICKS/PRODUCT_CLICKS/TRIAL_CLICKS/
+QUALIFIED_DMS). When exact DURATION_SECONDS is absent it falls back to the
+`Content audit` tab's coarse `overall_videoLength_*` buckets (clearly labelled a
+proxy, not seconds), else says duration is missing. Demographic split strings
+("F 58% / M 42%") are parsed and compared trial-vs-standard when the columns
+exist; otherwise it names the exact missing columns. Two read-only/dry-run CLIs:
+`audit-social-metrics` (available/missing/coverage/classifiability/recommended
+columns) and `backfill-duration-metadata --dry-run` (lists rows that could
+receive DURATION_SECONDS; metadata-only; NO write mode exists yet). New metric
+columns must be inserted between `Status` and the first taxonomy category `HOOK`
+with row 1 blank, or the header forward-fill misreads them as taxonomy columns.
 
 **Analysis pipeline path** (CLI only, never Slack): `python src/main.py
 analyze` / `analyze-all` → `src/sheets_client.py` reads eligible rows →
