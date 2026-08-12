@@ -1193,6 +1193,20 @@ _IG_PULL_KW = ("pull instagram metrics", "pull ig metrics", "refresh ig metrics"
 _DEMO_MISSING_KW = ("why are demographics missing", "why is demographic data missing",
                     "why no demographics", "demographics missing", "why are the demographics",
                     "why don't we have demographics")
+_IG_CONNECTED_KW = ("ig metrics connected", "instagram metrics connected",
+                    "are ig metrics connected", "are instagram metrics connected",
+                    "is instagram connected", "is ig connected")
+# Metric-status asks (read the live sheet + sync ledger; no secrets).
+_LAST_REFRESH_KW = ("last refreshed", "when were metrics", "last metrics refresh",
+                    "when did we refresh", "last sync", "when was the last refresh")
+_REELS_WITH_METRICS_KW = ("how many reels have metrics", "reels have metrics",
+                          "how many have metrics", "reels with metrics")
+_TRACKING_KW = ("metrics are we tracking", "metrics do we track", "what are we tracking",
+                "which metrics are we tracking", "what metrics are we actually tracking")
+_MISSING_REELS_KW = ("reels missing metrics", "any reels missing", "reels without metrics",
+                     "reels are missing metrics", "which reels are missing")
+_WHAT_CHANGED_KW = ("what changed in our content", "what changed in performance",
+                    "what has changed", "what's changed")
 
 _TESTPLAN_STRONG = ("test plan", "creative test plan", "testing plan", "ideas to test",
                     "ideas we should test", "ideas we can test", "test ideas", "ideas to run as tests")
@@ -1221,7 +1235,9 @@ def is_social_analytics_query(text: str, context: Optional[list] = None) -> bool
         return True
     if any(k in t for k in _MISSING_METRICS_KW + _IMPORT_KW + _BUCKET_USE_KW + _BUCKET_PERF_KW):
         return True
-    if any(k in t for k in _IG_CONFIG_KW + _IG_PULL_KW + _DEMO_MISSING_KW):
+    if any(k in t for k in _IG_CONFIG_KW + _IG_PULL_KW + _DEMO_MISSING_KW + _IG_CONNECTED_KW
+           + _LAST_REFRESH_KW + _REELS_WITH_METRICS_KW + _TRACKING_KW + _MISSING_REELS_KW
+           + _WHAT_CHANGED_KW):
         return True
     if any(k in t for k in _TRIAL_KW):
         return True
@@ -1439,6 +1455,52 @@ def _render_demographics_missing(text: str) -> str:
     return dt.render(lead, steps, move=move, mode=mode)
 
 
+def _render_ig_metrics_status(text: str) -> str:
+    """Short status: reels with metrics, tracked columns, missing, last refresh.
+    Reads the live sheet + sync ledger; never exposes tokens/secrets."""
+    mode = st.detect_response_mode(text)
+    t = _lower(text)
+    try:
+        import social_metrics_ingest as smi
+        s = smi.metrics_status()
+    except Exception as e:  # noqa: BLE001
+        log.warning("metrics_status failed: %s", e)
+        s = {"ok": False}
+    if not s.get("ok"):
+        return dt.render("I can't reach the metrics sheet right now.",
+                         [dt.step("Data check", "sheet unreachable", [], "risk", "Thin")],
+                         move="retry once Sheets is configured.", mode=mode)
+    if any(k in t for k in _LAST_REFRESH_KW + _WHAT_CHANGED_KW):
+        last = s["last_refresh"] or "never — no automatic refresh has run yet"
+        steps = [dt.step("Last refresh", last, [], "topic", "Medium"),
+                 dt.step("Coverage", f"{s['reels_with_metrics']}/{s['reels_total']} reels have metrics",
+                         [], "internal", "Medium")]
+        return dt.render(f"Metrics last refreshed: {last}.", steps,
+                         move="run `refresh-instagram-metrics --apply` (once IG is connected) to update.",
+                         mode=mode)
+    if any(k in t for k in _MISSING_REELS_KW):
+        steps = [dt.step("Missing", f"{s['reels_missing']} of {s['reels_total']} reels have no metrics",
+                         [], "risk", "Medium"),
+                 dt.step("Fix", "connect IG + refresh-instagram-metrics", [], "topic", "Thin")]
+        return dt.render(f"{s['reels_missing']} reels are missing metrics.", steps,
+                         move="connect the IG API and run refresh-instagram-metrics to fill them.",
+                         mode=mode)
+    if any(k in t for k in _TRACKING_KW):
+        cov = s["coverage"]
+        pop = ", ".join(f"{c} ({cov.get(c, 0)})" for c in s["tracked_columns"][:8]) or "none populated yet"
+        steps = [dt.step("Columns", ", ".join(s["tracked_columns"][:10]) or "none", [], "topic", "Medium"),
+                 dt.step("Populated", pop, [], "internal", "Medium")]
+        return dt.render("Metric columns we track (with how many reels have each):", steps,
+                         move="fill them automatically via refresh-instagram-metrics.", mode=mode)
+    # default: how many reels have metrics
+    steps = [dt.step("With metrics", f"{s['reels_with_metrics']}/{s['reels_total']} reels",
+                     [], "internal", "Medium"),
+             dt.step("Missing", str(s["reels_missing"]), [], "risk", "Thin")]
+    return dt.render(f"{s['reels_with_metrics']} of {s['reels_total']} reels have metrics.", steps,
+                     move="run refresh-instagram-metrics to fill the rest (once IG is connected).",
+                     mode=mode)
+
+
 def answer_social_analytics_question(text: str, context: Optional[list] = None) -> Optional[str]:
     """Slack entrypoint for analytics questions (IG ingest status, schema plan,
     import/staging, duration buckets, trial/standard, demographics, duration,
@@ -1446,10 +1508,14 @@ def answer_social_analytics_question(text: str, context: Optional[list] = None) 
     t = _lower(text)
     try:
         # Automatic-ingestion status + demographics-why first (never applies).
-        if any(k in t for k in _IG_CONFIG_KW + _IG_PULL_KW):
+        if any(k in t for k in _IG_CONFIG_KW + _IG_CONNECTED_KW + _IG_PULL_KW):
             return _render_ig_ingest_status(text)
         if any(k in t for k in _DEMO_MISSING_KW):
             return _render_demographics_missing(text)
+        # Metric-status asks (reels-missing BEFORE the schema 'missing metrics').
+        if any(k in t for k in _LAST_REFRESH_KW + _REELS_WITH_METRICS_KW + _TRACKING_KW
+               + _MISSING_REELS_KW + _WHAT_CHANGED_KW):
+            return _render_ig_metrics_status(text)
         # Schema-plan asks next — "what do we need to track to answer X" mentions
         # duration/demographics but wants the columns-to-add answer, not the data.
         if is_schema_plan_query(text, context):

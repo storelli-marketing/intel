@@ -805,6 +805,27 @@ def cmd_insert_social_schema(apply: bool, include_optional: bool = True) -> int:
     return 0 if r.get("ok") else 1
 
 
+def cmd_verify_instagram_connection() -> int:
+    """Safe connection preflight — resolves the Storelli IG account, checks
+    media/insights access, lists available metrics + token health. Never prints
+    the access token; never writes."""
+    import social_metrics_ingest as smi
+    v = smi.verify_connection()
+    print(smi.render_connection_report(v))
+    return 0 if v.get("connected") else 1
+
+
+def cmd_refresh_instagram_metrics(apply: bool) -> int:
+    """Operational incremental refresh: verify -> pull owned media + insights ->
+    map by LINK -> tiered fill (immutable fill-once, cumulative update-if-ours,
+    manual never-overwrite) -> (gated) apply -> update sync-state. DRY-RUN by
+    default; --apply writes empty/updatable metric cells only when SAFE."""
+    import social_metrics_ingest as smi
+    rep = smi.refresh_instagram_metrics(dry_run=not apply, apply=apply)
+    print(smi.render_refresh_report(rep))
+    return 0 if rep.get("ok") else 1
+
+
 def cmd_pull_instagram_metrics(apply: bool) -> int:
     """Automatic IG metrics ingestion for Storelli-owned media. DRY-RUN by
     default (reports what would fill; writes nothing). --apply fills empty metric
@@ -992,7 +1013,8 @@ def main() -> int:
                                  "backfill-duration-metadata", "preflight-social-schema",
                                  "setup-metrics-staging", "import-social-metrics",
                                  "audit-duration-buckets", "insert-social-schema",
-                                 "pull-instagram-metrics"])
+                                 "pull-instagram-metrics", "verify-instagram-connection",
+                                 "refresh-instagram-metrics"])
     parser.add_argument("--url", type=str, default=None, metavar="URL",
                         help="Notion page URL for evaluate-notion-idea")
     parser.add_argument("--dry-run", action="store_true",
@@ -1097,6 +1119,12 @@ def main() -> int:
 
         elif args.command == "pull-instagram-metrics":
             return cmd_pull_instagram_metrics(args.apply)
+
+        elif args.command == "verify-instagram-connection":
+            return cmd_verify_instagram_connection()
+
+        elif args.command == "refresh-instagram-metrics":
+            return cmd_refresh_instagram_metrics(args.apply)
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

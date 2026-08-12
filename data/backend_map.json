@@ -573,6 +573,8 @@
         "cmd_setup_metrics_staging",
         "cmd_import_social_metrics",
         "cmd_insert_social_schema",
+        "cmd_verify_instagram_connection",
+        "cmd_refresh_instagram_metrics",
         "cmd_pull_instagram_metrics",
         "cmd_audit_duration_buckets",
         "cmd_audit_evidence_gaps",
@@ -863,6 +865,7 @@
         "_render_best_bucket",
         "_render_ig_ingest_status",
         "_render_demographics_missing",
+        "_render_ig_metrics_status",
         "answer_social_analytics_question",
         "answer_creative_test_plan",
         "audit_social_metrics_report",
@@ -936,6 +939,7 @@
     },
     "src/social_metrics_ingest.py": {
       "functions": [
+        "_now_utc",
         "extract_instagram_shortcode",
         "canonicalize_instagram_url",
         "_poc_key",
@@ -948,7 +952,17 @@
         "pull_instagram_metrics",
         "_apply_fills",
         "_write_account_insights",
-        "render_pull_report"
+        "render_pull_report",
+        "verify_connection",
+        "_safe_token_health",
+        "render_connection_report",
+        "read_sync_state",
+        "plan_incremental",
+        "refresh_instagram_metrics",
+        "_write_sync_state",
+        "_col_letter",
+        "render_refresh_report",
+        "metrics_status"
       ],
       "classes": []
     },
@@ -1294,7 +1308,9 @@
     "import-social-metrics",
     "audit-duration-buckets",
     "insert-social-schema",
-    "pull-instagram-metrics"
+    "pull-instagram-metrics",
+    "verify-instagram-connection",
+    "refresh-instagram-metrics"
   ],
   "env_vars": [
     "APIFY_INSTAGRAM_ACTOR_ID",

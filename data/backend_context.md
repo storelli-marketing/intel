@@ -126,6 +126,28 @@ Config: INSTAGRAM_ACCESS_TOKEN (or META_ACCESS_TOKEN) + INSTAGRAM_BUSINESS_ACCOU
 Dashboard: "Pull Instagram Metrics — Dry Run" / "— Apply (gated, RUN_SECRET)".
 Slack answers config status only and NEVER applies a write.
 
+**Operational IG refresh + mutable-metric policy.** `verify-instagram-connection`
+is a safe preflight (resolves the Storelli account, checks media/insights access,
+lists available/unavailable metrics + token health; NEVER prints the token).
+`refresh-instagram-metrics` is the incremental operational path (dry-run by
+default; `--apply` gated on a SAFE verdict): verify -> pull owned media +
+insights -> map by LINK -> tiered fill -> write empty/updatable metric cells ->
+update the `INSTAGRAM_SYNC_STATE` ledger. The mutable-metric policy: IMMUTABLE
+metadata (POST_DATE, DURATION_SECONDS) is filled once and never changed;
+CUMULATIVE metrics (views/likes/comments/saves/shares/reach/…) are updated to the
+latest API value ONLY when the current cell equals the value we last synced (an
+API-owned cell) — if it no longer matches, a human edited it and it is never
+overwritten; HUMAN/manual fields (REEL_TYPE, taxonomy, Product/ICP/Status) are
+never written by the API. Incremental: media already in the ledger with unchanged
+metrics are skipped; new/changed media are written; the run reports what changed.
+Analytics read the sheet live, so duration/comments/saves/trial answers update
+immediately after a refresh — no separate build step. Slack status (read-only, no
+secrets): "are IG metrics connected?", "when were metrics last refreshed?", "how
+many reels have metrics?", "what metrics are we tracking?", "are any reels missing
+metrics?". Recommended schedule (once connected): a daily Railway cron running
+`refresh-instagram-metrics --apply` (metrics keep changing for ~a few weeks post-
+publish; daily is ample, hourly is unnecessary). No scheduler is created here.
+
 **Analysis pipeline path** (CLI only, never Slack): `python src/main.py
 analyze` / `analyze-all` → `src/sheets_client.py` reads eligible rows →
 `src/analyzer.py` + `src/gemini_client.py` download the reel (yt-dlp),

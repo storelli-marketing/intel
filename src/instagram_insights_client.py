@@ -69,6 +69,29 @@ class InstagramInsightsClient:
         r.raise_for_status()
         return r.json()
 
+    # ---- account resolve + token health ------------------------------------
+    def fetch_account(self, fields: str = "id,username,followers_count,media_count") -> dict:
+        """Resolve the configured IG business account (proves the token can see
+        it). Raises on API error so the caller can record the exact blocker."""
+        return self._get(str(self.ig_user_id), {"fields": fields})
+
+    def token_health(self) -> dict:
+        """Best-effort token expiry/validity via debug_token — only possible when
+        META_APP_ID + META_APP_SECRET are set (needs an app token). Never returns
+        or logs the token itself. Degrades to {'known': False} otherwise."""
+        if not (config.META_APP_ID and config.META_APP_SECRET):
+            return {"known": False, "reason": "no META_APP_ID/META_APP_SECRET for debug_token"}
+        try:
+            resp = self._get("debug_token", {
+                "input_token": self.token,
+                "access_token": f"{config.META_APP_ID}|{config.META_APP_SECRET}"})
+            d = resp.get("data", {}) or {}
+            return {"known": True, "is_valid": d.get("is_valid"),
+                    "expires_at": d.get("expires_at"), "data_access_expires_at":
+                    d.get("data_access_expires_at"), "scopes": d.get("scopes") or []}
+        except Exception as e:  # noqa: BLE001
+            return {"known": False, "error": type(e).__name__}
+
     # ---- owned media --------------------------------------------------------
     def fetch_media(self, max_items: int = 500) -> list:
         """Return owned media items (paged). Each is the raw API dict with the

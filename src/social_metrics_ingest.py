@@ -37,6 +37,37 @@ _API_FILLABLE_COLUMNS = ("DURATION_SECONDS", "POST_DATE", "VIEWS", "LIKES", "COM
 ACCOUNT_INSIGHTS_TAB = "INSTAGRAM_ACCOUNT_INSIGHTS"
 ACCOUNT_INSIGHTS_COLUMNS = ("PERIOD", "PULLED_AT", "METRIC", "BREAKDOWN", "SPLIT", "SOURCE")
 
+# Per-media sync ledger — enables incremental refresh + the mutable-metric
+# update policy (below). Keyed by Instagram shortcode.
+SYNC_STATE_TAB = "INSTAGRAM_SYNC_STATE"
+SYNC_STATE_COLUMNS = ("SHORTCODE", "MEDIA_ID", "POC_ROW", "FIRST_SYNCED_AT", "LAST_SYNCED_AT",
+                      "VIEWS", "REACH", "LIKES", "COMMENTS", "SAVES", "SHARES", "IMPRESSIONS",
+                      "PROFILE_VISITS", "WEBSITE_CLICKS", "ENGAGEMENT_RATE")
+
+# ---- mutable-metric policy (documented + enforced) ------------------------
+# IMMUTABLE metadata — a real one-time property of the post; fill once, never
+# change (updating would only ever be a data error).
+_IMMUTABLE_COLUMNS = ("POST_DATE", "DURATION_SECONDS")
+# CUMULATIVE metrics — legitimately change over a post's life (views/comments/
+# etc.). Refreshed to the latest official API value, BUT only when the current
+# cell is one WE wrote (its value equals the last value we synced). If the cell
+# no longer matches what we last wrote, a human edited it -> we never overwrite.
+_CUMULATIVE_COLUMNS = ("VIEWS", "REACH", "LIKES", "COMMENTS", "SAVES", "SHARES",
+                       "IMPRESSIONS", "PROFILE_VISITS", "WEBSITE_CLICKS", "ENGAGEMENT_RATE")
+# HUMAN fields (REEL_TYPE, and everything outside the metric set) are never
+# written by the API at all.
+
+# Known media-level metric names, for the verify "available vs unavailable" list.
+_KNOWN_MEDIA_METRICS = ("views", "plays", "reach", "likes", "comments", "saved", "shares",
+                        "total_interactions", "profile_visits", "profile_activity",
+                        "impressions", "website_clicks", "ig_reels_avg_watch_time",
+                        "ig_reels_video_view_total_time")
+
+
+def _now_utc() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
 
 # ---------------------------------------------------------------------------
 # URL / shortcode helpers (Part C) — pure
@@ -423,3 +454,364 @@ def render_pull_report(rep: dict) -> str:
                 lines.append(f"  Account insights: {ai.get('rows_appended', 0)} rows -> "
                              f"{ai.get('tab')}" + (f" (error: {ai['error']})" if ai.get("error") else ""))
     return "\n".join(lines)
+
+
+# ===========================================================================
+# Part 1 — connection preflight (safe; never prints the token)
+# ===========================================================================
+def verify_connection(client=None) -> dict:
+    """Validate the Instagram connection safely. Resolves the account, checks
+    media + insights access, and lists available/unavailable metrics. Never
+    returns or logs the access token."""
+    token_present = bool(config.INSTAGRAM_ACCESS_TOKEN)
+    account_present = bool(config.INSTAGRAM_BUSINESS_ACCOUNT_ID)
+    if client is None and not config.instagram_configured():
+        return {"connected": False, "configured": False,
+                "token_present": token_present, "account_id_present": account_present,
+                "missing_vars": config.instagram_missing_vars(),
+                "blocker": config.IG_INGEST_NOT_CONFIGURED_MSG}
+    try:
+        if client is None:
+            from instagram_insights_client import InstagramInsightsClient
+            client = InstagramInsightsClient()
+    except Exception as e:  # noqa: BLE001
+        return {"connected": False, "configured": False, "blocker": str(e),
+                "missing_vars": config.instagram_missing_vars()}
+
+    out = {"connected": False, "configured": True, "account": None, "media_access": False,
+           "insights_access": False, "available_metrics": [], "unavailable_metrics": [],
+           "token_health": {}, "blocker": None, "media_sampled": 0}
+    # 1. account resolve (proves token can see the configured Storelli account)
+    try:
+        acct = client.fetch_account()
+        out["account"] = {"id": acct.get("id"), "username": acct.get("username"),
+                          "followers_count": acct.get("followers_count"),
+                          "media_count": acct.get("media_count")}
+    except Exception as e:  # noqa: BLE001
+        out["blocker"] = f"cannot resolve IG account (token/permission?): {type(e).__name__}"
+        out["token_health"] = _safe_token_health(client)
+        return out
+    # 2. media access
+    try:
+        media = client.fetch_media(max_items=5)
+        out["media_access"] = True
+        out["media_sampled"] = len(media)
+    except Exception as e:  # noqa: BLE001
+        out["blocker"] = f"account resolved but media fetch failed: {type(e).__name__}"
+        out["token_health"] = _safe_token_health(client)
+        return out
+    # 3. insights access on a sample reel + available/unavailable metric list
+    from instagram_insights_client import normalize_media
+    sample = [m for m in media if str(m.get("media_product_type", "")).upper() == "REELS"] or media
+    if sample:
+        m = normalize_media(sample[0])
+        try:
+            ins = client.fetch_media_insights(m["id"], m.get("media_product_type", ""))
+        except Exception:  # noqa: BLE001
+            ins = {}
+        out["insights_access"] = bool(ins)
+        out["available_metrics"] = sorted(ins.keys())
+        out["unavailable_metrics"] = [k for k in _KNOWN_MEDIA_METRICS if k not in ins]
+    out["token_health"] = _safe_token_health(client)
+    out["connected"] = bool(out["account"] and out["media_access"])
+    if not out["connected"] and not out["blocker"]:
+        out["blocker"] = "account/media not accessible"
+    return out
+
+
+def _safe_token_health(client) -> dict:
+    try:
+        return client.token_health()
+    except Exception as e:  # noqa: BLE001
+        return {"known": False, "error": type(e).__name__}
+
+
+def render_connection_report(v: dict) -> str:
+    if not v.get("configured"):
+        return "\n".join([
+            "Connected: NO",
+            f"Blocker: {v.get('blocker')}",
+            "  Missing env vars: " + (", ".join(v.get("missing_vars") or []) or "(unknown)"),
+            "  (access token never printed.)"])
+    acct = v.get("account") or {}
+    th = v.get("token_health") or {}
+    if th.get("known"):
+        exp = th.get("expires_at")
+        tok = f"valid={th.get('is_valid')}, expires_at={exp or 'never/long-lived'}"
+    else:
+        tok = f"unknown ({th.get('reason') or th.get('error') or 'no debug_token access'})"
+    return "\n".join([
+        f"Connected: {'YES' if v.get('connected') else 'NO'}",
+        f"Storelli account resolved: {acct.get('username') or acct.get('id') or '(none)'}"
+        + (f" ({acct.get('media_count')} media)" if acct.get("media_count") is not None else ""),
+        f"media access: {'YES' if v.get('media_access') else 'NO'}",
+        f"insights access: {'YES' if v.get('insights_access') else 'NO'}",
+        "available metrics: " + (", ".join(v.get("available_metrics") or []) or "(none seen on sample)"),
+        "unavailable metrics: " + (", ".join(v.get("unavailable_metrics") or []) or "(none)"),
+        f"token health: {tok}",
+        f"blocker: {v.get('blocker') or '(none)'}",
+        "  (access token never printed.)"])
+
+
+# ===========================================================================
+# Parts 3/4 — incremental refresh with the mutable-metric policy
+# ===========================================================================
+def read_sync_state(sheets) -> dict:
+    """Read INSTAGRAM_SYNC_STATE -> {shortcode: {media_id, poc_row, first, last,
+    values:{col:val}}}. Fail-soft -> {} when the tab is absent/unreadable."""
+    try:
+        import gspread
+        sh = sheets.ws.spreadsheet
+        try:
+            vals = sh.worksheet(SYNC_STATE_TAB).get_all_values()
+        except gspread.WorksheetNotFound:
+            return {}
+    except Exception as e:  # noqa: BLE001
+        log.warning("sync-state read failed: %s", e)
+        return {}
+    if not vals or len(vals) < 2:
+        return {}
+    header = [c.strip() for c in vals[0]]
+    idx = {h: i for i, h in enumerate(header)}
+    out = {}
+    for r in vals[1:]:
+        def g(col):
+            i = idx.get(col)
+            return r[i].strip() if i is not None and i < len(r) else ""
+        sc = g("SHORTCODE")
+        if not sc:
+            continue
+        out[sc] = {"media_id": g("MEDIA_ID"), "poc_row": g("POC_ROW"),
+                   "first": g("FIRST_SYNCED_AT"), "last": g("LAST_SYNCED_AT"),
+                   "values": {c: g(c) for c in _CUMULATIVE_COLUMNS if g(c)}}
+    return out
+
+
+def plan_incremental(mapping: dict, insights_by_media: dict, poc_cols: list,
+                     sync_state: dict) -> dict:
+    """Per-cell decisions under the mutable-metric policy. Returns fills
+    (row -> {col: value}) plus change counts and a per-media log."""
+    fillable = [c for c in _API_FILLABLE_COLUMNS if c in poc_cols]
+    fills: dict = {}
+    counts = {"first_fill": 0, "update": 0, "unchanged": 0, "immutable_kept": 0,
+              "manual_protected": 0}
+    changes, per_media = [], []
+    for media, row in mapping["matched"]:
+        sc = extract_instagram_shortcode(media.get("permalink", ""))
+        vals = build_metric_values(media, insights_by_media.get(media.get("id"), {}))
+        last_vals = (sync_state.get(sc, {}) or {}).get("values", {})
+        row_changes = {}
+        for col in fillable:
+            v = vals.get(col)
+            if not v:
+                continue
+            cur = str(row.get(col, "")).strip()
+            if col in _IMMUTABLE_COLUMNS:
+                if not cur:
+                    row_changes[col] = v
+                    counts["first_fill"] += 1
+                else:
+                    counts["immutable_kept"] += 1
+                continue
+            # cumulative
+            if not cur:
+                row_changes[col] = v
+                counts["first_fill"] += 1
+            else:
+                last = str(last_vals.get(col, "")).strip()
+                if last and last == cur:            # a cell WE last wrote -> API-owned
+                    if str(v) != cur:
+                        row_changes[col] = v
+                        counts["update"] += 1
+                        changes.append({"shortcode": sc, "col": col, "old": cur, "new": v})
+                    else:
+                        counts["unchanged"] += 1
+                else:                                # human-edited / unknown -> protect
+                    counts["manual_protected"] += 1
+        if row_changes:
+            fills[row["_row"]] = row_changes
+        per_media.append({"shortcode": sc, "media_id": media.get("id"),
+                          "poc_row": row.get("_row"), "api_values": vals})
+    return {"fills": fills, "counts": counts, "changes": changes, "per_media": per_media,
+            "fillable": fillable}
+
+
+def refresh_instagram_metrics(dry_run: bool = True, apply: bool = False,
+                              client=None, sheets=None, sync_state=None,
+                              max_items: int = 500) -> dict:
+    """Operational incremental refresh: verify -> pull owned media + insights ->
+    map by LINK -> tiered fill plan -> (gated) apply empty/updatable cells ->
+    verify -> update sync-state -> summary. Read-only unless apply=True AND SAFE."""
+    conn = verify_connection(client)
+    if not conn.get("connected"):
+        return {"ok": False, "configured": conn.get("configured", False),
+                "connection": conn, "error": conn.get("blocker"),
+                "missing_vars": conn.get("missing_vars")}
+
+    if client is None:
+        from instagram_insights_client import InstagramInsightsClient
+        client = InstagramInsightsClient()
+    from instagram_insights_client import normalize_media
+
+    api_errors = []
+    try:
+        media = [normalize_media(m) for m in client.fetch_media(max_items=max_items)]
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "configured": True, "connection": conn,
+                "error": f"fetch_media failed: {e}"}
+
+    poc = _load_poc(sheets)
+    poc_rows = poc.read_rows()
+    poc_cols = list(poc.meta_col.keys())
+    mapping = map_media_to_poc_rows(media, poc_rows)
+
+    insights_by_media, unavailable = {}, 0
+    for m, _row in mapping["matched"]:
+        try:
+            ins = client.fetch_media_insights(m["id"], m.get("media_product_type", ""))
+        except Exception as e:  # noqa: BLE001
+            api_errors.append(f"insights {m['id']}: {e}")
+            ins = {}
+        if not ins:
+            unavailable += 1
+        insights_by_media[m["id"]] = ins
+
+    if sync_state is None:
+        sync_state = read_sync_state(poc)
+    plan = plan_incremental(mapping, insights_by_media, poc_cols, sync_state)
+
+    safe = bool(conn["connected"] and len(media) > 0 and len(mapping["matched"]) > 0)
+    report = {
+        "ok": True, "configured": True, "dry_run": not apply, "connection": conn,
+        "media_fetched": len(media), "matched_rows": len(mapping["matched"]),
+        "unmatched_poc_rows": len(mapping["unmatched_poc"]),
+        "media_not_in_poc": len(mapping["media_not_in_poc"]),
+        "insights_unavailable_rows": unavailable, "api_errors": api_errors,
+        "counts": plan["counts"], "changes": plan["changes"][:20],
+        "cells_to_write": sum(len(v) for v in plan["fills"].values()),
+        "already_synced_rows": sum(1 for pm in plan["per_media"]
+                                   if pm["shortcode"] in sync_state),
+        "new_rows": sum(1 for pm in plan["per_media"] if pm["shortcode"] not in sync_state),
+        "safe": safe,
+    }
+    if not apply:
+        return report
+    if not safe:
+        report["wrote"] = False
+        report["refused"] = "connection/mapping not safe to apply"
+        return report
+    written = _apply_fills(poc, plan["fills"])
+    report["wrote"] = True
+    report["cells_written"] = written["cells"]
+    report["rows_written"] = written["rows"]
+    report["verify_ok"] = written["verify_ok"]
+    report["sync_state"] = _write_sync_state(poc, plan["per_media"], sync_state)
+    return report
+
+
+def _write_sync_state(poc, per_media: list, prior: dict) -> dict:
+    """Upsert one ledger row per media (keyed by shortcode) with the values we
+    just synced, so the next run can tell an API-owned cell from a manual edit."""
+    try:
+        import gspread
+        sh = poc.ws.spreadsheet
+        try:
+            ws = sh.worksheet(SYNC_STATE_TAB)
+            existing = ws.get_all_values()
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title=SYNC_STATE_TAB, rows=1000, cols=len(SYNC_STATE_COLUMNS))
+            ws.update(range_name="A1", values=[list(SYNC_STATE_COLUMNS)], value_input_option="RAW")
+            existing = [list(SYNC_STATE_COLUMNS)]
+        header = [c.strip() for c in existing[0]]
+        sc_i = header.index("SHORTCODE")
+        row_by_sc = {r[sc_i].strip(): i + 2 for i, r in enumerate(existing[1:])
+                     if sc_i < len(r) and r[sc_i].strip()}
+        now = _now_utc()
+        appends, updates = [], []
+        for pm in per_media:
+            sc = pm["shortcode"]
+            vals = pm["api_values"]
+            first = (prior.get(sc, {}) or {}).get("first") or now
+            rowvals = [sc, pm.get("media_id", ""), str(pm.get("poc_row", "")), first, now]
+            rowvals += [str(vals.get(c, "")) for c in _CUMULATIVE_COLUMNS]
+            if sc in row_by_sc:
+                r = row_by_sc[sc]
+                updates.append({"range": f"A{r}:{_col_letter(len(SYNC_STATE_COLUMNS))}{r}",
+                                "values": [rowvals]})
+            else:
+                appends.append(rowvals)
+        if updates:
+            ws.batch_update(updates, value_input_option="RAW")
+        if appends:
+            ws.append_rows(appends, value_input_option="RAW")
+        return {"tab": SYNC_STATE_TAB, "updated": len(updates), "appended": len(appends)}
+    except Exception as e:  # noqa: BLE001
+        return {"tab": SYNC_STATE_TAB, "error": str(e)}
+
+
+def _col_letter(n: int) -> str:
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def render_refresh_report(rep: dict) -> str:
+    if not rep.get("ok"):
+        return "\n".join(["refresh-instagram-metrics — not connected.",
+                          render_connection_report(rep.get("connection", {}))])
+    c = rep["counts"]
+    head = "refresh-instagram-metrics --apply" if not rep.get("dry_run") else \
+        "refresh-instagram-metrics --dry-run (NO WRITES)"
+    lines = [head,
+             f"  Owned media fetched: {rep['media_fetched']}  |  matched POC rows: {rep['matched_rows']}",
+             f"  Already synced: {rep['already_synced_rows']}  |  new: {rep['new_rows']}",
+             f"  Plan — first fills: {c['first_fill']}, updates: {c['update']}, "
+             f"unchanged: {c['unchanged']}, immutable kept: {c['immutable_kept']}, "
+             f"manual-protected: {c['manual_protected']}",
+             f"  Cells to write: {rep['cells_to_write']}"]
+    for ch in rep.get("changes", [])[:8]:
+        lines.append(f"    ~ {ch['shortcode']} {ch['col']}: {ch['old']} -> {ch['new']}")
+    lines.append(f"  VERDICT: {'SAFE' if rep['safe'] else 'NOT SAFE'}")
+    if rep.get("dry_run"):
+        lines.append("  Dry-run only: nothing written. Analytics questions read the sheet live, "
+                     "so they answer immediately once --apply runs.")
+    elif rep.get("refused"):
+        lines.append(f"  REFUSED: {rep['refused']}")
+    else:
+        lines.append(f"  WROTE {rep.get('cells_written', 0)} cells across "
+                     f"{rep.get('rows_written', 0)} rows; verify_ok={rep.get('verify_ok')}; "
+                     f"sync-state {rep.get('sync_state')}.")
+        lines.append("  Analytics refreshed: ask 'how long are our best reels?', 'what gets more "
+                     "comments/saves?', 'trial vs standard?', 'what should we test next?' — live.")
+    return "\n".join(lines)
+
+
+# ===========================================================================
+# Part 7 — Slack status helpers (read-only; no secrets)
+# ===========================================================================
+def metrics_status(sheets=None) -> dict:
+    """Read-only status for Slack: reels with metrics, tracked metric columns +
+    coverage, reels missing metrics, and last-refresh time from the ledger."""
+    try:
+        poc = _load_poc(sheets)
+        rows = poc.read_rows()
+        cols = list(poc.meta_col.keys())
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+    metric_cols = [c for c in _API_FILLABLE_COLUMNS if c in cols]
+    linked = [r for r in rows if str(r.get("LINK", "")).strip()]
+    with_metrics = [r for r in linked
+                    if any(str(r.get(c, "")).strip() for c in metric_cols)]
+    coverage = {c: sum(1 for r in linked if str(r.get(c, "")).strip()) for c in metric_cols}
+    last_refresh = ""
+    try:
+        ss = read_sync_state(poc)
+        last_refresh = max((v.get("last", "") for v in ss.values()), default="")
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "reels_total": len(linked), "reels_with_metrics": len(with_metrics),
+            "reels_missing": len(linked) - len(with_metrics),
+            "tracked_columns": metric_cols, "coverage": coverage,
+            "last_refresh": last_refresh, "configured": config.instagram_configured()}
