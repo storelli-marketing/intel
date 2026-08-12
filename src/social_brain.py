@@ -1101,6 +1101,17 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     # Follow-up transforms (e.g. "turn this into a brief") are NOT idea queries
     # and fall through to the existing conversational engine below.
     try:
+        # Stateful contextual follow-up FIRST (Part M): a follow-up to a prior
+        # idea recommendation ("why those?", "why the first one", "show me the
+        # proof", "make it for parents") is resolved against the prior turn and
+        # answered in context — never re-run as a fresh top-N idea list. Returns
+        # None for anything it doesn't own (fresh question, reset, inspiration/
+        # shoot-brief, eval follow-up), so existing routing is unchanged.
+        import conversation_agent
+        contextual = conversation_agent.answer(text, context)
+        if contextual:
+            return contextual
+
         # Social Analytics + Creative Test Planning (read-only). Placed before
         # the generic idea/strategy routes so these specific questions — trial
         # vs standard, demographics, reel duration, "give me N ideas to test",

@@ -20,6 +20,29 @@ holds Slack thread context (resets on restart).
 
 ## Major flows
 
+**Stateful contextual follow-up layer** (the "why those?" fix): a follow-up to a
+prior IDEA recommendation is answered in context instead of re-running a fresh
+top-N list. `conversation_agent.answer()` is routed FIRST inside
+`social_brain.answer_conversation` and ties together `conversation_state.py`
+(compact per-conversation memory + 45-min TTL cache; reconstruction prioritizes
+Slack thread history, then cache), `conversation_resolver.py` (dialogue-act
+classifier + referent resolution — "these ideas"/"the first one"/"it" resolve
+against the prior ASSISTANT output, walking back through recent turns via
+`_recover_memory` so context survives an intervening explanation),
+`conversation_evidence.py` (focused packs + natural renderers for explain-set /
+explain-single / evidence / challenge / modify), and
+`conversation_response_planner.py` (picks the answer SHAPE so structure varies by
+intent). It ONLY owns genuine idea follow-ups (explain-a-set, "why the first one"
+by ordinal, compare #1 vs #2, show-proof, challenge, reframe-for-parents,
+shorter) and returns None for everything else — a fresh question, a reset (which
+routes the new product fresh), a shoot-brief (strategy skills) or inspiration ask
+(semantic layer), or an eval follow-up — so nothing else regresses. Evidence
+retrieval stays deterministic; an optional validated LLM only rewords the
+narrative (citations must be a subset of the pack, no external-as-proof, no
+causal language) and falls back to the deterministic answer. External inspiration
+stays reference-only throughout. route_debug reports dialogue_act /
+contextual_followup / resolved_referents / response_shape / llm_used.
+
 **Slack request path**: Slack → `POST /slack/events` (`src/web.py`) →
 signature verified (`slack_bot.verify_request`, HMAC against
 `SLACK_SIGNING_SECRET`) → 200 ACK'd immediately → background worker

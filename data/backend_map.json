@@ -197,6 +197,73 @@
       ],
       "classes": []
     },
+    "src/conversation_agent.py": {
+      "functions": [
+        "route_info",
+        "_load_ideas",
+        "_recover_memory",
+        "_connection_for",
+        "_family",
+        "answer",
+        "_dispatch",
+        "_compare",
+        "_maybe_llm",
+        "_update_state"
+      ],
+      "classes": []
+    },
+    "src/conversation_evidence.py": {
+      "functions": [
+        "_title",
+        "_handle",
+        "_tail",
+        "_angle",
+        "_pain_phrase",
+        "_hook_phrase",
+        "_idea_sources",
+        "explain_idea_set",
+        "_facts_set",
+        "explain_single",
+        "evidence_answer",
+        "challenge_answer",
+        "modify_answer"
+      ],
+      "classes": [
+        "_Src"
+      ]
+    },
+    "src/conversation_resolver.py": {
+      "functions": [
+        "_t",
+        "classify_dialogue_act",
+        "is_reset",
+        "resolve_referents",
+        "clarify"
+      ],
+      "classes": []
+    },
+    "src/conversation_response_planner.py": {
+      "functions": [
+        "plan_shape"
+      ],
+      "classes": []
+    },
+    "src/conversation_state.py": {
+      "functions": [
+        "new_state",
+        "conversation_key",
+        "_expired",
+        "get",
+        "put",
+        "clear",
+        "detect_product",
+        "detect_icp",
+        "_source_tags",
+        "build_state",
+        "last_assistant_text"
+      ],
+      "classes": []
+    },
     "src/correlations.py": {
       "functions": [
         "_confidence",

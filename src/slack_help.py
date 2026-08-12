@@ -117,9 +117,25 @@ def route_debug(text: str, context: Optional[list] = None) -> str:
             import social_strategy_skills as strat
             import slack_conversation_orchestrator as orch
             import calendar_retrieval as cret
+            import conversation_agent as cagent
             import idea_retrieval as ir
         except Exception:  # noqa: BLE001
             return "route_debug unavailable (import error)."
+
+        # Stateful contextual follow-up runs first (Part M/Q).
+        ci = cagent.route_info(q, context)
+        if ci.get("contextual_followup") == "yes":
+            return (
+                "*route_debug* (developer view — not shown to users):\n"
+                f"• route: `contextual_followup`\n"
+                f"• dialogue_act: `{ci.get('dialogue_act')}`\n"
+                f"• contextual_followup: yes\n"
+                f"• resolved_referents: {ci.get('resolved_referents')}\n"
+                f"• conversation_topic: {ci.get('conversation_topic') or '(none)'}\n"
+                f"• evidence_pack_type: {ci.get('evidence_pack_type')}\n"
+                f"• response_shape: {ci.get('response_shape')}\n"
+                f"• llm_used: {ci.get('LLM_used')}\n"
+                f"• fallback_used: {ci.get('fallback_used')}")
 
         if sa.is_social_analytics_query(q, context):
             route = "social_analytics"
