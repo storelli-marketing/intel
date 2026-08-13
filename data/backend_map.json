@@ -577,6 +577,36 @@
         "InstagramInsightsClient"
       ]
     },
+    "src/intelligence_refresh.py": {
+      "functions": [
+        "_now_iso",
+        "_stage",
+        "_run_stage",
+        "_ig_configured",
+        "_apify_configured",
+        "_load_sheets",
+        "_runs_ws",
+        "_read_runs",
+        "_lock_active",
+        "_write_run_row",
+        "_internal_metrics",
+        "_internal_analyze",
+        "_internal_recompute",
+        "_external_discovery",
+        "_external_analyze",
+        "_external_match",
+        "_external_quality",
+        "_external_connections",
+        "_internal_loop",
+        "_external_loop",
+        "_should_regenerate_ideas",
+        "run_intelligence_refresh",
+        "_history_row",
+        "render_report",
+        "last_runs"
+      ],
+      "classes": []
+    },
     "src/interpretation.py": {
       "functions": [
         "_idea_confidence",
@@ -640,6 +670,7 @@
         "cmd_setup_metrics_staging",
         "cmd_import_social_metrics",
         "cmd_insert_social_schema",
+        "cmd_refresh_intelligence",
         "cmd_verify_instagram_connection",
         "cmd_refresh_instagram_metrics",
         "cmd_pull_instagram_metrics",
@@ -741,6 +772,19 @@
         "buckets_for_rows",
         "is_positive",
         "ratio_to_performance"
+      ],
+      "classes": []
+    },
+    "src/query_economics.py": {
+      "functions": [
+        "_lower",
+        "_num",
+        "_text_of",
+        "classify_family",
+        "stats_from_query_row",
+        "query_utility",
+        "recommend",
+        "select_active"
       ],
       "classes": []
     },
@@ -932,6 +976,7 @@
         "_render_best_bucket",
         "_render_ig_ingest_status",
         "_render_demographics_missing",
+        "_render_brain_status",
         "_render_ig_metrics_status",
         "answer_social_analytics_question",
         "answer_creative_test_plan",
@@ -1183,6 +1228,7 @@
         "_do_slack",
         "_do_correlations",
         "_do_pull_instagram_metrics",
+        "_do_refresh_intelligence",
         "_do_generate_social_ideas",
         "_do_synthesize",
         "_guarded",
@@ -1205,6 +1251,10 @@
         "run_rate_calendar_ideas",
         "run_build_semantic_connections",
         "run_evaluate_notion_idea",
+        "run_refresh_intel_dry",
+        "run_refresh_intel_internal",
+        "run_refresh_intel_external",
+        "run_refresh_intel_full",
         "run_pull_ig_dry_run",
         "run_pull_ig_apply",
         "run_notion_sync",
@@ -1315,6 +1365,22 @@
     },
     {
       "method": "POST",
+      "path": "/run/refresh-intelligence-dry-run"
+    },
+    {
+      "method": "POST",
+      "path": "/run/refresh-intelligence-internal"
+    },
+    {
+      "method": "POST",
+      "path": "/run/refresh-intelligence-external"
+    },
+    {
+      "method": "POST",
+      "path": "/run/refresh-intelligence-full"
+    },
+    {
+      "method": "POST",
       "path": "/run/pull-instagram-metrics-dry-run"
     },
     {
@@ -1377,7 +1443,8 @@
     "insert-social-schema",
     "pull-instagram-metrics",
     "verify-instagram-connection",
-    "refresh-instagram-metrics"
+    "refresh-instagram-metrics",
+    "refresh-intelligence"
   ],
   "env_vars": [
     "APIFY_INSTAGRAM_ACTOR_ID",
@@ -1398,6 +1465,10 @@
     "INSPIRATION_PROVIDER",
     "INSTAGRAM_ACCESS_TOKEN",
     "INSTAGRAM_BUSINESS_ACCOUNT_ID",
+    "INTELLIGENCE_MAX_ACTIVE_QUERIES",
+    "INTELLIGENCE_REFRESH_CADENCE_DAYS",
+    "INTELLIGENCE_REFRESH_ENABLED",
+    "INTELLIGENCE_REFRESH_STALE_LOCK_MIN",
     "META_ACCESS_TOKEN",
     "META_API_VERSION",
     "META_APP_ID",

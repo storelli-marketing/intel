@@ -20,6 +20,33 @@ holds Slack thread context (resets on restart).
 
 ## Major flows
 
+**Self-updating intelligence scheduler** (`src/intelligence_refresh.py`,
+`src/query_economics.py`): orchestrates the EXISTING jobs (never duplicates them)
+into two isolated bounded loops on a weekly cadence — INTERNAL (Storelli = proof:
+IG metrics refresh → detect new → analyze → performance → correlate →
+latest_learnings → winning profiles → Notion sync) and EXTERNAL (inspiration =
+reference only: select queries → Apify discover → dedupe → analyze → match →
+quality → semantic connections). `run_intelligence_refresh(mode, dry_run,
+trigger)` runs every stage fail-soft (one bad video / missing Apify token /
+Gemini quota stop / Notion outage never kills the rest), returns a structured
+per-stage status, and writes an `INTELLIGENCE_REFRESH_RUNS` history row. A run
+LOCK in that tab (with a stale timeout) stops a scheduled run and a dashboard run
+from overlapping. Correlations/profiles/Notion rebuild ONLY when internal
+evidence actually changed; ideas are NEVER auto-regenerated — the orchestrator
+only computes SHOULD_REGENERATE_IDEAS. `query_economics` scores each discovery
+query (40% quality yield + 30% new-row + 20% connection usage + 10% novelty),
+keeps known-bad families (off-domain cross-sport, weak mindset, deprioritized
+rings) paused, prefers goalkeeper/soccer/youth/coach queries, and recommends
+RUN/PAUSE/REVIEW without ever auto-deleting. CLI `refresh-intelligence
+[--internal-only|--external-only|--dry-run]`; dashboard buttons (Dry Run /
+Internal / External / Full, all RUN_SECRET-gated); Slack answers "when did the
+brain last update / what changed / should we regenerate ideas / new inspiration"
+read the run history (external stays reference-only). Config:
+INTELLIGENCE_REFRESH_ENABLED, INTELLIGENCE_REFRESH_CADENCE_DAYS (default 7,
+clamp 5–14), INTELLIGENCE_REFRESH_STALE_LOCK_MIN. No scheduler is created in the
+repo — recurrence is wired externally via a Railway Cron invoking
+`refresh-intelligence`; it is NOT self-updating until that recurrence is enabled.
+
 **Stateful contextual follow-up layer** (the "why those?" fix): a follow-up to a
 prior IDEA recommendation is answered in context instead of re-running a fresh
 top-N list. `conversation_agent.answer()` is routed FIRST inside

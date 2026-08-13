@@ -805,6 +805,19 @@ def cmd_insert_social_schema(apply: bool, include_optional: bool = True) -> int:
     return 0 if r.get("ok") else 1
 
 
+def cmd_refresh_intelligence(internal_only: bool, external_only: bool, dry_run: bool) -> int:
+    """Self-updating intelligence refresh — orchestrates the existing internal
+    (Storelli evidence) and external (inspiration) jobs on a bounded schedule.
+    DRY-RUN reports what would happen and writes nothing; otherwise runs the
+    loops fail-soft with a run lock. Never mixes internal proof with external
+    reference; never auto-regenerates ideas."""
+    import intelligence_refresh as ir
+    mode = "internal" if internal_only else "external" if external_only else "full"
+    rep = ir.run_intelligence_refresh(mode=mode, dry_run=dry_run, trigger="cli")
+    print(ir.render_report(rep))
+    return 0 if rep.get("status") in ("success", "partial", "skipped") else 1
+
+
 def cmd_verify_instagram_connection() -> int:
     """Safe connection preflight — resolves the Storelli IG account, checks
     media/insights access, lists available metrics + token health. Never prints
@@ -1014,7 +1027,7 @@ def main() -> int:
                                  "setup-metrics-staging", "import-social-metrics",
                                  "audit-duration-buckets", "insert-social-schema",
                                  "pull-instagram-metrics", "verify-instagram-connection",
-                                 "refresh-instagram-metrics"])
+                                 "refresh-instagram-metrics", "refresh-intelligence"])
     parser.add_argument("--url", type=str, default=None, metavar="URL",
                         help="Notion page URL for evaluate-notion-idea")
     parser.add_argument("--dry-run", action="store_true",
@@ -1027,6 +1040,10 @@ def main() -> int:
                              "(default is a dry-run that writes nothing)")
     parser.add_argument("--no-optional", action="store_true",
                         help="insert-social-schema: insert the 14 required columns only")
+    parser.add_argument("--internal-only", action="store_true",
+                        help="refresh-intelligence: run only the internal Storelli loop")
+    parser.add_argument("--external-only", action="store_true",
+                        help="refresh-intelligence: run only the external inspiration loop")
     parser.add_argument("--reprocess", action="store_true",
                         help="re-analyze rows already marked completed")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
@@ -1125,6 +1142,9 @@ def main() -> int:
 
         elif args.command == "refresh-instagram-metrics":
             return cmd_refresh_instagram_metrics(args.apply)
+
+        elif args.command == "refresh-intelligence":
+            return cmd_refresh_intelligence(args.internal_only, args.external_only, args.dry_run)
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

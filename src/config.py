@@ -254,6 +254,31 @@ def instagram_missing_vars() -> list:
     return miss
 
 
+# Self-updating intelligence refresh (scheduler orchestration). Two isolated
+# loops — internal Storelli evidence + external inspiration — run on a bounded
+# WEEKLY cadence. Defaults are conservative; recurrence is only "on" once an
+# external scheduler (Railway Cron) actually invokes the refresh.
+INTELLIGENCE_REFRESH_ENABLED = os.getenv("INTELLIGENCE_REFRESH_ENABLED", "true").strip().lower() \
+    not in ("false", "0", "no", "off")
+try:
+    INTELLIGENCE_REFRESH_CADENCE_DAYS = int(os.getenv("INTELLIGENCE_REFRESH_CADENCE_DAYS", "7") or 7)
+except ValueError:
+    INTELLIGENCE_REFRESH_CADENCE_DAYS = 7
+# Clamp to the supported 5–14 day window.
+INTELLIGENCE_REFRESH_CADENCE_DAYS = max(5, min(14, INTELLIGENCE_REFRESH_CADENCE_DAYS))
+# A running lock older than this many minutes is treated as stale (crashed run).
+try:
+    INTELLIGENCE_REFRESH_STALE_LOCK_MIN = int(
+        os.getenv("INTELLIGENCE_REFRESH_STALE_LOCK_MIN", "90") or 90)
+except ValueError:
+    INTELLIGENCE_REFRESH_STALE_LOCK_MIN = 90
+# Bounded external discovery per run.
+try:
+    INTELLIGENCE_MAX_ACTIVE_QUERIES = int(os.getenv("INTELLIGENCE_MAX_ACTIVE_QUERIES", "12") or 12)
+except ValueError:
+    INTELLIGENCE_MAX_ACTIVE_QUERIES = 12
+
+
 def require_sheets() -> None:
     _require("GOOGLE_SHEET_ID")
     _require("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")

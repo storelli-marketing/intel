@@ -1207,6 +1207,14 @@ _MISSING_REELS_KW = ("reels missing metrics", "any reels missing", "reels withou
                      "reels are missing metrics", "which reels are missing")
 _WHAT_CHANGED_KW = ("what changed in our content", "what changed in performance",
                     "what has changed", "what's changed")
+# Self-updating intelligence status (from the refresh run history).
+_BRAIN_STATUS_KW = ("brain last update", "brain last refresh", "when did the brain",
+                    "is the brain up to date", "did we find anything new",
+                    "what changed since the last refresh", "new patterns emerge",
+                    "new inspiration did we find", "winning profiles change",
+                    "should we regenerate ideas", "did the brain refresh",
+                    "last intelligence refresh", "brain refreshed", "brain up to date",
+                    "anything new this week", "did our profiles change")
 
 _TESTPLAN_STRONG = ("test plan", "creative test plan", "testing plan", "ideas to test",
                     "ideas we should test", "ideas we can test", "test ideas", "ideas to run as tests")
@@ -1237,7 +1245,7 @@ def is_social_analytics_query(text: str, context: Optional[list] = None) -> bool
         return True
     if any(k in t for k in _IG_CONFIG_KW + _IG_PULL_KW + _DEMO_MISSING_KW + _IG_CONNECTED_KW
            + _LAST_REFRESH_KW + _REELS_WITH_METRICS_KW + _TRACKING_KW + _MISSING_REELS_KW
-           + _WHAT_CHANGED_KW):
+           + _WHAT_CHANGED_KW + _BRAIN_STATUS_KW):
         return True
     if any(k in t for k in _TRIAL_KW):
         return True
@@ -1455,6 +1463,76 @@ def _render_demographics_missing(text: str) -> str:
     return dt.render(lead, steps, move=move, mode=mode)
 
 
+def _render_brain_status(text: str) -> str:
+    """Conversational answer about the self-updating brain, from run history —
+    last refresh, what changed, whether ideas should regenerate. Not a dashboard
+    dump."""
+    mode = st.detect_response_mode(text)
+    t = _lower(text)
+    try:
+        import intelligence_refresh as ir
+        runs = ir.last_runs(n=1)
+    except Exception as e:  # noqa: BLE001
+        log.warning("brain status failed: %s", e)
+        runs = []
+
+    def _n(row, key):
+        try:
+            return int(str(row.get(key, "0") or 0))
+        except (ValueError, TypeError):
+            return 0
+
+    if not runs:
+        return dt.render(
+            "The brain hasn't run an automatic refresh yet — no refresh history.",
+            [dt.step("Status", "no scheduled refresh recorded", [], "topic", "Thin")],
+            move="run `refresh-intelligence --dry-run` to preview, then schedule it weekly "
+                 "(Railway Cron). I'll report each run here.", mode=mode)
+    r = runs[0]
+    when = r.get("FINISHED_AT") or r.get("STARTED_AT") or "recently"
+    new_media, analyzed = _n(r, "INTERNAL_NEW_MEDIA"), _n(r, "INTERNAL_ANALYZED")
+    ext_added, q80 = _n(r, "EXTERNAL_ADDED"), _n(r, "EXTERNAL_QUALITY_80")
+    profiles = _n(r, "PROFILES_UPDATED")
+    regen = str(r.get("IDEA_REGEN_RECOMMENDED", "")).strip().lower() in ("true", "1", "yes")
+
+    # focused sub-intents
+    if "regenerate" in t:
+        lead = ("Yes — new evidence justifies regenerating the idea pool."
+                if regen else "Not yet — I wouldn't regenerate the idea pool.")
+        steps = [dt.step("Signal", f"new profiles {profiles}, quality refs +{q80}, "
+                                    f"new inspiration +{ext_added}", [], "internal", "Medium")]
+        return dt.render(lead, steps,
+                         move=("run generate-ideas / refine-ideas to refresh the pool."
+                               if regen else "leave the rated ideas as-is until evidence shifts more."),
+                         mode=mode)
+    if "profile" in t:
+        lead = (f"Winning profiles updated: {profiles}." if profiles
+                else "No winning-profile change in the last refresh.")
+        return dt.render(lead, [dt.step("Last refresh", when, [], "topic", "Medium")],
+                         move="ask 'should we regenerate ideas?' to see if that shifts the pool.",
+                         mode=mode)
+    if "inspiration" in t:
+        return dt.render(
+            f"We added {ext_added} new external references last refresh ({q80} high-quality).",
+            [dt.step("Reminder", "external is execution reference, not proof", [], "risk", "Thin")],
+            move="external stays reference-only; it never becomes Storelli proof.", mode=mode)
+    # default: overall status / what changed / up to date
+    steps = [
+        dt.step("Last refresh", f"{when} ({r.get('STATUS', '?')})", [], "topic", "Medium"),
+        dt.step("Internal", f"{new_media} new reels detected, {analyzed} newly analyzed, "
+                            f"profiles {profiles}", [], "internal", "Medium"),
+        dt.step("External", f"{ext_added} new references ({q80} high-quality) — reference only",
+                [], "topic", "Medium"),
+        dt.step("Regenerate ideas?", "recommended" if regen else "not yet", [], "inference", "Thin"),
+    ]
+    lead = f"Brain last refreshed {when}."
+    if new_media == 0 and analyzed == 0 and ext_added == 0:
+        lead += " Nothing materially new since then."
+    return dt.render(lead, steps,
+                     move=("new evidence — worth regenerating ideas." if regen
+                           else "no idea-pool change needed yet."), mode=mode)
+
+
 def _render_ig_metrics_status(text: str) -> str:
     """Short status: reels with metrics, tracked columns, missing, last refresh.
     Reads the live sheet + sync ledger; never exposes tokens/secrets."""
@@ -1507,6 +1585,9 @@ def answer_social_analytics_question(text: str, context: Optional[list] = None) 
     metrics audit). Returns None if it doesn't own it."""
     t = _lower(text)
     try:
+        # Self-updating intelligence status (from refresh run history).
+        if any(k in t for k in _BRAIN_STATUS_KW):
+            return _render_brain_status(text)
         # Automatic-ingestion status + demographics-why first (never applies).
         if any(k in t for k in _IG_CONFIG_KW + _IG_CONNECTED_KW + _IG_PULL_KW):
             return _render_ig_ingest_status(text)

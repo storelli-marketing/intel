@@ -453,6 +453,26 @@ def _do_pull_instagram_metrics(apply: bool) -> None:
         _fail(str(e))
 
 
+def _do_refresh_intelligence(mode: str, dry_run: bool) -> None:
+    """Self-updating intelligence refresh (bounded, fail-soft, lock-protected).
+    Orchestrates the existing internal + external jobs; never mixes internal
+    proof with external reference; never auto-regenerates ideas."""
+    import intelligence_refresh as ir
+    try:
+        _begin("refresh-intelligence", limit=None, qa=True)
+        rep = ir.run_intelligence_refresh(mode=mode, dry_run=dry_run, trigger="dashboard")
+        with _LOCK:
+            STATE["inspiration"] = {
+                "RUN_TYPE": "IntelligenceRefresh", "mode": mode, "dry_run": dry_run,
+                "status": rep.get("status"), "failed": rep.get("failed_count"),
+                "should_regenerate_ideas": rep.get("should_regenerate_ideas"),
+                "locked_out": rep.get("locked_out", False),
+            }
+        _finish()
+    except Exception as e:  # noqa: BLE001
+        _fail(str(e))
+
+
 def _do_generate_social_ideas() -> None:
     """Generate grounded social ideas from the current context and persist
     them (Notion if configured, else data/generated_social_ideas.jsonl).
@@ -668,6 +688,34 @@ def run_evaluate_notion_idea(req: EvaluateNotionReq, background: BackgroundTasks
     if not (req.url or "").strip():
         raise HTTPException(400, "url is required")
     return _guarded(lambda: _do_evaluate_notion_idea(req.url.strip(), req.dry_run), background)
+
+
+@app.post("/run/refresh-intelligence-dry-run", status_code=202)
+def run_refresh_intel_dry(background: BackgroundTasks,
+                          x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(lambda: _do_refresh_intelligence("full", dry_run=True), background)
+
+
+@app.post("/run/refresh-intelligence-internal", status_code=202)
+def run_refresh_intel_internal(background: BackgroundTasks,
+                               x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(lambda: _do_refresh_intelligence("internal", dry_run=False), background)
+
+
+@app.post("/run/refresh-intelligence-external", status_code=202)
+def run_refresh_intel_external(background: BackgroundTasks,
+                               x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(lambda: _do_refresh_intelligence("external", dry_run=False), background)
+
+
+@app.post("/run/refresh-intelligence-full", status_code=202)
+def run_refresh_intel_full(background: BackgroundTasks,
+                           x_run_secret: Optional[str] = Header(default=None, alias="X-Run-Secret")) -> dict:
+    _check_secret(x_run_secret)
+    return _guarded(lambda: _do_refresh_intelligence("full", dry_run=False), background)
 
 
 @app.post("/run/pull-instagram-metrics-dry-run", status_code=202)
@@ -1055,6 +1103,16 @@ _HTML = """<!doctype html>
             style="width:100%;height:52px;margin-top:12px">Pull Instagram Metrics — Dry Run</button>
     <button class="btn-secondary" id="btnIgApply" onclick="run('pull-instagram-metrics-apply')"
             style="width:100%;height:52px;margin-top:12px;border-color:rgba(228,240,0,.25);color:var(--gray)">Pull Instagram Metrics — Apply (gated)</button>
+    <button class="btn-secondary" id="btnIntelDry" onclick="run('refresh-intelligence-dry-run')"
+            style="width:100%;height:52px;margin-top:12px">Refresh Intelligence — Dry Run</button>
+    <button class="btn-secondary" id="btnIntelInt" onclick="run('refresh-intelligence-internal')"
+            style="width:100%;height:52px;margin-top:12px">Refresh Internal Brain</button>
+    <button class="btn-secondary" id="btnIntelExt" onclick="run('refresh-intelligence-external')"
+            style="width:100%;height:52px;margin-top:12px">Refresh External Inspiration</button>
+    <button class="btn-primary" id="btnIntelFull" onclick="run('refresh-intelligence-full')"
+            style="width:100%;height:52px;margin-top:12px">Full Intelligence Refresh</button>
+    <div class="hint" style="margin-top:6px">Self-updating brain: internal (Storelli evidence) + external (inspiration, reference only)
+      loops run bounded &amp; fail-soft, lock-protected. Dry Run writes nothing. Ideas are never auto-regenerated.</div>
     <div class="hint" style="margin-top:6px">Automatic IG ingestion pulls <b>Storelli-owned</b> media metrics only.
       Dry Run writes nothing; Apply requires the run secret and only fills empty metric cells (never overwrites,
       never touches taxonomy). Not configured until Instagram API credentials are set.</div>
@@ -1108,7 +1166,7 @@ async function poll(){
     const j = await (await fetch('/status')).json();
     const p=$('pill'); p.textContent=j.status; p.className='pill '+j.status;
     const busy = (j.status==='queued'||j.status==='running');
-    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles','btnMatch','btnQuality','btnIdeas','btnRefine','btnCalRate','btnSemantic','btnIgDry','btnIgApply'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
+    ['btnSocial','btnTagAll','btnCorr','btnSyn','btnNotion','btnSlack','btnScanInsp','btnQueue','btnAnalyzeInsp','btnDiscover','btnProfiles','btnMatch','btnQuality','btnIdeas','btnRefine','btnCalRate','btnSemantic','btnIgDry','btnIgApply','btnIntelDry','btnIntelInt','btnIntelExt','btnIntelFull'].forEach(b=>{const el=$(b); if(el) el.disabled=busy;});
     const s=j.stats||{};
     const skipped=(s.skipped_already_analyzed||0)+(s.skipped_no_performance||0)+(s.skipped_no_link||0);
     $('s_scanned').textContent = s.scanned ?? '–';
@@ -1208,7 +1266,11 @@ async function run(action){
                  'rate-calendar-ideas':'/run/rate-calendar-ideas',
                  'build-semantic-connections':'/run/build-semantic-connections',
                  'pull-instagram-metrics-dry-run':'/run/pull-instagram-metrics-dry-run',
-                 'pull-instagram-metrics-apply':'/run/pull-instagram-metrics-apply'};
+                 'pull-instagram-metrics-apply':'/run/pull-instagram-metrics-apply',
+                 'refresh-intelligence-dry-run':'/run/refresh-intelligence-dry-run',
+                 'refresh-intelligence-internal':'/run/refresh-intelligence-internal',
+                 'refresh-intelligence-external':'/run/refresh-intelligence-external',
+                 'refresh-intelligence-full':'/run/refresh-intelligence-full'};
   const path = paths[action];
   const body = (action==='social' || action==='analyze-all')
     ? JSON.stringify({limit:$('limit').value, qa:$('qa').checked}) : '{}';
