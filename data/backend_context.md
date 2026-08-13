@@ -46,6 +46,20 @@ INTELLIGENCE_REFRESH_ENABLED, INTELLIGENCE_REFRESH_CADENCE_DAYS (default 7,
 clamp 5–14), INTELLIGENCE_REFRESH_STALE_LOCK_MIN. No scheduler is created in the
 repo — recurrence is wired externally via a Railway Cron invoking
 `refresh-intelligence`; it is NOT self-updating until that recurrence is enabled.
+NEW owned reels are auto-appended: the internal loop's `internal_append` stage
+detects Storelli-owned IG media not in the POC and safely appends a row
+(`SheetsClient.append_metadata_rows` + `social_metrics_ingest.append_owned_media_to_poc`)
+— LINK + immutable metadata (POST_DATE, DURATION_SECONDS) + supported metrics
+only, never Product/ICP/taxonomy/Status, dedup by shortcode/LINK, two-row header
+preserved — so the row becomes analysis-eligible the same run. Lifecycle:
+NEW_MEDIA (append→analyze) / KNOWN_UNANALYZED (analyze) / KNOWN_ANALYZED (skip) /
+metrics-refresh for all known. `refresh-readiness` reports READY/BLOCKED per
+capability (never prints secrets); `health_state()` returns HEALTHY / PARTIAL /
+BLOCKED / STALE with specific reasons (incl. "Instagram video acquisition
+credentials need refresh" when the yt-dlp cookie session is missing). Owned
+TikTok: `STORELLI_TIKTOK_HANDLE` + `is_owned_tiktok()` — only the exact configured
+handle can enter the internal pipeline (never inferred from content); owned-TikTok
+metrics are limited (no official API here).
 
 **Stateful contextual follow-up layer** (the "why those?" fix): a follow-up to a
 prior IDEA recommendation is answered in context instead of re-running a fresh

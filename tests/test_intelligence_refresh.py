@@ -68,7 +68,7 @@ class TestQueryEconomics(unittest.TestCase):
 class OrchBase(unittest.TestCase):
     def setUp(self):
         self._orig = {k: getattr(ir, k) for k in (
-            "_internal_metrics", "_internal_analyze", "_internal_recompute",
+            "_internal_append", "_internal_metrics", "_internal_analyze", "_internal_recompute",
             "_external_discovery", "_external_analyze", "_external_match",
             "_external_quality", "_external_connections", "_write_run_row",
             "_lock_active", "_read_runs")}
@@ -77,6 +77,7 @@ class OrchBase(unittest.TestCase):
         ir._lock_active = lambda s: None
         ir._read_runs = lambda s: []
         # default: everything succeeds with a material change
+        ir._internal_append = lambda dry: {"stage": "internal_append", "status": "success", "created": 4, "_appended": 4, "_new_media": 4}
         ir._internal_metrics = lambda dry: {"stage": "internal_metrics", "status": "success", "updated": 12, "_new_media": 2}
         ir._internal_analyze = lambda dry, limit: {"stage": "internal_analyze", "status": "success", "created": 3, "_analyzed": 3}
         ir._internal_recompute = lambda dry: {"stage": "internal_recompute", "status": "success", "created": 1, "updated": 2, "_correlations_rebuilt": True, "_profiles_created": 1, "_profiles_updated": 2}
@@ -99,14 +100,15 @@ class TestOrchestration(OrchBase):
     def test_full_run_all_stages_and_regen(self):
         rep = self.run_refresh(mode="full", trigger="test")
         names = [s["stage"] for s in rep["stages"]]
-        self.assertEqual(names, ["internal_metrics", "internal_analyze", "internal_recompute",
-                                 "external_discovery", "external_analyze", "external_match",
-                                 "external_quality", "external_connections"])
+        self.assertEqual(names, ["internal_append", "internal_metrics", "internal_analyze",
+                                 "internal_recompute", "external_discovery", "external_analyze",
+                                 "external_match", "external_quality", "external_connections"])
         self.assertEqual(rep["status"], "success")
         self.assertTrue(rep["should_regenerate_ideas"])
         self.assertEqual(len(self.written), 2)          # lock row + final history row
 
     def test_change_detection_skips_recompute(self):
+        ir._internal_append = lambda dry: {"stage": "internal_append", "status": "skipped", "_appended": 0}
         ir._internal_metrics = lambda dry: {"stage": "internal_metrics", "status": "success", "updated": 0}
         ir._internal_analyze = lambda dry, limit: {"stage": "internal_analyze", "status": "skipped", "_analyzed": 0}
         rep = self.run_refresh(mode="internal", trigger="test")
@@ -146,8 +148,7 @@ class TestOrchestration(OrchBase):
         self.assertIn("quota", a["reason"].lower())
 
     def test_no_op_success(self):
-        for k in ("_internal_metrics", "_internal_analyze"):
-            setattr(ir, k, (lambda *a, **kw: {"stage": "s", "status": "skipped"}))
+        ir._internal_append = lambda dry: {"stage": "internal_append", "status": "skipped", "_appended": 0}
         ir._internal_analyze = lambda dry, limit: {"stage": "internal_analyze", "status": "skipped", "_analyzed": 0}
         ir._internal_metrics = lambda dry: {"stage": "internal_metrics", "status": "skipped", "updated": 0}
         rep = self.run_refresh(mode="internal", trigger="test")
@@ -238,7 +239,7 @@ class TestSlackStatus(unittest.TestCase):
 
     def test_no_history_is_honest(self):
         ir.last_runs = lambda n=1: []
-        out = self._ask("is the brain up to date?")
+        out = self._ask("when did the brain last update?")
         self.assertIn("hasn't run", out.lower())
 
 

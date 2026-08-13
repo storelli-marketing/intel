@@ -183,6 +183,7 @@
         "_int_env",
         "instagram_configured",
         "instagram_missing_vars",
+        "owned_tiktok_configured",
         "require_sheets",
         "require_gemini",
         "require_apify",
@@ -589,6 +590,7 @@
         "_read_runs",
         "_lock_active",
         "_write_run_row",
+        "_internal_append",
         "_internal_metrics",
         "_internal_analyze",
         "_internal_recompute",
@@ -603,6 +605,12 @@
         "run_intelligence_refresh",
         "_history_row",
         "render_report",
+        "_cookies_configured",
+        "refresh_readiness",
+        "_seconds_since",
+        "health_state",
+        "next_scheduled_note",
+        "render_readiness",
         "last_runs"
       ],
       "classes": []
@@ -670,6 +678,7 @@
         "cmd_setup_metrics_staging",
         "cmd_import_social_metrics",
         "cmd_insert_social_schema",
+        "cmd_refresh_readiness",
         "cmd_refresh_intelligence",
         "cmd_verify_instagram_connection",
         "cmd_refresh_instagram_metrics",
@@ -1074,6 +1083,9 @@
         "_write_sync_state",
         "_col_letter",
         "render_refresh_report",
+        "is_owned_tiktok",
+        "classify_owned_media",
+        "append_owned_media_to_poc",
         "metrics_status"
       ],
       "classes": []
@@ -1444,7 +1456,8 @@
     "pull-instagram-metrics",
     "verify-instagram-connection",
     "refresh-instagram-metrics",
-    "refresh-intelligence"
+    "refresh-intelligence",
+    "refresh-readiness"
   ],
   "env_vars": [
     "APIFY_INSTAGRAM_ACTOR_ID",
@@ -1469,6 +1482,7 @@
     "INTELLIGENCE_REFRESH_CADENCE_DAYS",
     "INTELLIGENCE_REFRESH_ENABLED",
     "INTELLIGENCE_REFRESH_STALE_LOCK_MIN",
+    "INTELLIGENCE_STALE_TOLERANCE_DAYS",
     "META_ACCESS_TOKEN",
     "META_API_VERSION",
     "META_APP_ID",
@@ -1486,6 +1500,7 @@
     "SLACK_STRATEGIST_MODE_ENABLED",
     "SLACK_WEBHOOK_URL",
     "STORELLI_IG_FOLLOWER_COUNT",
+    "STORELLI_TIKTOK_HANDLE",
     "YTDLP_COOKIES_B64",
     "YTDLP_COOKIES_PATH"
   ],

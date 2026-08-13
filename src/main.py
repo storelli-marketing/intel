@@ -805,6 +805,17 @@ def cmd_insert_social_schema(apply: bool, include_optional: bool = True) -> int:
     return 0 if r.get("ok") else 1
 
 
+def cmd_refresh_readiness() -> int:
+    """Read-only: report READY/BLOCKED per capability + the overall health state
+    for the self-updating refresh. Never prints secrets."""
+    import intelligence_refresh as ir
+    print(ir.render_readiness(ir.refresh_readiness()))
+    h = ir.health_state()
+    print(f"\nHealth: {h['state']}" + (f" — {'; '.join(h['reasons'])}" if h["reasons"] else ""))
+    print(f"Recurrence: {ir.next_scheduled_note()}")
+    return 0
+
+
 def cmd_refresh_intelligence(internal_only: bool, external_only: bool, dry_run: bool) -> int:
     """Self-updating intelligence refresh — orchestrates the existing internal
     (Storelli evidence) and external (inspiration) jobs on a bounded schedule.
@@ -1027,7 +1038,8 @@ def main() -> int:
                                  "setup-metrics-staging", "import-social-metrics",
                                  "audit-duration-buckets", "insert-social-schema",
                                  "pull-instagram-metrics", "verify-instagram-connection",
-                                 "refresh-instagram-metrics", "refresh-intelligence"])
+                                 "refresh-instagram-metrics", "refresh-intelligence",
+                                 "refresh-readiness"])
     parser.add_argument("--url", type=str, default=None, metavar="URL",
                         help="Notion page URL for evaluate-notion-idea")
     parser.add_argument("--dry-run", action="store_true",
@@ -1145,6 +1157,9 @@ def main() -> int:
 
         elif args.command == "refresh-intelligence":
             return cmd_refresh_intelligence(args.internal_only, args.external_only, args.dry_run)
+
+        elif args.command == "refresh-readiness":
+            return cmd_refresh_readiness()
 
         elif args.command == "notion-sync":
             return cmd_notion_sync()

@@ -791,6 +791,78 @@ def render_refresh_report(rep: dict) -> str:
 # ===========================================================================
 # Part 7 — Slack status helpers (read-only; no secrets)
 # ===========================================================================
+def is_owned_tiktok(url_or_handle: str) -> bool:
+    """True ONLY when the given TikTok URL/handle matches the configured
+    STORELLI_TIKTOK_HANDLE exactly. Ownership is deterministic on the handle,
+    never inferred from caption/content. False when no handle is configured."""
+    h = config.STORELLI_TIKTOK_HANDLE
+    if not h:
+        return False
+    s = str(url_or_handle or "").lower()
+    m = re.search(r"tiktok\.com/@([\w.\-]+)", s)
+    handle = (m.group(1) if m else s).lstrip("@").strip().lower()
+    return handle == h
+
+
+# ---------------------------------------------------------------------------
+# Internal NEW_MEDIA lifecycle + safe POC append (fixes the NEW_MEDIA gap)
+# ---------------------------------------------------------------------------
+def classify_owned_media(media: list, poc_rows: list) -> dict:
+    """Classify each owned media item against the POC:
+    NEW_MEDIA / KNOWN_UNANALYZED / KNOWN_ANALYZED. (Metrics refresh applies to
+    all KNOWN rows separately.) Matching is by shortcode/canonical LINK only."""
+    from sheets_client import SheetsClient
+    by_key = {}
+    for r in poc_rows:
+        link = str(r.get("LINK", "")).strip()
+        if link:
+            by_key[_poc_key(link)] = r
+    out = {"NEW_MEDIA": [], "KNOWN_UNANALYZED": [], "KNOWN_ANALYZED": []}
+    for m in media:
+        row = by_key.get(_poc_key(m.get("permalink", "")))
+        if row is None:
+            out["NEW_MEDIA"].append(m)
+        elif SheetsClient.is_analyzed(row):
+            out["KNOWN_ANALYZED"].append((m, row))
+        else:
+            out["KNOWN_UNANALYZED"].append((m, row))
+    return out
+
+
+def append_owned_media_to_poc(media: list, insights_by_media: dict, poc) -> dict:
+    """Safely append NEW Storelli-OWNED reels as POC rows so they become eligible
+    for the existing internal analysis pipeline.
+
+    Guarantees: never duplicates an existing LINK/shortcode; writes only LINK +
+    immutable metadata (POST_DATE, DURATION_SECONDS) + supported API metrics into
+    columns that exist; NEVER writes taxonomy, Product, ICP, Storytelling, or a
+    Status (left blank = unanalyzed/eligible); preserves the two-row header.
+    Only owned media (already the API's own account) is accepted here.
+    """
+    poc_rows = poc.read_rows()
+    existing = {_poc_key(str(r.get("LINK", "")).strip()) for r in poc_rows
+                if str(r.get("LINK", "")).strip()}
+    poc_cols = list(poc.meta_col.keys())
+    new_rows, appended_links, seen = [], [], set()
+    for m in media:
+        link = str(m.get("permalink", "")).strip()
+        key = _poc_key(link)
+        if not link or key in existing or key in seen:
+            continue
+        seen.add(key)
+        vals = build_metric_values(m, insights_by_media.get(m.get("id"), {}))
+        rec = {"LINK": link}
+        for col, v in vals.items():                 # only metadata columns that exist
+            if col in poc_cols:
+                rec[col] = v
+        # never set Product / ICP / Storytelling structure / taxonomy / Status
+        new_rows.append(rec)
+        appended_links.append(link)
+    appended = poc.append_metadata_rows(new_rows) if new_rows else 0
+    return {"appended": appended, "skipped_existing": len(media) - len(new_rows),
+            "new_links": appended_links}
+
+
 def metrics_status(sheets=None) -> dict:
     """Read-only status for Slack: reels with metrics, tracked metric columns +
     coverage, reels missing metrics, and last-refresh time from the ledger."""

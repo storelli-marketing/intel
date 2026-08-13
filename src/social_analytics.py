@@ -1214,7 +1214,10 @@ _BRAIN_STATUS_KW = ("brain last update", "brain last refresh", "when did the bra
                     "new inspiration did we find", "winning profiles change",
                     "should we regenerate ideas", "did the brain refresh",
                     "last intelligence refresh", "brain refreshed", "brain up to date",
-                    "anything new this week", "did our profiles change")
+                    "anything new this week", "did our profiles change", "did anything fail",
+                    "when will it refresh", "when does it refresh", "next refresh",
+                    "is the brain healthy", "brain health", "what needs attention",
+                    "new storelli videos", "new storelli reels")
 
 _TESTPLAN_STRONG = ("test plan", "creative test plan", "testing plan", "ideas to test",
                     "ideas we should test", "ideas we can test", "test ideas", "ideas to run as tests")
@@ -1481,6 +1484,34 @@ def _render_brain_status(text: str) -> str:
             return int(str(row.get(key, "0") or 0))
         except (ValueError, TypeError):
             return 0
+
+    # health / next-run / failure sub-intents use the readiness+health layer
+    if any(k in t for k in ("when will it refresh", "when does it refresh", "next refresh")):
+        try:
+            note = ir.next_scheduled_note()
+        except Exception:  # noqa: BLE001
+            note = "not scheduled yet"
+        return dt.render(f"Next refresh: {note}.",
+                         [dt.step("Cadence", note, [], "topic", "Medium")],
+                         move="enable the weekly Railway Cron to make it automatic.", mode=mode)
+    if any(k in t for k in ("healthy", "brain health", "needs attention", "up to date",
+                            "did anything fail")):
+        try:
+            h = ir.health_state()
+        except Exception:  # noqa: BLE001
+            h = {"state": "BLOCKED", "reasons": ["status unavailable"]}
+        state = h["state"]
+        lead = {"HEALTHY": "The brain is healthy and current.",
+                "PARTIAL": "The brain is mostly working, but something needs attention.",
+                "BLOCKED": "The brain can't refresh right now.",
+                "STALE": "The brain is overdue for a refresh."}.get(state, state)
+        steps = [dt.step("Health", state, [], "topic", "Medium")]
+        for reason in (h.get("reasons") or [])[:3]:
+            steps.append(dt.step("Needs", reason, [], "risk", "Thin"))
+        return dt.render(lead, steps,
+                         move=("all good — next weekly run will keep it current."
+                               if state == "HEALTHY"
+                               else "address the items above (see `refresh-readiness`)."), mode=mode)
 
     if not runs:
         return dt.render(

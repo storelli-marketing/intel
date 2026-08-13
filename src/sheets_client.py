@@ -257,6 +257,48 @@ class SheetsClient:
         if updates:
             self.ws.batch_update(updates)
 
+    def next_id(self) -> int:
+        """The next integer ID (max existing numeric ID + 1), or 1."""
+        if "ID" not in self.meta_col:
+            return 0
+        col = self.meta_col["ID"]
+        best = 0
+        for raw in self.values[2:]:
+            try:
+                best = max(best, int(str(raw[col - 1]).strip()))
+            except (ValueError, IndexError):
+                continue
+        return best + 1
+
+    def append_metadata_rows(self, rows: list[dict]) -> int:
+        """Append new DATA rows, filling ONLY metadata columns (by name) — never
+        taxonomy cells, never shifting columns, preserving the two-row header.
+
+        Each dict maps metadata column NAME -> value; unknown keys are ignored.
+        Values are written by the column's current 1-based position, so the rest
+        of the row stays blank. ID is auto-assigned when an ID column exists and
+        the caller didn't supply one. Returns the number of rows appended.
+        """
+        if not rows:
+            return 0
+        width = max(len(self.values[1]) if len(self.values) > 1 else 0,
+                    max(self.meta_col.values(), default=0),
+                    max(self.signal_col.values(), default=0))
+        next_id = self.next_id()
+        payload = []
+        for rec in rows:
+            line = [""] * width
+            if "ID" in self.meta_col and not str(rec.get("ID", "")).strip():
+                line[self.meta_col["ID"] - 1] = str(next_id)
+                next_id += 1
+            for name, val in rec.items():
+                col = self.meta_col.get(name)
+                if col and str(val).strip() != "":
+                    line[col - 1] = str(val)
+            payload.append(line)
+        self.ws.append_rows(payload, value_input_option="RAW")
+        return len(payload)
+
     def set_status(self, row_index: int, value: str) -> None:
         if "Status" in self.meta_col:
             self.ws.update(

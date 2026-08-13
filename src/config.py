@@ -277,6 +277,24 @@ try:
     INTELLIGENCE_MAX_ACTIVE_QUERIES = int(os.getenv("INTELLIGENCE_MAX_ACTIVE_QUERIES", "12") or 12)
 except ValueError:
     INTELLIGENCE_MAX_ACTIVE_QUERIES = 12
+# Grace beyond the cadence before the brain is considered STALE.
+try:
+    INTELLIGENCE_STALE_TOLERANCE_DAYS = int(
+        os.getenv("INTELLIGENCE_STALE_TOLERANCE_DAYS", "2") or 2)
+except ValueError:
+    INTELLIGENCE_STALE_TOLERANCE_DAYS = 2
+
+# Storelli-OWNED TikTok handle (e.g. "storellisoccer"). Empty by default. ONLY
+# media from this exact handle may ever enter the INTERNAL evidence pipeline;
+# every other TikTok account stays EXTERNAL_INSPIRATION. Ownership is matched
+# deterministically on the handle — NEVER inferred from caption/content. Owned
+# TikTok has no official metrics integration here, so owned-TikTok performance
+# is limited/unavailable (video discovery/analysis is still possible).
+STORELLI_TIKTOK_HANDLE = os.getenv("STORELLI_TIKTOK_HANDLE", "").strip().lstrip("@").lower()
+
+
+def owned_tiktok_configured() -> bool:
+    return bool(STORELLI_TIKTOK_HANDLE)
 
 
 def require_sheets() -> None:
