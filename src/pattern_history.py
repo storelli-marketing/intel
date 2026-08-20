@@ -59,7 +59,13 @@ def snapshot_from_correlations(results: list) -> list:
 # ---------------------------------------------------------------------------
 def _ws(sheets):
     import gspread
-    sh = sheets.ws.spreadsheet
+    # InspirationSheets exposes the spreadsheet as `_sh`; the POC client exposes a
+    # worksheet as `ws`. Assuming only the latter meant every caller passing an
+    # InspirationSheets hit an AttributeError and the history was never recorded.
+    sh = (getattr(sheets, "_sh", None)
+          or getattr(getattr(sheets, "ws", None), "spreadsheet", None))
+    if sh is None:
+        raise AttributeError("cannot reach the spreadsheet handle for the history tab")
     try:
         return sh.worksheet(HISTORY_TAB)
     except gspread.WorksheetNotFound:

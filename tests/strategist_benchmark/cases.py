@@ -272,7 +272,8 @@ CASES = [
                ("addresses_polished", r"(polish|produced|studio|clean)"),
                ("reaches_a_comparison",
                 r"(better|stronger|outperform|ahead|beats|no difference|similar|even"
-                r"|can'?t tell|don'?t have|too few)")],
+                r"|can'?t tell|can'?t separate|too close to call|noise|don'?t have"
+                r"|too few|nothing to compare)")],
          critical=_SAFETY,
          notes="Bucket-vs-bucket comparison. 'Both are good' with no direction is "
                "a non-answer; 'samples too small to separate them' is a good one."),
@@ -462,6 +463,7 @@ CASES = [
                "admission that per-row evidence isn't retrievable here.",
          needs_composition=True),
     case("Is that a proven pattern or your guess?",
+         context="ideas",
          must=[("labels_its_epistemic_status",
                 r"(proven|measured|hard (?:data|evidence)|judg(?:e)?ment|inference"
                 r"|guess|my read|hypothes|not proven|signal|correlat)")],

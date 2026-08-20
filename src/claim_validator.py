@@ -150,6 +150,15 @@ def _strip_unavailable_metric_claims(text: str, available: Optional[list]) -> tu
     return (out or text), issues
 
 
+# Language that already discloses weak evidence. Deliberately broad: adding a
+# second caveat to an answer that already hedged reads as nervous, not honest.
+_HEDGED = re.compile(
+    r"\b(?:sample|small|thin|few|only \d+|n=\d+|wouldn'?t call|not proven|not measured"
+    r"|inference|inferred|judg(?:e)?ment|my read|hypothes|directional|signal"
+    r"|too close to call|can'?t tell|don'?t have|not enough|treat it as|guess"
+    r"|early|tentative|indicativ|suggests?\b|would need)\b", re.IGNORECASE)
+
+
 def validate(text: str, answer: Optional[dict] = None, available_metrics: Optional[list] = None,
              scope: Optional[dict] = None) -> ValidationResult:
     """Validate a drafted answer. Returns safer text rather than nothing.
@@ -197,14 +206,21 @@ def validate(text: str, answer: Optional[dict] = None, available_metrics: Option
         issues.append("causal wording for a correlation")
         out = _soften_proof_words(out, strength)
 
-    # 5) thin sample + confident wording -> add the honest caveat once.
+    # 5) weak evidence + confident wording -> add the honest caveat once.
+    #    A MISSING sample_size is not evidence of a large sample. Composed
+    #    (LLM) answers frequently arrive without one, and skipping the check
+    #    there is how a thin slice gets described in flat, confident prose —
+    #    so an unhedged answer on weak evidence is caveated either way, and the
+    #    count is only cited when we actually know it.
     n = (answer or {}).get("sample_size", 0)
-    if strength in (EC.DIRECTIONAL, EC.INFERRED, EC.UNKNOWN) and n and n < EC.SUPPORTED_MIN_SAMPLE:
-        if not re.search(r"\b(sample|small|thin|only \d+|wouldn'?t call|not proven|signal)\b",
-                         out, re.IGNORECASE):
-            issues.append("thin sample not disclosed")
-            out = out.rstrip()
-            out += f" Worth noting the sample is still small (n={n})."
+    weak = strength in (EC.DIRECTIONAL, EC.INFERRED, EC.UNKNOWN)
+    thin = weak and (not n or n < EC.SUPPORTED_MIN_SAMPLE)
+    if thin and not _HEDGED.search(out):
+        issues.append("thin sample not disclosed" if n else "weak evidence not hedged")
+        out = out.rstrip()
+        out += (f" Worth noting the sample is still small (n={n})." if n else
+                " Worth flagging that this rests on thin evidence — treat it as a "
+                "read, not a proven result.")
 
     # 6) broadened slice presented as narrow.
     if scope and scope.get("relaxed") and scope.get("disclosure"):

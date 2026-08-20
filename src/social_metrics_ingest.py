@@ -32,7 +32,11 @@ log = get_logger()
 # import honest rather than faking a value.
 _API_FILLABLE_COLUMNS = ("DURATION_SECONDS", "POST_DATE", "VIEWS", "LIKES", "COMMENTS",
                          "SAVES", "SHARES", "ENGAGEMENT_RATE", "REACH", "IMPRESSIONS",
-                         "PROFILE_VISITS", "WEBSITE_CLICKS", "FOLLOWERS_AT_MEASUREMENT")
+                         "PROFILE_VISITS", "WEBSITE_CLICKS", "FOLLOWERS_AT_MEASUREMENT",
+                         # When the numbers above were read. Without this the
+                         # metrics are undated and a stale value is
+                         # indistinguishable from a fresh one.
+                         "METRICS_MEASURED_AT")
 
 ACCOUNT_INSIGHTS_TAB = "INSTAGRAM_ACCOUNT_INSIGHTS"
 ACCOUNT_INSIGHTS_COLUMNS = ("PERIOD", "PULLED_AT", "METRIC", "BREAKDOWN", "SPLIT", "SOURCE")
@@ -607,7 +611,11 @@ def plan_incremental(mapping: dict, insights_by_media: dict, poc_cols: list,
         vals = build_metric_values(media, insights_by_media.get(media.get("id"), {}))
         last_vals = (sync_state.get(sc, {}) or {}).get("values", {})
         row_changes = {}
+        stamp = vals.get("METRICS_MEASURED_AT")
+        metric_moved = False
         for col in fillable:
+            if col == "METRICS_MEASURED_AT":
+                continue                 # handled after the loop, see below
             v = vals.get(col)
             if not v:
                 continue
@@ -623,17 +631,23 @@ def plan_incremental(mapping: dict, insights_by_media: dict, poc_cols: list,
             if not cur:
                 row_changes[col] = v
                 counts["first_fill"] += 1
+                metric_moved = True
             else:
                 last = str(last_vals.get(col, "")).strip()
                 if last and last == cur:            # a cell WE last wrote -> API-owned
                     if str(v) != cur:
                         row_changes[col] = v
                         counts["update"] += 1
+                        metric_moved = True
                         changes.append({"shortcode": sc, "col": col, "old": cur, "new": v})
                     else:
                         counts["unchanged"] += 1
                 else:                                # human-edited / unknown -> protect
                     counts["manual_protected"] += 1
+        # Date the metrics only when at least one of them actually moved, so the
+        # stamp records "when these numbers were read", not "when we last looked".
+        if metric_moved and stamp and "METRICS_MEASURED_AT" in fillable:
+            row_changes["METRICS_MEASURED_AT"] = stamp
         if row_changes:
             fills[row["_row"]] = row_changes
         per_media.append({"shortcode": sc, "media_id": media.get("id"),

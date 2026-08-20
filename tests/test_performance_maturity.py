@@ -284,3 +284,146 @@ class TestRunLogTab(unittest.TestCase):
         ir._runs_ws(FakeSheets())
         self.assertEqual(created["title"], ir.RUNS_TAB)
         self.assertEqual(created["header"], [list(ir.RUNS_COLUMNS)])
+
+
+class TestMeasurementStampWiring(unittest.TestCase):
+    """The refresh must actually deliver the measurement stamp and denominator
+    into the cells — build_metric_values supporting them is not enough if the
+    refresh never passes them through."""
+
+    def test_refresh_passes_denominator_and_stamp_into_the_fills(self):
+        import intelligence_refresh as ir
+        import social_metrics_ingest as smi
+        seen = {}
+
+        def fake_plan_incremental(mapping, insights, columns, state):
+            seen["insights"] = insights
+            return {"fills": [], "per_media": {}}
+
+        real_plan = smi.plan_incremental
+        real_map = smi.map_media_to_poc_rows
+        smi.plan_incremental = fake_plan_incremental
+        smi.map_media_to_poc_rows = lambda media, rows: {
+            "matched": [{"media": media[0], "row": 5}]}
+
+        class FakePoc:
+            meta_col = {"VIEWS": 1, "FOLLOWERS_AT_MEASUREMENT": 2,
+                        "METRICS_MEASURED_AT": 3}
+
+            def read_rows(self):
+                return [{"_row": 5, "LINK": "https://www.instagram.com/reel/AAA/"}]
+
+        owned = [{"media_id": "111", "shortcode": "AAA", "link": "x", "views": 36026,
+                  "duration_seconds": 15, "post_date": "2026-08-18"}]
+        try:
+            ir._refresh_public_metrics(FakePoc(), owned, 169209)
+        finally:
+            smi.plan_incremental = real_plan
+            smi.map_media_to_poc_rows = real_map
+
+        payload = list(seen["insights"].values())[0]
+        self.assertEqual(payload["followers_at_measurement"], 169209,
+                         "the measured denominator must reach the fill plan")
+        self.assertTrue(payload["metrics_measured_at"],
+                        "the read time must reach the fill plan")
+        self.assertNotIn("followers_at_post", payload,
+                         "today's count must never be written as the count at post time")
+
+    def test_stamp_becomes_a_cell_value(self):
+        import social_metrics_ingest as smi
+        values = smi.build_metric_values(
+            {"timestamp": "2026-08-18T10:00:00Z"},
+            {"views": 36026, "followers_at_measurement": 169209,
+             "metrics_measured_at": "2026-08-20 16:00 UTC"})
+        self.assertEqual(values["METRICS_MEASURED_AT"], "2026-08-20 16:00 UTC")
+        self.assertEqual(values["FOLLOWERS_AT_MEASUREMENT"], "169209")
+
+
+class TestSpreadsheetHandleResolution(unittest.TestCase):
+    """Two sheet clients expose the spreadsheet differently. Assuming one of them
+    is how both the run log and the pattern history silently never wrote."""
+
+    def _fake_spreadsheet(self, created):
+        import gspread
+
+        class FakeWs:
+            def update(self, **kw):
+                created["header"] = kw.get("values")
+
+        class FakeSpreadsheet:
+            def worksheet(self, title):
+                raise gspread.WorksheetNotFound(title)
+
+            def add_worksheet(self, title, rows, cols):
+                created["title"] = title
+                return FakeWs()
+
+        return FakeSpreadsheet()
+
+    def test_pattern_history_accepts_an_inspiration_sheets_object(self):
+        import pattern_history
+        created = {}
+
+        class InspirationLike:            # exposes _sh, no .ws
+            pass
+
+        obj = InspirationLike()
+        obj._sh = self._fake_spreadsheet(created)
+        pattern_history._ws(obj)
+        self.assertEqual(created["title"], pattern_history.HISTORY_TAB)
+
+    def test_pattern_history_accepts_a_poc_client_object(self):
+        import pattern_history
+        created = {}
+
+        class PocLike:                    # exposes ws.spreadsheet, no _sh
+            pass
+
+        class WsHolder:
+            pass
+
+        obj, holder = PocLike(), WsHolder()
+        holder.spreadsheet = self._fake_spreadsheet(created)
+        obj.ws = holder
+        pattern_history._ws(obj)
+        self.assertEqual(created["title"], pattern_history.HISTORY_TAB)
+
+
+class TestStampFollowsRealChanges(unittest.TestCase):
+    def _plan(self, row, last_values, stamp="2026-08-20 16:00 UTC"):
+        import social_metrics_ingest as smi
+        media = {"id": "111", "permalink": "https://www.instagram.com/reel/AAA/",
+                 "timestamp": "2026-08-10T10:00:00Z"}
+        mapping = {"matched": [(media, row)]}
+        insights = {"111": {"views": 40000, "metrics_measured_at": stamp}}
+        cols = ["VIEWS", "METRICS_MEASURED_AT", "POST_DATE"]
+        state = {"AAA": {"values": last_values}}
+        return smi.plan_incremental(mapping, insights, cols, state)
+
+    def test_backfilling_post_date_alone_does_not_date_the_metrics(self):
+        """POST_DATE is metadata, not a reading — backfilling it must not claim
+        the numbers were just measured."""
+        plan = self._plan({"_row": 5, "VIEWS": "40000", "POST_DATE": "",
+                           "METRICS_MEASURED_AT": ""}, {"VIEWS": "40000"})
+        self.assertEqual(plan["fills"][5], {"POST_DATE": "2026-08-10"})
+
+    def test_stamp_written_when_a_metric_actually_moves(self):
+        plan = self._plan({"_row": 5, "VIEWS": "36026", "POST_DATE": "2026-08-10",
+                           "METRICS_MEASURED_AT": ""}, {"VIEWS": "36026"})
+        self.assertEqual(plan["fills"][5]["VIEWS"], "40000")
+        self.assertEqual(plan["fills"][5]["METRICS_MEASURED_AT"], "2026-08-20 16:00 UTC")
+
+    def test_no_write_at_all_when_nothing_moved(self):
+        """A timestamp differs every run — if it drove the plan, every refresh
+        would rewrite every row forever and 'nothing changed' would look like a
+        change."""
+        plan = self._plan({"_row": 5, "VIEWS": "40000", "POST_DATE": "2026-08-10",
+                           "METRICS_MEASURED_AT": "2026-08-19 09:00 UTC"},
+                          {"VIEWS": "40000"})
+        self.assertEqual(plan["fills"], {}, "an unchanged row must not be rewritten")
+
+    def test_stamp_not_written_over_a_human_protected_metric(self):
+        plan = self._plan({"_row": 5, "VIEWS": "999", "POST_DATE": "2026-08-10",
+                           "METRICS_MEASURED_AT": ""},
+                          {"VIEWS": "36026"})     # cell differs from what we wrote
+        self.assertEqual(plan["fills"], {}, "human-edited cell must stay protected")
