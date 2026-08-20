@@ -485,3 +485,75 @@ class TestFrameScenarios(MultiTurnBase):
         mechanism isn't fixed."""
         import config
         self.assertEqual(config.GEMINI_API_KEY, "")
+
+
+class TestFramePersistsViaCache(MultiTurnBase):
+    """Thread history is the primary store for the frame; the state cache is the
+    secondary one. It only works if the caller identifies the conversation —
+    without a key, `CS.get`/`CS.put` are unreachable and a frame is recoverable
+    only by re-deriving it from the transcript. That matters when Slack history
+    is unavailable and the caller falls back to its own capped cache, which may
+    no longer contain the answer that established the frame.
+    """
+
+    KEYCTX = {"thread_ts": "1712345.6789", "channel": "C123", "user": "U1"}
+
+    def setUp(self):
+        import conversation_state as CS
+        CS.clear(CS.conversation_key(thread_ts=self.KEYCTX["thread_ts"]))
+
+    def test_key_is_built_from_channel_context(self):
+        import social_brain
+        self.assertEqual(social_brain._conversation_key(self.KEYCTX),
+                         "thread:1712345.6789")
+        self.assertEqual(social_brain._conversation_key(None), "")
+        self.assertEqual(social_brain._conversation_key({}), "")
+
+    def test_a_framed_turn_writes_the_frame_to_the_cache(self):
+        import conversation_state as CS
+        import social_brain
+        establish = "What is working for BodyShield right now?"
+        a1 = social_brain.answer_conversation(establish, [], channel_context=self.KEYCTX)
+        ask = "What should we shoot next week based on the latest data you just shared?"
+        social_brain.answer_conversation(
+            ask, [{"role": "user", "text": establish},
+                  {"role": "assistant", "text": a1}], channel_context=self.KEYCTX)
+        state = CS.get(CS.conversation_key(thread_ts=self.KEYCTX["thread_ts"]))
+        self.assertIsNotNone(state, "no state cached — the key never reached the agent")
+        frame = state.get("decision_frame")
+        self.assertTrue(frame, "framed turn did not persist the frame")
+        self.assertTrue(any("bodyshield" in p.lower()
+                            for p in (frame["scope"]["product"] or [])))
+        self.assertTrue(frame.get("optimization_goal"))
+        self.assertTrue(frame.get("prior_recommendation"))
+
+    def test_cached_frame_is_recoverable_with_no_transcript_at_all(self):
+        """The decisive property: with an EMPTY transcript the frame can only come
+        from the cache, so this fails if the key never plumbs through."""
+        import conversation_state as CS
+        import social_brain
+        establish = "What is working for BodyShield right now?"
+        a1 = social_brain.answer_conversation(establish, [], channel_context=self.KEYCTX)
+        ask = "What should we shoot next week based on the latest data you just shared?"
+        social_brain.answer_conversation(
+            ask, [{"role": "user", "text": establish},
+                  {"role": "assistant", "text": a1}], channel_context=self.KEYCTX)
+
+        key = CS.conversation_key(thread_ts=self.KEYCTX["thread_ts"])
+        recovered = DF.derive([], "are you sure?", CS.get(key))
+        self.assertTrue(DF.is_active(recovered))
+        self.assertTrue(any("bodyshield" in p.lower()
+                            for p in recovered["scope"]["product"]))
+        # and with no key there is nothing to recover from
+        self.assertFalse(DF.is_active(DF.derive([], "are you sure?", CS.new_state())))
+
+    def test_an_unidentified_conversation_still_works_from_history_alone(self):
+        """No key (e.g. a caller that doesn't pass channel_context) must degrade
+        to transcript derivation, not break."""
+        import social_brain
+        establish = "What is working for BodyShield right now?"
+        a1 = social_brain.answer_conversation(establish, [])
+        a2 = social_brain.answer_conversation(
+            "What should we shoot next week based on the latest data you just shared?",
+            [{"role": "user", "text": establish}, {"role": "assistant", "text": a1}])
+        self.assertIn("bodyshield", a2.lower())

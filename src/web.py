@@ -805,7 +805,10 @@ def _converse(channel: str, thread_ts: str, user_text: str, user_id: str = "") -
         if dev_brain.is_dev_question(clean):
             answer = dev_brain.handle(clean, context, requesting_user_id=user_id, progress_cb=on_stage)
         else:
-            answer = social_brain.answer_conversation(clean, context, progress_cb=on_stage)
+            answer = social_brain.answer_conversation(
+                clean, context, progress_cb=on_stage,
+                channel_context={"thread_ts": thread_ts, "channel": channel,
+                                 "user": user_id})
         slack_bot.remember(channel, thread_ts, "user", clean)
         slack_bot.remember(channel, thread_ts, "assistant", answer)
         progress.finish(answer)

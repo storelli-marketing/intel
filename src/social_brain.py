@@ -1200,6 +1200,20 @@ def _deterministic_conversation_answer(text: str, context: list, last_assistant:
 
 
 # --- public: conversational entrypoint --------------------------------------
+def _conversation_key(channel_context: Optional[dict]) -> str:
+    """Stable cache key for this Slack conversation, or "" when unidentified."""
+    if not channel_context:
+        return ""
+    try:
+        import conversation_state as CS
+        return CS.conversation_key(
+            thread_ts=str(channel_context.get("thread_ts") or ""),
+            channel=str(channel_context.get("channel") or ""),
+            user=str(channel_context.get("user") or ""))
+    except Exception:  # noqa: BLE001 - a missing key must never break an answer
+        return ""
+
+
 def answer_conversation(user_text: str, conversation_context: Optional[list[dict]] = None,
                         channel_context: Optional[dict] = None, progress_cb=None) -> str:
     """Thread-aware, multi-turn variant of answer_question().
@@ -1221,8 +1235,15 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     progress_cb(str), if given, is called with short PUBLIC stage names
     ("notion", "evidence", "writing") right before each real phase of work —
     never private chain-of-thought, just what a Slack progress indicator
-    shows the user is happening. channel_context is reserved for future
-    per-channel metadata and is currently unused.
+    shows the user is happening.
+
+    channel_context: optional {"thread_ts", "channel", "user"} identifying the
+    Slack conversation. Used only to key the conversation-state cache, which is
+    the SECONDARY store for the active decision frame — thread history stays
+    primary. Without it the cache can never be read or written, so a frame was
+    only ever recoverable by re-deriving it from the transcript; when Slack
+    history is unavailable and the caller falls back to its own capped cache,
+    that transcript may no longer contain the answer that established the frame.
     """
     text = (user_text or "").strip()
     if not text:
@@ -1272,7 +1293,8 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
         # None for anything it doesn't own (fresh question, reset, inspiration/
         # shoot-brief, eval follow-up), so existing routing is unchanged.
         import conversation_agent
-        contextual = conversation_agent.answer(text, context)
+        contextual = conversation_agent.answer(text, context,
+                                               key=_conversation_key(channel_context))
         if contextual:
             return contextual
 
