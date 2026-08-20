@@ -69,10 +69,13 @@ def classify_dialogue_act(text: str) -> str:
     if any(k in t for k in ("show me proof", "show me the evidence", "show the evidence",
                             "show evidence", "give me the evidence", "the proof",
                             "is that proven", "is that actually proven", "prove it",
-                            "back that up", "what's the proof", "where's the proof")):
+                            "back that up", "what's the proof", "where's the proof",
+                            "is this proven", "proven or just", "just interesting",
+                            "proven or interesting")):
         return EVIDENCE
     if any(k in t for k in ("are you sure", "you sure", "really?", "is that right", "i doubt",
-                            "not convinced", "is that true", "sure about that")):
+                            "not convinced", "is that true", "sure about that",
+                            "change your mind", "would change my mind", "what would change")):
         return CHALLENGE
     if any(k in t for k in ("shorter", "tldr", "tl;dr", "too long", "make it short", "quick version",
                             "in a sentence", "just the gist", "keep it short", "one line")):

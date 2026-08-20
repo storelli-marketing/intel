@@ -34,6 +34,7 @@ import config
 import correlations as corr
 import interpretation
 import notion_retrieval
+import performance
 import social_strategist
 import social_retrieval
 import taxonomy
@@ -114,12 +115,19 @@ def _route(text: str) -> str:
     if _has_any(t, _IDEAS_KW):
         return "ideas"
     if _has_any(t, _LEARNINGS_KW) or _has_any(t, _AVOID_KW) or _has_any(t, _FEEDBACK_KW):
+        # A Product/ICP-scoped "what works / what isn't working" question must be
+        # answered at that slice with honest scope disclosure (Evidence Contract
+        # specificity ladder) — never as global learnings dressed up as narrow.
+        if segment:
+            return "grounded"
         # Bare "why did this perform well?" / "review this" with no link can't
         # look up a specific row, so it falls back to the general patterns.
         return "learnings"
     if _has_any(t, _TESTS_KW):
         return "tests"
-    return "help"
+    # No dedicated mode: answer from the evidence we actually have (hedged by the
+    # Evidence Contract) instead of dead-ending on the capability menu.
+    return "grounded"
 
 
 # --- shared retrieval ------------------------------------------------------
@@ -697,6 +705,119 @@ def _mode_summary() -> str:
 
 
 # --- public ---------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# grounded fallback — the Evidence Contract answering a question we have no
+# dedicated mode for. Replaces the old help-menu dead-end: a substantive
+# strategy question should get the brain's best honest read, hedged to what the
+# evidence actually supports, or a productive abstention with a test to run.
+# ---------------------------------------------------------------------------
+def _mode_grounded_fallback(user_text: str) -> str:
+    import evidence_contract as EC
+    import slack_response_style as style
+
+    state = _load_sheet_state()
+    filters = social_retrieval.extract_filters(user_text.lower())
+    product, icp = filters.get("product"), filters.get("icp")
+    layer = social_retrieval.detect_layer(user_text.lower())
+    scope_label = " / ".join(x for x in (product, icp) if x)
+
+    if not state:
+        return ("I can't reach the analyzed Sheet right now, so I don't want to guess. "
+                "Once it's reachable I can answer this from our own performance data.")
+    analyzed, buckets, results = state
+    if not analyzed:
+        ab = EC.abstention(scope_label or "this",
+                           missing="we have no analyzed Storelli videos yet")
+        return (f"{ab['gap']} — so anything I said would be a guess. "
+                f"To get an answer worth trusting: {ab['proposed_test']}.")
+
+    # Specificity ladder: narrow to the asked slice, relax honestly if too thin.
+    rows_exact = social_retrieval.filter_rows(analyzed, {"product": product, "icp": icp}) \
+        if (product or icp) else analyzed
+    rows_icp = social_retrieval.filter_rows(analyzed, {"icp": icp}) if icp else []
+    rows_prod = social_retrieval.filter_rows(analyzed, {"product": product}) if product else []
+    scope = EC.resolve_scope({EC.SCOPE_EXACT: len(rows_exact), EC.SCOPE_ICP: len(rows_icp),
+                              EC.SCOPE_PRODUCT: len(rows_prod), EC.SCOPE_BROAD: len(analyzed)})
+    chosen = {EC.SCOPE_EXACT: rows_exact, EC.SCOPE_ICP: rows_icp,
+              EC.SCOPE_PRODUCT: rows_prod, EC.SCOPE_BROAD: analyzed}.get(scope["scope"], analyzed)
+
+    if not chosen:
+        ab = EC.abstention(scope_label or "that slice",
+                           missing=f"we don't have enough {scope_label or 'matching'} examples yet")
+        return f"{ab['gap']}. {ab['proposed_test'].capitalize()}."
+
+    if len(chosen) < len(analyzed):
+        seg_results, _note = social_retrieval.segment_results(
+            chosen, buckets, results, {"product": product, "icp": icp})
+    else:
+        seg_results = results
+    win = corr.winning(seg_results)
+    weak = corr.weak(seg_results)
+    # If the question names specific taxonomy OPTIONS ("POV, demo, tutorial or
+    # talking head?"), answer within that layer — the asker already told us which
+    # dimension they mean, even without saying the word "format".
+    if not layer:
+        low = user_text.lower()
+        for lyr, options in taxonomy.LAYERS.items():
+            if sum(1 for o in options if o.lower() in low) >= 2:
+                layer = lyr
+                break
+    if layer:
+        win = [w for w in win if w.get("layer") == layer] or win
+        weak = [w for w in weak if w.get("layer") == layer] or weak
+    if not win:
+        ab = EC.abstention(scope_label or "this question",
+                           missing="no pattern in that slice is separating yet")
+        return f"{ab['gap']} — {ab['proposed_test']}."
+
+    top = win[0]
+    # The claim is about THIS signal, so its own supporting sample governs the
+    # claim strength — not the size of the surrounding slice.
+    signal_n = int(top.get("videos_with_signal") or 0)
+    slice_positives = sum(1 for r in chosen
+                          if performance.is_positive(buckets.get(r["_row"], "")))
+    suff = EC.evaluate_sufficiency(
+        sample_size=signal_n, positive_examples=signal_n,
+        comparison_examples=max(0, len(chosen) - signal_n), effect_signal=top.get("lift"),
+        source_classes={EC.INTERNAL_DERIVED_PATTERN, EC.INTERNAL_STORELLI_CONTENT},
+        specificity=scope["scope"] or "", contradictions=0)
+    strength = suff["claim_strength"]
+
+    vids = f"{signal_n} supporting video" + ("s" if signal_n != 1 else "")
+
+    # UNKNOWN must abstain productively (never hedge AND recommend in the same
+    # breath) — say what's missing and name the test that would settle it.
+    if strength == EC.UNKNOWN:
+        where = f" for {scope_label}" if scope_label else ""
+        ab = EC.abstention(scope_label or "this",
+                           missing=f"the strongest candidate{where} rests on {vids}")
+        alt = f" {win[1]['label']} is the other candidate." if len(win) > 1 else ""
+        return style.compact_slack_response(
+            f"Not enough to call yet — {ab['gap']}. The nearest signal is "
+            f"*{top['label']}* ({top['layer'].replace('_', ' ')}), but I'd treat it as a "
+            f"hypothesis.{alt} {ab['proposed_test'].capitalize()}.",
+            style.detect_response_mode(user_text))
+
+    verb = {EC.PROVEN: "is clearly our strongest signal",
+            EC.SUPPORTED: "is one of the stronger patterns we're seeing",
+            EC.DIRECTIONAL: "shows a signal, though I wouldn't call it proven yet",
+            EC.INFERRED: "looks promising, but that's an inference"}.get(strength,
+                                                                        "looks stronger")
+    scope_bit = f" for {scope_label}" if scope_label and not scope["relaxed"] else ""
+    parts = [f"*{top['label']}* ({top['layer'].replace('_', ' ')}) {verb}{scope_bit}."]
+    if len(win) > 1:
+        parts.append(f"{win[1]['label']} is the next most useful.")
+    if weak:
+        parts.append(f"I'd avoid leaning on {weak[0]['label']}.")
+    if scope["relaxed"] and scope["disclosure"]:
+        parts.append(f"Note: {scope['disclosure']}.")
+    body = " ".join(parts)
+    if strength in (EC.DIRECTIONAL, EC.INFERRED):
+        body += f" ({EC.hedge(strength)} — {vids}.)"
+    return style.compact_slack_response(body, style.detect_response_mode(user_text))
+
+
 def answer_question(user_text: str) -> str:
     text = (user_text or "").strip()
     if not text:
@@ -720,7 +841,7 @@ def answer_question(user_text: str) -> str:
             return _mode_examples(text)
         if mode == "summary":
             return _mode_summary()
-        return _HELP
+        return _mode_grounded_fallback(text)
     except Exception as e:  # noqa: BLE001 - Slack should never see a stack trace
         log.exception("social_brain: mode %s failed", mode)
         return f"Something went wrong answering that. ({type(e).__name__}: {e})"
@@ -1012,6 +1133,19 @@ def _finish_conversational(base: str, user_text: str, skip_polish: bool = False)
         text = _maybe_llm_polish(base, user_text) or base
     import slack_response_style as style
     polished = style.compact_slack_response(text, style.detect_response_mode(user_text))
+    # Evidence & Answer Contract safety net (claim validation): catch the failure
+    # modes that are never acceptable from ANY handler — external inspiration
+    # framed as proof, causal wording for a correlation, or asserting a metric we
+    # don't have. Prefers safer wording over dropping the answer, and leaves
+    # ordinary conversational phrasing untouched.
+    try:
+        import claim_validator
+        result = claim_validator.validate_response(polished, user_text)
+        if result.rewritten:
+            log.info("claim validator adjusted an answer: %s", result.issues)
+        polished = result.text
+    except Exception as e:  # noqa: BLE001 - never break the bot on a guard failure
+        log.warning("claim validation skipped: %s", e)
     # Final pass: number the Why trail into a sequential workflow and linkify the
     # inline source letters ([S1] -> clickable link). Runs last so links never
     # count toward the length cap.

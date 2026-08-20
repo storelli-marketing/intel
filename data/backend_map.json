@@ -176,6 +176,20 @@
       ],
       "classes": []
     },
+    "src/claim_validator.py": {
+      "functions": [
+        "_external_proof_spans",
+        "_soften_proof_words",
+        "_strip_unavailable_metric_claims",
+        "validate",
+        "wants_evidence_detail",
+        "render_evidence_detail",
+        "validate_response"
+      ],
+      "classes": [
+        "ValidationResult"
+      ]
+    },
     "src/config.py": {
       "functions": [
         "_require",
@@ -368,6 +382,28 @@
         "run_audit"
       ],
       "classes": []
+    },
+    "src/evidence_contract.py": {
+      "functions": [
+        "is_internal_proof",
+        "assert_internal_only",
+        "external_use_allowed",
+        "strength_rank",
+        "cap_strength",
+        "_thr",
+        "evaluate_sufficiency",
+        "_suff",
+        "resolve_scope",
+        "find_contradictions",
+        "abstention",
+        "build_answer",
+        "allowed_language",
+        "hedge",
+        "overstates"
+      ],
+      "classes": [
+        "ExternalAsProofError"
+      ]
     },
     "src/gemini_client.py": {
       "functions": [
@@ -718,6 +754,19 @@
       ],
       "classes": []
     },
+    "src/metric_registry.py": {
+      "functions": [
+        "resolve",
+        "private_mode_available",
+        "is_available",
+        "unavailable_metrics",
+        "describe",
+        "metric_gap_note"
+      ],
+      "classes": [
+        "Metric"
+      ]
+    },
     "src/notion_brain.py": {
       "functions": [
         "_is_transient",
@@ -809,6 +858,20 @@
         "route_by_ownership",
         "scan_owned_media",
         "current_follower_count"
+      ],
+      "classes": []
+    },
+    "src/pattern_history.py": {
+      "functions": [
+        "_now",
+        "pattern_id",
+        "_num",
+        "snapshot_from_correlations",
+        "_ws",
+        "read_latest",
+        "diff",
+        "record",
+        "strongest_change"
       ],
       "classes": []
     },
@@ -1019,6 +1082,7 @@
         "is_creative_test_plan_query",
         "_parse_count",
         "render_schema_plan",
+        "_render_top_by_ratio",
         "_render_missing_metrics",
         "_render_import_howto",
         "_render_bucket_usability",
@@ -1075,6 +1139,7 @@
         "_mode_examples",
         "_mode_tests",
         "_mode_summary",
+        "_mode_grounded_fallback",
         "answer_question",
         "_classify_followup",
         "_extract_sources_block",

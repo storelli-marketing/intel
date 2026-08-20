@@ -1165,6 +1165,9 @@ _TRIAL_KW = ("trial reel", "trial reels", "trial vs standard", "trial versus sta
              "standard reels", "trial and standard")
 _AUDIT_KW = ("metrics audit", "audit our metrics", "what metrics do we", "what data do we have",
              "what analytics do we")
+# view/follower ratio questions are an analytics read, not a generic pattern ask.
+_RATIO_KW = ("relative to audience size", "relative to our audience", "views relative",
+             "view to follower", "views per follower", "view/follower", "punched above")
 # Schema-plan asks ("what fields do we need to add", "what do we need to track…").
 _SCHEMA_KW = ("need to add", "need to track", "fields do we need", "columns do we need",
               "what fields", "what columns", "what should we add", "what to add",
@@ -1224,7 +1227,8 @@ _TESTPLAN_STRONG = ("test plan", "creative test plan", "testing plan", "ideas to
                     "ideas we should test", "ideas we can test", "test ideas", "ideas to run as tests")
 _TESTPLAN_ASK = ("what should we test", "what tests should we run", "what should we test next",
                  "which formats should we test", "what to test next", "tests should we run next",
-                 "what should we test based", "what do we test next", "what can we test")
+                 "what should we test based", "what do we test next", "what can we test",
+                 "experiments should we run", "experiments to run", "experiments should we try")
 
 
 def is_schema_plan_query(text: str, context: Optional[list] = None) -> bool:
@@ -1255,7 +1259,7 @@ def is_social_analytics_query(text: str, context: Optional[list] = None) -> bool
         return True
     if any(k in t for k in _DEMO_KW):
         return True
-    if any(k in t for k in _AUDIT_KW):
+    if any(k in t for k in _AUDIT_KW + _RATIO_KW):
         return True
     # duration must be about reels/posts, not "how long should X be"
     if any(k in t for k in _DURATION_KW) and any(w in t for w in ("reel", "reels", "video", "post", "content", "best")):
@@ -1335,6 +1339,53 @@ def render_schema_plan(text: str, context: Optional[list] = None) -> str:
         f"To answer all the social-metrics questions, add these columns: {req}.",
         steps,
         move=(f"{_INSERT_LOCATION} Optional extras: {', '.join(_OPTIONAL_COLUMNS)}."), mode=mode)
+
+
+
+def _render_top_by_ratio(text: str) -> str:
+    """Top performers by views relative to audience size — uses the real metric
+    when present, and says so honestly when the inputs aren't there."""
+    mode = st.detect_response_mode(text)
+    rows, columns, err = _internal_sheet()
+    if err:
+        return dt.render(f"I can't reach the analysis sheet right now ({err}).",
+                         [dt.step("Data check", "sheet unreachable", [], "risk", "Thin")],
+                         move="retry once Sheets is configured.", mode=mode)
+    avail = detect_available_metrics(columns, rows)
+    if not avail.get("views", {}).get("available"):
+        return dt.render(
+            "I can't rank by views-per-follower yet — we don't have a views column populated.",
+            [dt.step("Missing", "VIEWS (and a follower count) per reel", [], "risk", "Thin")],
+            move="add VIEWS + FOLLOWERS_AT_MEASUREMENT (the refresh fills these from public "
+                 "Apify data).", mode=mode)
+    fcol = _column_for_field(columns, "followers")
+    top = find_top_performing_posts(rows, columns, limit=25)
+    scored = []
+    for t in top:
+        row = next((r for r in rows if r.get("_row") == t["_row"]), {})
+        followers = _num(row.get(fcol)) if fcol else None
+        denom = followers or float(config.STORELLI_IG_FOLLOWER_COUNT or 0)
+        if denom > 0 and t["metric"] == "views":
+            scored.append((t["value"] / denom, t, bool(followers)))
+    if not scored:
+        return dt.render("I don't have enough views/follower data to rank that yet.",
+                         [dt.step("Missing", "views or follower denominator", [], "risk", "Thin")],
+                         move="run the refresh to populate public metrics.", mode=mode)
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best = scored[:3]
+    exact = all(x[2] for x in best)
+    steps = [dt.step("Metric used", "views ÷ followers at measurement", [], "internal", "Medium"),
+             dt.step("Top ratio", f"{best[0][0]:.2f}× audience", [], "internal", "Medium")]
+    if not exact:
+        steps.append(dt.step("Caveat", "some rows use the configured follower fallback "
+                                       "(approximate)", [], "risk", "Thin"))
+    src = _Sources()
+    for _r, t, _e in best:
+        src.add("S", t["link"], f"Storelli reel — {t['value']:.0f} views")
+    return dt.render(
+        f"These punched furthest above our audience size — top is {best[0][0]:.2f}× followers.",
+        steps, move="reuse the hook/format from the top one; it travelled beyond the base.",
+        sources=src.block(), mode=mode)
 
 
 def _render_missing_metrics(text: str) -> str:
@@ -1647,6 +1698,8 @@ def answer_social_analytics_question(text: str, context: Optional[list] = None) 
             return _render_trial_vs_standard(text, compare_trial_vs_standard())
         if any(k in t for k in _DEMO_KW):
             return _render_demographics(text, compare_trial_vs_standard())
+        if any(k in t for k in _RATIO_KW):
+            return _render_top_by_ratio(text)
         if any(k in t for k in _AUDIT_KW):
             a = audit_metrics_schema()
             mode = st.detect_response_mode(text)

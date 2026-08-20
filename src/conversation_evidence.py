@@ -228,8 +228,9 @@ def challenge_answer(records: list, mode: str) -> dict:
     honest = ("high" if conf.lower() == "high" else "real but not bulletproof")
     body = (f"Fair to push. My confidence is *{conf}* — the pattern behind *{_title(idea)}* is "
             f"{honest}: it's anchored to {prof} {refs}. What I *can't* promise is the outcome — "
-            "KPIs aren't tracked, so it's a bet on a proven format, not a guarantee. If you want, "
-            "we shoot it as a test and let the numbers settle it.")
+            "KPIs aren't tracked, so it's a bet on a strong format, not a guarantee. "
+            "What would change my mind: two or three of these landing flat, or a cleaner "
+            "signal showing up in a different hook for the same product.")
     text = st.compact_slack_response(body + _tail(src), mode)
     return {"text": st.format_trace_answer(text), "source_ids": src.ids, "src": src,
             "facts": f"Challenge on {_title(idea)}: confidence {conf}, profile {prof}."}

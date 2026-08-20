@@ -323,6 +323,16 @@ def _internal_recompute(dry_run: bool) -> dict:
         prof_run = winning_profiles.build_winning_profiles()
         profiles_created = prof_run.get("POSTS_ADDED", 0)
         profiles_updated = prof_run.get("POSTS_ANALYZED", 0)
+    # Snapshot derived-pattern strengths so "did that pattern get stronger?" has a
+    # real before/after comparison (change history).
+    pattern_changes = {}
+    if corr_rebuilt:
+        try:
+            import pattern_history
+            from inspiration_sheets import InspirationSheets
+            pattern_changes = pattern_history.record(InspirationSheets(), results)
+        except Exception as e:  # noqa: BLE001
+            log.info("pattern history skipped: %s", e)
     notion_reason = ""
     try:
         from main import notion_sync
@@ -330,10 +340,14 @@ def _internal_recompute(dry_run: bool) -> dict:
         notion_reason = "Notion synced"
     except Exception as e:  # noqa: BLE001 - Notion failure never rolls back evidence
         notion_reason = f"Notion sync skipped: {type(e).__name__}"
+    strengthened = len(pattern_changes.get("strengthened", []) or [])
     return {"stage": "internal_recompute", "status": "success",
             "processed": len(analyzed), "created": profiles_created, "updated": profiles_updated,
-            "reason": notion_reason, "_correlations_rebuilt": corr_rebuilt,
-            "_profiles_created": profiles_created, "_profiles_updated": profiles_updated}
+            "reason": (notion_reason + (f"; {strengthened} pattern(s) strengthened"
+                                        if strengthened else "")),
+            "_correlations_rebuilt": corr_rebuilt,
+            "_profiles_created": profiles_created, "_profiles_updated": profiles_updated,
+            "_patterns_strengthened": strengthened}
 
 
 def _external_discovery(dry_run: bool, sheets) -> dict:

@@ -470,6 +470,12 @@ def is_inspiration_query(text: str) -> bool:
     t = " " + (text or "").lower() + " "
     if "inspo" in t:
         return True
+    # explicit asks for reference material (external = execution reference only)
+    if any(k in t for k in ("find videos", "videos to inspire", "video to inspire",
+                            "inspire this", "inspire that", "learn from this competitor",
+                            "learn from that competitor", "competitor video",
+                            "what should we watch", "watch before")):
+        return True
     if "inspiration" in t and any(k in t for k in ("video", "content", "clip", "for ",
                                                    "concept", "from", "reference")):
         return True

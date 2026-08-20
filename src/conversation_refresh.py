@@ -29,7 +29,8 @@ META_GAP = "refresh_meta_gap"
 STATUS = "refresh_status"
 
 _NEW_KW = ("find anything new", "anything new", "find new", "new videos", "new reels",
-           "new storelli", "did we find", "anything interesting")
+           "new storelli", "did we find", "anything interesting", "new things",
+           "brain find", "did the brain find", "brain found")
 _WHAT_MATTERS_KW = ("what actually matters", "what matters", "which one matters",
                     "most important", "which matters most", "what's worth")
 _ACT_KW = ("what should we shoot because", "what should we do with that",

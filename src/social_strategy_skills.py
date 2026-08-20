@@ -679,7 +679,9 @@ def detect_skill(text: str, context: Optional[list] = None) -> str:
     # A generic "take inspiration from" ask belongs to the semantic layer.
     if "take inspiration from" in t:
         return ""
-    if any(k in t for k in ("shoot brief", "shot brief", "shoot-brief", "shot beats",
+    if any(k in t for k in ("how should we film", "how do we film this", "first 3 seconds",
+                            "first three seconds", "how should we shoot this",
+                            "shoot brief", "shot brief", "shoot-brief", "shot beats",
                             "shot list", "should gerald film", "editor look for",
                             "turn this into a shoot", "turn that into a shoot",
                             "turn it into a shoot", "into a shoot brief")):
@@ -689,7 +691,9 @@ def detect_skill(text: str, context: Optional[list] = None) -> str:
         return "calendar_doctor"
     if any(k in t for k in ("what are we missing", "missing in the calendar", "overdoing",
                             "enough parent", "evidence thin", "where is the evidence",
-                            "products need more testing", "content gap", "gaps in")):
+                            "products need more testing", "content gap", "gaps in",
+                            "barely tested", "barely test", "haven't tested", "havent tested",
+                            "under-tested", "under tested", "hardly tested")):
         return "content_gap"
     if any(k in t for k in ("watch before", "before shooting", "which references", "references map",
                             "map to this concept", "steal the pacing", "maps to the pain",
