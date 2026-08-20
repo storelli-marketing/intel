@@ -283,6 +283,61 @@ signal, and **lift** (the difference). Confidence by sample size: High ≥ 20,
 Medium 8–19, Low < 8. These are **correlations / associations, never
 causation.**
 
+## Active decision frame
+
+The brain remembered ENTITIES across turns (last product, last idea ids) but not
+the *decision being made*. So a follow-up phrased as a new question —
+
+> T1: "What is working for BodyShield, and what evidence supports that?"
+> T2: "What should we shoot next week based on the latest data you just shared?"
+
+classified T2 as `ask_new_question`, which the contextual agent disowned; the
+generic `shoot` keyword handler then re-ranked the **global** idea pool and
+answered about a different product, with a different optimisation criterion
+("ranked by production practicality") the user never asked for.
+
+`src/decision_frame.py` holds one compact record of the current decision —
+topic, objective, scope (product / ICP / format / hook), prior findings, prior
+recommendation, optimisation goal, evidence refs, claim strength. It is not a
+transcript and not a general memory layer.
+
+Two properties matter:
+
+- **Established once, then carried.** The anchor is the *earliest* answer that
+  established the frame, recovered from thread history (the in-memory cache is
+  cold on a fresh process). Anchoring on the latest answer made the frame drift
+  under its own output — a recommendation cites its own sources, so the ICP
+  moved to whatever appeared in a citation label. Only an explicit user scope
+  change or reset rewrites it.
+- **Precedence.** reset → frame inheritance → explicit new objective → generic
+  capability retrieval. The frame is handled inside `conversation_agent.answer`,
+  which already runs before every keyword handler, so a contextual follow-up
+  beats generic idea/calendar ranking without new routing machinery.
+
+`src/frame_reasoning.py` does the two things the frame enables:
+
+- **Constrained retrieval** — in-scope, then same-territory, then adjacent
+  product, then global. Broadening happens only when the tighter tiers are
+  *empty*, never because an out-of-frame idea scores higher, and the answer says
+  when it broadened and what it passed up.
+- **Epistemic challenge** — "are you sure? what would change your mind?" builds
+  a pack (recommendation, support, counterargument, alternative, sufficiency,
+  falsification conditions) and reasons over it. Pattern confidence, execution
+  confidence and recommendation confidence are tracked separately, because
+  evidence that a territory works is not evidence that one script is its best
+  expression; the recommendation is capped at the weaker leg.
+
+Objectives are never introduced silently. An explicit criterion ("optimize for
+easiest production instead") wins and is attributed to the user; otherwise the
+frame's is inherited; otherwise the default inside a frame is to exploit the
+finding just established — and because that one is *inferred*, the answer says
+so ("I'm reading 'best' here as…") rather than claiming it was requested.
+
+Debug with `route_debug <question>`: `decision_frame_active`,
+`decision_frame_topic`, `inherited_scope`, `optimization_goal`,
+`retrieval_scope`, `scope_broadened`, `challenge_mode`,
+`recommendation_referent`.
+
 ## Answer classes and data limits
 
 Every substantive answer falls into one of three classes, and the class is

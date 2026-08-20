@@ -234,6 +234,123 @@ def _family(text: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# decision-frame turns — continue the CURRENT decision instead of restarting
+# ---------------------------------------------------------------------------
+def _frame_ideas(sheets):
+    import idea_retrieval
+    return idea_retrieval._load_ideas(sheets)
+
+
+# A request for what to DO next, as opposed to a request to explain, compare or
+# expand something already said.
+_RECOMMENDATION_ASK = re.compile(
+    r"\b(?:what|which)\b[^?]{0,40}\b(?:shoot|film|make|post|produce|do)\b"
+    r"|\bwhat(?:'s| is)? next\b|\bwhat now\b|\bnext week\b|\bnext up\b"
+    r"|\bshould we (?:shoot|film|make|post|produce)\b", re.IGNORECASE)
+
+# Acts that ALREADY resolve against the prior recommendation and answer well:
+# explaining it, comparing items in it, expanding it, showing its evidence,
+# turning it into a brief. The frame must not take these — doing so returned the
+# same recommendation for "why?" as for "what should we shoot?".
+_NOT_FRAME_ACTS = (R.EXPLAIN, R.COMPARE, R.DEEPER, R.EVIDENCE, R.OPERATIONALIZE,
+                   R.INSPIRATION, R.MODIFY, R.SHORTER, R.EXAMPLES, R.SUMMARY,
+                   R.CONFIRM, R.CORRECT)
+
+
+def _maybe_frame(text: str, ctx: list, act: str, key: str, sheets, gemini):
+    """Answer a turn that continues the active decision, or return None.
+
+    Owns exactly two shapes, both of which used to be answered from the wrong
+    context: a recommendation ask inside a frame, and an epistemic challenge to
+    the recommendation currently on the table. Everything else keeps the handler
+    it already had — the frame exists to stop context LOSS, not to take over
+    turns that were already contextual.
+    """
+    import decision_frame as DF
+    import frame_reasoning as FR
+    state = CS.build_state(ctx, text, key)
+    frame = DF.derive(ctx, text, state)
+
+    if DF.wants_reset(text):
+        # Deliberate broadening ("strongest idea across all products?"). Drop the
+        # frame and let normal routing answer the wider question.
+        if state is not None:
+            state["decision_frame"] = None
+            if key:
+                CS.put(key, state)
+        LAST_DEBUG.update(decision_frame_active="no", scope_broadened="reset_by_user")
+        return None
+    if not DF.is_active(frame) or not DF.inherits(text, frame):
+        return None
+
+    is_challenge = act == R.CHALLENGE
+    objective, explicit = DF.resolve_objective(text, frame)
+    if not is_challenge and act in _NOT_FRAME_ACTS:
+        return None
+    # Owned shapes: a request for what to do next, or an explicit change of the
+    # criterion ("optimize for easiest production instead") — same evidence
+    # universe, different ranking. Anything else keeps its existing handler.
+    if not is_challenge and not _RECOMMENDATION_ASK.search(text or "") and not explicit:
+        return None
+    mode = st.detect_response_mode(text)
+    LAST_DEBUG.update(
+        dialogue_act=act, contextual_followup="yes", decision_frame_active="yes",
+        decision_frame_topic=frame.get("topic", ""),
+        inherited_scope=DF.describe_scope(frame), optimization_goal=objective,
+        challenge_mode=("yes" if is_challenge else "no"),
+        recommendation_referent=frame.get("prior_recommendation") or "",
+        LLM_used="no", fallback_used="no")
+
+    try:
+        ideas = _frame_ideas(sheets)
+    except Exception as e:  # noqa: BLE001
+        log.warning("decision frame: idea load failed: %s", e)
+        ideas = []
+
+    # --- epistemic challenge to the recommendation on the table --------------
+    if is_challenge:
+        rec_title = frame.get("prior_recommendation")
+        pick = alt = None
+        if ideas:
+            sel = FR.constrained_ideas(ideas, frame, objective)
+            byname = {FR._title(i).lower(): i for i in ideas}
+            pick = byname.get(str(rec_title or "").lower()) or                 (sel["picked"][0] if sel["picked"] else None)
+            alt = sel.get("alternative")
+            if alt is not None and pick is not None and                     FR._title(alt).lower() == FR._title(pick).lower():
+                pool = [i for i in sel["picked"] if i is not pick]
+                alt = pool[0] if pool else None
+        pack = FR.challenge_pack(frame, pick, alt, objective)
+        LAST_DEBUG.update(evidence_pack_type="epistemic_challenge",
+                          response_shape=R.challenge_kind(text),
+                          retrieval_scope="frame_constrained")
+        answer_text = FR.render_challenge(pack, mode)
+        DF.remember(state, frame, objective,
+                    FR._title(pick) if pick is not None else "")
+        if key:
+            CS.put(key, state)
+        return answer_text
+
+    # --- recommendation constrained to the frame ----------------------------
+    if not ideas:
+        return None
+    sel = FR.constrained_ideas(ideas, frame, objective)
+    if not sel["picked"]:
+        return None
+    LAST_DEBUG.update(evidence_pack_type="frame_constrained_ideas",
+                      response_shape="constrained_recommendation",
+                      retrieval_scope=sel["tier"],
+                      scope_broadened=("yes" if sel["broadened"] else "no"))
+    answer_text = FR.render_constrained_recommendation(sel, frame, objective,
+                                                       explicit, mode)
+    if not answer_text:
+        return None
+    DF.remember(state, frame, objective, FR._title(sel["picked"][0]))
+    if key:
+        CS.put(key, state)
+    return answer_text
+
+
 def answer(text: str, context: Optional[list] = None, sheets=None, gemini="auto",
            key: str = "") -> Optional[str]:
     """Return a contextual follow-up answer, or None to defer to existing routing."""
@@ -271,6 +388,18 @@ def answer(text: str, context: Optional[list] = None, sheets=None, gemini="auto"
             except Exception:  # noqa: BLE001
                 return None
         return None
+
+    # ACTIVE DECISION FRAME — precedence step 2, after reset and before anything
+    # generic. This is the fix for the production failure: "what should we shoot
+    # next week based on the latest data you just shared?" classifies as ASK_NEW,
+    # so the gate below used to disown it and the `shoot` keyword handler then
+    # re-ranked the GLOBAL idea pool — losing the product, the evidence and the
+    # objective in one step. Handling it here means the contextual answer wins,
+    # because this agent already runs before every keyword handler.
+    framed = _maybe_frame(text, ctx, act, key, sheets, gemini)
+    if framed:
+        return framed
+
     if act in (R.ASK_NEW, R.OPERATIONALIZE, R.INSPIRATION, R.EXAMPLES,
                R.SUMMARY, R.CONFIRM, R.CORRECT):
         # not owned here (new -> fresh routing; shoot-brief -> strategy skills;

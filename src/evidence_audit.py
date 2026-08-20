@@ -773,7 +773,8 @@ def _named_taxonomy_options(text: str) -> list:
     found = []
     for lyr, options in taxonomy.LAYERS.items():
         for opt in options:
-            if len(norm(opt)) >= 3 and norm(opt) in hay:
+            if len(norm(opt)) >= 3 and re.search(
+                    rf"(?<![A-Za-z0-9]){re.escape(norm(opt))}(?![A-Za-z0-9])", hay):
                 found.append((lyr, opt))
     return found
 

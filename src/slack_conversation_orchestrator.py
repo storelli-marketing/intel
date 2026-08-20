@@ -128,7 +128,8 @@ def _names_taxonomy_options(lowered_text: str) -> int:
     for layer, options in taxonomy.LAYERS.items():
         for opt in options:
             name = _norm_option(opt)
-            if len(name) >= 3 and name in hay:
+            if len(name) >= 3 and re.search(
+                    rf"(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])", hay):
                 seen.add((layer, name))
     return len(seen)
 

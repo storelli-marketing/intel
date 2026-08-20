@@ -142,6 +142,20 @@ def _strip_unavailable_metric_claims(text: str, available: Optional[list]) -> tu
             issues.append(f"mentions unavailable metric {canon}")
         if not drop:
             kept.append(line)
+    # Dropping a line can orphan the heading that introduced it. A bare
+    # "What I'd do next:" with nothing under it reads as a truncation bug.
+    if issues:
+        pruned = []
+        for i, line in enumerate(kept):
+            bare = re.sub(r"[*_`#>\s]", "", line)
+            if bare.endswith(":") and len(bare) <= 40:
+                rest = [x for x in kept[i + 1:] if x.strip()]
+                nxt = rest[0].strip() if rest else ""
+                if not nxt or (nxt.startswith("*Sources") or nxt.startswith("Sources")
+                               or re.sub(r"[*_`\s]", "", nxt).endswith(":")):
+                    continue
+            pruned.append(line)
+        kept = pruned
     out = "\n".join(kept).strip()
     if not out and issues:
         # everything asserted an unavailable metric — say so instead of restoring
@@ -157,6 +171,33 @@ _HEDGED = re.compile(
     r"|inference|inferred|judg(?:e)?ment|my read|hypothes|directional|signal"
     r"|too close to call|can'?t tell|don'?t have|not enough|treat it as|guess"
     r"|early|tentative|indicativ|suggests?\b|would need)\b", re.IGNORECASE)
+
+
+# "significant"/"statistically significant" applied to an effect. Plain English
+# uses of the word ("a significant investment") are not the target, so the match
+# requires an effect noun or a percentage nearby.
+_SIGNIFICANCE = re.compile(
+    r"\b(?:statistically\s+)?significant(?:ly)?\b(?=[^.]{0,40}"
+    r"(?:\d+\s?%|lift|increase|decrease|difference|better|higher|improvement|uplift))"
+    r"|(?<=\d%\s)\b(?:statistically\s+)?significant\b"
+    r"|\b(?:a|the)\s+(?:statistically\s+)?significant\s+"
+    r"(?:\+?\d+\s?%|lift|increase|difference|uplift)", re.IGNORECASE)
+# An aggregate effect size — a property of many posts, not of one.
+_AGGREGATE_CLAIM = re.compile(
+    r"[+\-]?\d+(?:\.\d+)?\s?%\s*(?:lift|higher|better|increase|uplift|great rate)"
+    r"|\blift\s+(?:of\s+)?[+\-]?\d+(?:\.\d+)?\s?%"
+    r"|\bgreat rate\b[^.]{0,30}\d+(?:\.\d+)?\s?%", re.IGNORECASE)
+_EXAMPLE_NOTE = re.compile(r"example[s]? of the pattern|illustrat|not the measurement",
+                           re.IGNORECASE)
+
+
+def _designify(phrase: str) -> str:
+    """Replace an unearned significance claim with sample-scoped wording."""
+    out = re.sub(r"\bstatistically\s+significantly?\b", "measurably", phrase,
+                 flags=re.IGNORECASE)
+    out = re.sub(r"\bsignificantly\b", "measurably", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bsignificant\b", "clear", out, flags=re.IGNORECASE)
+    return out
 
 
 def validate(text: str, answer: Optional[dict] = None, available_metrics: Optional[list] = None,
@@ -221,6 +262,24 @@ def validate(text: str, answer: Optional[dict] = None, available_metrics: Option
         out += (f" Worth noting the sample is still small (n={n})." if n else
                 " Worth flagging that this rests on thin evidence — treat it as a "
                 "read, not a proven result.")
+
+    # 5b) statistical-significance language that was never computed.
+    #     Nothing in this pipeline runs a significance test, so "a significant
+    #     +19% lift" claims a property of the data we have not established. The
+    #     honest form scopes the number to the sample it came from.
+    if _SIGNIFICANCE.search(out):
+        issues.append("significance language without a significance test")
+        out = _SIGNIFICANCE.sub(lambda m: _designify(m.group(0)), out)
+
+    # 5c) an aggregate effect illustrated by individual reels.
+    #     A lift is a property of the PATTERN across many posts; one reel cannot
+    #     demonstrate it. When the only citations are individual posts, say what
+    #     they are — examples of the pattern, not the measurement behind it.
+    if _AGGREGATE_CLAIM.search(out) and re.search(r"\[S\d+\]", out) \
+            and not _EXAMPLE_NOTE.search(out):
+        issues.append("aggregate effect illustrated by individual reels")
+        out = out.rstrip() + ("\n_The linked reels are examples of the pattern, "
+                              "not the measurement behind the lift._")
 
     # 6) broadened slice presented as narrow.
     if scope and scope.get("relaxed") and scope.get("disclosure"):

@@ -122,6 +122,37 @@ def route_debug(text: str, context: Optional[list] = None) -> str:
         except Exception:  # noqa: BLE001
             return "route_debug unavailable (import error)."
 
+        # Decision-frame turns take precedence over every keyword handler, so the
+        # debug view has to report them first or it misrepresents the real route.
+        try:
+            import decision_frame as DF
+            import conversation_resolver as CR2
+            _frame = DF.derive(context, q)
+            if DF.is_active(_frame) and DF.inherits(q, _frame) and not DF.wants_reset(q):
+                _obj, _explicit = DF.resolve_objective(q, _frame)
+                _act = CR2.classify_dialogue_act(q)
+                _kind = CR2.challenge_kind(q)
+                _challenge = _act == CR2.CHALLENGE or _kind in (
+                    CR2.ASK_FALSIFICATION, CR2.ASK_COUNTERARGUMENT, CR2.ASK_CONFIDENCE)
+                return (
+                    "*route_debug* (developer view — not shown to users):\n"
+                    f"• route: `decision_frame`\n"
+                    f"• dialogue_act: `{_act}`\n"
+                    f"• decision_frame_active: yes\n"
+                    f"• decision_frame_topic: {_frame.get('topic') or '(none)'}\n"
+                    f"• inherited_scope: {DF.describe_scope(_frame)}\n"
+                    f"• optimization_goal: {_obj}"
+                    f"{' (explicitly requested)' if _explicit else ' (inherited/default)'}\n"
+                    f"• retrieval_scope: frame-constrained, broadens only if empty\n"
+                    f"• scope_broadened: decided at answer time\n"
+                    f"• challenge_mode: {'yes (' + _kind + ')' if _challenge else 'no'}\n"
+                    f"• recommendation_referent: "
+                    f"{_frame.get('prior_recommendation') or '(none yet)'}\n"
+                    f"• llm_used: no (deterministic)\n"
+                    f"• likely_sources: [S#] internal proof within the frame")
+        except Exception:  # noqa: BLE001 - debug view must never raise
+            pass
+
         # Stateful contextual follow-up runs first (Part M/Q).
         ci = cagent.route_info(q, context)
         if ci.get("contextual_followup") == "yes":

@@ -59,6 +59,10 @@ def new_state() -> dict:
         "strongest_changed_pattern": "",
         "winning_profiles_changed": False,
         "last_refresh_recommendation": "",
+        # ACTIVE DECISION FRAME (see decision_frame.py) — the compact record of
+        # "what problem are we currently solving", so a follow-up phrased as a
+        # new question doesn't restart from the global capability set.
+        "decision_frame": None,
         "timestamp": 0.0,
     }
 

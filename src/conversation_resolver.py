@@ -14,6 +14,14 @@ from typing import Optional
 ASK_NEW = "ask_new_question"
 EXPLAIN = "explain_previous_answer"
 CHALLENGE = "challenge_previous_answer"
+# Sub-kinds of CHALLENGE. They all build the same epistemic pack; the kind only
+# decides which part of it leads, so a confidence question and a falsification
+# question don't come back as the same paragraph.
+CHALLENGE_RECOMMENDATION = "challenge_recommendation"
+ASK_CONFIDENCE = "ask_confidence"
+ASK_COUNTERARGUMENT = "ask_counterargument"
+ASK_FALSIFICATION = "ask_falsification"
+ASK_WHY_RECOMMENDATION = "ask_why_recommendation"
 EVIDENCE = "request_evidence"
 DEEPER = "request_more_depth"
 SHORTER = "request_less_detail"
@@ -43,6 +51,29 @@ def _t(text: str) -> str:
 # ---------------------------------------------------------------------------
 # dialogue act
 # ---------------------------------------------------------------------------
+def challenge_kind(text: str) -> str:
+    """Which flavour of epistemic challenge this is.
+
+    Ordered most-specific-first: "are you sure? what would change your mind?"
+    asks both, and the falsification half is the harder obligation, so it wins.
+    """
+    t = _t(text)
+    if any(k in t for k in ("change your mind", "would change my mind", "what would change",
+                            "falsif", "disprove", "prove you wrong", "rule it out")):
+        return ASK_FALSIFICATION
+    if any(k in t for k in ("argument against", "case against", "what am i missing",
+                            "devil's advocate", "poke holes", "downside",
+                            "why not the other", "why not the second", "talk me out of")):
+        return ASK_COUNTERARGUMENT
+    if any(k in t for k in ("how sure", "how confident", "confidence", "are you sure",
+                            "you sure", "sure about that")):
+        return ASK_CONFIDENCE
+    if any(k in t for k in ("why that one", "why this one", "why did you recommend",
+                            "why do you recommend", "why pick", "why choose")):
+        return ASK_WHY_RECOMMENDATION
+    return CHALLENGE_RECOMMENDATION
+
+
 def classify_dialogue_act(text: str) -> str:
     t = _t(text)
     # reset first — an explicit topic change dominates.
@@ -75,7 +106,11 @@ def classify_dialogue_act(text: str) -> str:
         return EVIDENCE
     if any(k in t for k in ("are you sure", "you sure", "really?", "is that right", "i doubt",
                             "not convinced", "is that true", "sure about that",
-                            "change your mind", "would change my mind", "what would change")):
+                            "change your mind", "would change my mind", "what would change",
+                            "how sure", "how confident", "argument against",
+                            "case against", "what am i missing", "what are we missing here",
+                            "why not the other", "why not the second", "convince me",
+                            "talk me out of", "devil's advocate", "poke holes")):
         return CHALLENGE
     if any(k in t for k in ("shorter", "tldr", "tl;dr", "too long", "make it short", "quick version",
                             "in a sentence", "just the gist", "keep it short", "one line")):
