@@ -52,6 +52,13 @@ def new_state() -> dict:
         "last_unresolved_question": "",
         "conversation_topic": "",
         "response_mode": "normal",    # concise | normal | deep
+        # self-update context (Part 16) — what refresh/change we're discussing
+        "last_refresh_discussed": "",
+        "new_internal_reels": [],     # compact: [{link, title_or_date}]
+        "new_external_count": 0,
+        "strongest_changed_pattern": "",
+        "winning_profiles_changed": False,
+        "last_refresh_recommendation": "",
         "timestamp": 0.0,
     }
 

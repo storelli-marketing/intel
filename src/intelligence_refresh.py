@@ -146,42 +146,118 @@ def _write_run_row(sheets, row: dict, update_run_id: Optional[str] = None) -> No
 # ---------------------------------------------------------------------------
 # job wrappers (call the EXISTING implementations; injectable for tests)
 # ---------------------------------------------------------------------------
-def _internal_append(dry_run: bool) -> dict:
-    """Detect NEW Storelli-owned reels and safely append them to the POC so they
-    become eligible for the existing analysis pipeline. Owned media only."""
-    if not _ig_configured():
-        return _stage("internal_append", "skipped", reason="Instagram API not configured")
-    from instagram_insights_client import InstagramInsightsClient, normalize_media
+def _owned_scan(dry_run: bool, sheets=None) -> dict:
+    """PUBLIC-MODE owned scan (no Meta): bounded Apify scan of the ONE trusted
+    Storelli account, ownership-verified, deduped, with new reels appended to the
+    POC and public metrics refreshed on known rows.
+
+    Returns a stage status carrying the normalized owned media so downstream
+    stages (analysis) can reuse the Apify video URLs without re-fetching."""
+    import owned_discovery as od
+    if not config.owned_public_discovery_configured():
+        need = ("APIFY_TOKEN" if not config.APIFY_TOKEN else "STORELLI_INSTAGRAM_HANDLE")
+        return _stage("owned_scan", "skipped", reason=f"public owned discovery needs {need}")
     from sheets_client import SheetsClient
     import social_metrics_ingest as smi
-    client = InstagramInsightsClient()
-    media = [normalize_media(m) for m in client.fetch_media(max_items=500)]
+
+    last = ""
+    try:
+        runs = _read_runs(sheets) if sheets is not None else []
+        done = [r for r in runs if str(r.get("STATUS", "")).lower() == "success"]
+        last = (done[-1].get("FINISHED_AT") or "") if done else ""
+    except Exception:  # noqa: BLE001
+        last = ""
+
+    scan = od.scan_owned_media(last_refresh_iso=last)
+    if not scan.get("ok"):
+        return _stage("owned_scan", "failed", reason=scan.get("error", "scan failed"))
+    owned = scan["owned"]
     poc = SheetsClient()
     poc.validate_columns()
-    new = smi.classify_owned_media(media, poc.read_rows())["NEW_MEDIA"]
+    rows = poc.read_rows()
+    life = smi.classify_owned_media(_as_media_dicts(owned), rows)
+    new = life["NEW_MEDIA"]
+    followers = od.current_follower_count(owned)
+    metrics_avail = ", ".join(k for k, v in (scan.get("metrics_available") or {}).items() if v)
+
     if dry_run:
-        return {"stage": "internal_append", "status": "success", "processed": len(media),
-                "created": len(new), "_new_media": len(new),
-                "reason": f"{len(new)} new owned reel(s) would be appended to POC (no writes)"}
-    if not new:
-        return {"stage": "internal_append", "status": "skipped", "processed": len(media),
-                "reason": "no new owned reels", "_appended": 0, "_new_media": 0}
-    insights = {}
-    for m in new:
-        try:
-            insights[m["id"]] = client.fetch_media_insights(m["id"], m.get("media_product_type", ""))
-        except Exception:  # noqa: BLE001
-            insights[m["id"]] = {}
-    res = smi.append_owned_media_to_poc(new, insights, poc)
-    return {"stage": "internal_append", "status": "success", "processed": len(media),
-            "created": res["appended"], "_appended": res["appended"],
-            "_new_media": res["appended"],
-            "reason": f"{res['appended']} new owned reel(s) appended to POC"}
+        return {"stage": "owned_scan", "status": "success", "processed": len(owned),
+                "created": len(new), "_new_media": len(new), "_owned": owned,
+                "_followers": followers,
+                "reason": f"account @{scan['handle']}: {len(owned)} owned post(s), "
+                          f"{len(new)} new would append, "
+                          f"{len(scan.get('external_rejected', []))} non-owned rejected; "
+                          f"public metrics [{metrics_avail or 'none'}] (no writes)"}
+
+    appended = 0
+    if new:
+        res = smi.append_owned_media_to_poc(new, _insights_from_owned(owned), poc)
+        appended = res["appended"]
+        poc = SheetsClient()          # re-read so the new rows are visible downstream
+        poc.validate_columns()
+    updated = _refresh_public_metrics(poc, owned, followers)
+    return {"stage": "owned_scan", "status": "success", "processed": len(owned),
+            "created": appended, "updated": updated, "_appended": appended,
+            "_new_media": appended, "_owned": owned, "_followers": followers,
+            "reason": f"@{scan['handle']}: +{appended} appended, {updated} metric cell(s) "
+                      f"updated; public metrics [{metrics_avail or 'none'}]"}
+
+
+def _as_media_dicts(owned: list) -> list:
+    """Owned-discovery objects -> the shape classify_owned_media/append expect."""
+    return [{"id": m.get("media_id") or m.get("shortcode"), "permalink": m.get("link"),
+             "media_product_type": "REELS", "timestamp": m.get("post_date"),
+             "duration": m.get("duration_seconds"), "_owned": m} for m in owned]
+
+
+def _insights_from_owned(owned: list) -> dict:
+    """Public metrics keyed by media id, in the insight-dict shape build_metric_values
+    consumes. Only real values; private-only metrics are never synthesized."""
+    out = {}
+    for m in owned:
+        mid = m.get("media_id") or m.get("shortcode")
+        vals = {}
+        for src, dst in (("views", "views"), ("likes", "likes"), ("comments", "comments"),
+                         ("shares", "shares")):
+            if m.get(src) not in (None, ""):
+                vals[dst] = m[src]
+        out[mid] = vals
+    return out
+
+
+def _refresh_public_metrics(poc, owned: list, followers) -> int:
+    """Update mutable PUBLIC metrics on known rows via the existing safe policy
+    (fill-empty + update-if-API-owned; human fields never touched)."""
+    import social_metrics_ingest as smi
+    media = _as_media_dicts(owned)
+    rows = poc.read_rows()
+    mapping = smi.map_media_to_poc_rows(media, rows)
+    if not mapping["matched"]:
+        return 0
+    insights = _insights_from_owned(owned)
+    if followers:
+        for mid in insights:
+            insights[mid]["followers_at_measurement"] = followers
+    plan = smi.plan_incremental(mapping, insights, list(poc.meta_col.keys()),
+                               smi.read_sync_state(poc))
+    if not plan["fills"]:
+        return 0
+    written = smi._apply_fills(poc, plan["fills"])
+    try:
+        smi._write_sync_state(poc, plan["per_media"], {})
+    except Exception:  # noqa: BLE001
+        pass
+    return written["cells"]
 
 
 def _internal_metrics(dry_run: bool) -> dict:
+    """OPTIONAL private-Insights enrichment (saves/reach/impressions). Absent Meta
+    credentials are a normal, healthy state in public mode — the public owned
+    scan already refreshed views/likes/comments/shares."""
     if not _ig_configured():
-        return _stage("internal_metrics", "skipped", reason="Instagram API not configured")
+        return _stage("internal_metrics", "skipped",
+                      reason="private Instagram Insights not configured (optional "
+                             "enrichment; public metrics already refreshed)")
     import social_metrics_ingest as smi
     rep = smi.refresh_instagram_metrics(dry_run=dry_run, apply=not dry_run)
     if not rep.get("ok"):
@@ -195,19 +271,27 @@ def _internal_metrics(dry_run: bool) -> dict:
             "_new_media": rep.get("media_not_in_poc", 0)}
 
 
-def _internal_analyze(dry_run: bool, limit: Optional[int]) -> dict:
+def _internal_analyze(dry_run: bool, limit: Optional[int], owned: Optional[list] = None) -> dict:
+    """Analyze eligible internal rows via the EXISTING pipeline. When the owned
+    scan supplied Apify video URLs, they're passed through so acquisition needs
+    neither an Instagram round-trip nor cookies."""
     from sheets_client import SheetsClient
     sheets = SheetsClient()
     sheets.validate_columns()
     rows = sheets.read_rows()
     eligible = [r for r in rows if SheetsClient.should_process(r, False)]
+    media_urls = _media_url_index(owned)
     if dry_run:
+        acq = ("Apify media URL (no cookies needed)" if media_urls else
+               "public yt-dlp" + (" -> cookie fallback" if config.YTDLP_COOKIES_PATH else ""))
         return _stage("internal_analyze", "success", processed=len(eligible),
-                      reason=f"{len(eligible)} eligible row(s) would be analyzed (no writes)")
+                      reason=f"{len(eligible)} eligible row(s) would be analyzed via {acq} "
+                             "(no writes)")
     if not eligible:
         return _stage("internal_analyze", "skipped", reason="no eligible internal rows")
     from main import cmd_analyze
-    stats = cmd_analyze(reprocess=False, limit=limit, qa_enabled=config.QA_COMPILER_ENABLED)
+    stats = cmd_analyze(reprocess=False, limit=limit, qa_enabled=config.QA_COMPILER_ENABLED,
+                        media_urls=media_urls)
     status = "partial" if stats.get("quota_stopped") or stats.get("failed") else "success"
     return {"stage": "internal_analyze", "status": status,
             "processed": stats.get("eligible", 0), "created": stats.get("analyzed", 0),
@@ -320,19 +404,37 @@ def _external_connections(dry_run: bool, sheets) -> dict:
 # ---------------------------------------------------------------------------
 # loops
 # ---------------------------------------------------------------------------
-def _internal_loop(dry_run: bool, limit: Optional[int]) -> list:
+def _media_url_index(owned: Optional[list]) -> dict:
+    """{canonical POC link key -> Apify video URL} so analysis can reuse the
+    already-fetched public media instead of re-downloading from Instagram."""
+    import social_metrics_ingest as smi
+    out = {}
+    for m in (owned or []):
+        url = (m.get("video_url") or "").strip()
+        link = (m.get("link") or "").strip()
+        if url and link:
+            out[smi._poc_key(link)] = url
+    return out
+
+
+def _internal_loop(dry_run: bool, limit: Optional[int], sheets=None) -> list:
     stages = []
-    # 1) detect + append NEW owned reels first, so metrics + analysis include them.
-    append = _run_stage("internal_append", lambda: _internal_append(dry_run))
-    stages.append(append)
+    # 1) PUBLIC owned scan (Apify): detect/append new owned reels + refresh public
+    #    metrics. No Meta dependency.
+    scan = _run_stage("owned_scan", lambda: _owned_scan(dry_run, sheets))
+    stages.append(scan)
+    owned = scan.get("_owned") or []
+    # 2) OPTIONAL private-Insights enrichment (skipped cleanly without Meta).
     metrics = _run_stage("internal_metrics", lambda: _internal_metrics(dry_run))
     stages.append(metrics)
-    analyze = _run_stage("internal_analyze", lambda: _internal_analyze(dry_run, limit))
+    # 3) analysis, reusing Apify media URLs when available.
+    analyze = _run_stage("internal_analyze", lambda: _internal_analyze(dry_run, limit, owned))
     stages.append(analyze)
     # Recompute ONLY when internal evidence actually changed.
     changed = (analyze.get("_analyzed", analyze.get("created", 0)) > 0
                or metrics.get("updated", 0) > 0
-               or append.get("_appended", 0) > 0)
+               or scan.get("_appended", 0) > 0
+               or scan.get("updated", 0) > 0)
     if dry_run:
         stages.append(_run_stage("internal_recompute", lambda: _internal_recompute(True)))
     elif changed:
@@ -421,7 +523,7 @@ def run_intelligence_refresh(mode: str = "full", dry_run: bool = False,
 
     stages = []
     if mode in ("full", "internal"):
-        stages += _internal_loop(dry_run, limit)
+        stages += _internal_loop(dry_run, limit, sheets)
     if mode in ("full", "external"):
         stages += _external_loop(dry_run, sheets)
     report["stages"] = stages
@@ -455,10 +557,10 @@ def _history_row(report: dict) -> dict:
         "RUN_ID": report["run_id"], "STARTED_AT": report["started_at"],
         "FINISHED_AT": report.get("finished_at", ""), "TRIGGER": report["trigger"],
         "MODE": report["mode"],
-        "INTERNAL_NEW_MEDIA": by.get("internal_append", {}).get(
-            "_new_media", by.get("internal_metrics", {}).get("_new_media", 0)),
+        "INTERNAL_NEW_MEDIA": by.get("owned_scan", {}).get("_new_media", 0),
         "INTERNAL_ANALYZED": by.get("internal_analyze", {}).get("created", 0),
-        "METRICS_UPDATED": by.get("internal_metrics", {}).get("updated", 0),
+        "METRICS_UPDATED": (by.get("owned_scan", {}).get("updated", 0)
+                            + by.get("internal_metrics", {}).get("updated", 0)),
         "CORRELATIONS_REBUILT": by.get("internal_recompute", {}).get("_correlations_rebuilt", False),
         "PROFILES_UPDATED": by.get("internal_recompute", {}).get("_profiles_updated", 0),
         "EXTERNAL_DISCOVERED": by.get("external_discovery", {}).get("processed", 0),
@@ -507,33 +609,66 @@ def _cookies_configured() -> bool:
 
 
 def refresh_readiness() -> dict:
-    """READY / BLOCKED per capability with the exact env var required. Reads only
-    presence flags — never the secret values."""
+    """READY / BLOCKED / NOT_CONFIGURED per capability with the exact env var
+    required. PUBLIC MODE is the primary path: owned discovery runs on Apify, so
+    Meta/Instagram-API credentials are OPTIONAL enrichment and their absence is
+    never a blocker. Reads only presence flags — never the secret values."""
     caps = {}
 
-    def cap(name, ok, need):
-        caps[name] = {"status": "READY" if ok else "BLOCKED", "required": "" if ok else need}
+    def cap(name, ok, need, absent_status="BLOCKED"):
+        caps[name] = {"status": "READY" if ok else absent_status,
+                      "required": "" if ok else need}
 
-    ig = config.instagram_configured()
     sheets_ok = bool(config.GOOGLE_SHEET_ID and config.GOOGLE_SERVICE_ACCOUNT_JSON_PATH)
-    cap("instagram_owned_discovery", ig,
-        "INSTAGRAM_ACCESS_TOKEN (or META_ACCESS_TOKEN) + INSTAGRAM_BUSINESS_ACCOUNT_ID (or IG_USER_ID)")
-    cap("instagram_metrics", ig, "same as instagram_owned_discovery")
-    cap("internal_video_analysis", bool(config.GEMINI_API_KEY) and _cookies_configured(),
-        ("GEMINI_API_KEY" if not config.GEMINI_API_KEY else "")
-        + ("" if config.GEMINI_API_KEY or _cookies_configured() else " + ")
-        + ("YTDLP_COOKIES_B64 (authenticated Instagram cookies — one-time export)"
-           if not _cookies_configured() else ""))
-    cap("external_apify_discovery", bool(config.APIFY_TOKEN), "APIFY_TOKEN")
-    cap("gemini_analysis", bool(config.GEMINI_API_KEY), "GEMINI_API_KEY")
+    gemini_ok = bool(config.GEMINI_API_KEY)
+    apify_ok = bool(config.APIFY_TOKEN)
+
+    # --- primary public path -------------------------------------------------
+    cap("owned_public_discovery", config.owned_public_discovery_configured(),
+        "APIFY_TOKEN" + ("" if config.STORELLI_INSTAGRAM_HANDLE
+                         else " + STORELLI_INSTAGRAM_HANDLE"))
+    caps["owned_account_identity"] = {
+        "status": "READY" if config.STORELLI_INSTAGRAM_HANDLE else "BLOCKED",
+        "required": "" if config.STORELLI_INSTAGRAM_HANDLE else "STORELLI_INSTAGRAM_HANDLE",
+        "handle": config.STORELLI_INSTAGRAM_HANDLE or ""}
+    cap("public_metrics", config.owned_public_discovery_configured(),
+        "APIFY_TOKEN (public views/likes/comments/shares come from Apify)")
+    # Video acquisition: Apify media URL first, public yt-dlp next, cookies last.
+    cap("internal_video_analysis", gemini_ok and (apify_ok or True),
+        "GEMINI_API_KEY")
+    cap("external_apify_discovery", apify_ok, "APIFY_TOKEN")
+    cap("gemini_analysis", gemini_ok, "GEMINI_API_KEY")
     cap("sheets", sheets_ok, "GOOGLE_SHEET_ID + GOOGLE_SERVICE_ACCOUNT_JSON_PATH (or _B64)")
     cap("notion_sync", bool(config.NOTION_API_KEY and config.NOTION_PARENT_PAGE_ID),
         "NOTION_API_KEY + NOTION_PARENT_PAGE_ID")
     cap("run_secret", bool(config.RUN_SECRET), "RUN_SECRET (dashboard-triggered refresh)")
-    caps["owned_tiktok"] = {"status": "READY" if config.owned_tiktok_configured() else "NOT_CONFIGURED",
-                            "required": "STORELLI_TIKTOK_HANDLE (owned-TikTok metrics are limited — "
-                                        "no official API integration)"}
+
+    # --- optional enrichment (absence is NORMAL, never a blocker) ------------
+    caps["private_instagram_insights"] = {
+        "status": "READY" if config.private_insights_configured() else "NOT_CONFIGURED",
+        "optional": True,
+        "required": "" if config.private_insights_configured() else
+                    "OPTIONAL: INSTAGRAM_ACCESS_TOKEN + INSTAGRAM_BUSINESS_ACCOUNT_ID "
+                    "(adds saves/reach/impressions/demographics only)"}
+    caps["cookie_fallback"] = {
+        "status": "READY" if _cookies_configured() else "NOT_CONFIGURED",
+        "optional": True,
+        "required": "" if _cookies_configured() else
+                    "OPTIONAL: YTDLP_COOKIES_B64 (only a fallback — Apify media URLs "
+                    "and public yt-dlp are tried first)"}
+    caps["owned_tiktok"] = {
+        "status": "READY" if config.owned_tiktok_configured() else "NOT_CONFIGURED",
+        "optional": True,
+        "required": "" if config.owned_tiktok_configured() else
+                    "OPTIONAL: STORELLI_TIKTOK_HANDLE (owned-TikTok metrics are limited — "
+                    "no official API integration)"}
     return caps
+
+
+# Capabilities that genuinely gate the public-mode brain.
+_CORE_CAPS = ("sheets", "gemini_analysis", "owned_public_discovery", "owned_account_identity")
+# Optional enrichment — never causes BLOCKED or PARTIAL on its own.
+_OPTIONAL_CAPS = ("private_instagram_insights", "cookie_fallback", "owned_tiktok")
 
 
 def _seconds_since(iso: str) -> Optional[float]:
@@ -545,18 +680,26 @@ def _seconds_since(iso: str) -> Optional[float]:
 
 
 def health_state(sheets=None) -> dict:
-    """HEALTHY / PARTIAL / BLOCKED / STALE with the specific reasons to act on."""
+    """HEALTHY / PARTIAL / BLOCKED / STALE for PUBLIC mode.
+
+    BLOCKED only when a core capability is down (Sheets, Gemini, Apify owned
+    discovery, or an unresolved owned-account identity). Missing Meta credentials
+    or missing cookies are OPTIONAL and never BLOCK — at most they explain what
+    extra data isn't available.
+    """
     caps = refresh_readiness()
-    reasons = []
-    if caps["sheets"]["status"] != "READY" or caps["gemini_analysis"]["status"] != "READY":
-        return {"state": "BLOCKED", "reasons": ["core services down (Sheets/Gemini)"],
+    blocked = [c for c in _CORE_CAPS if caps.get(c, {}).get("status") != "READY"]
+    if blocked:
+        return {"state": "BLOCKED",
+                "reasons": [f"{c} unavailable ({caps[c]['required']})" for c in blocked],
                 "readiness": caps, "last_run": None}
-    if caps["internal_video_analysis"]["status"] != "READY" and not _cookies_configured():
-        reasons.append(_COOKIE_REFRESH_MSG)
-    if caps["instagram_metrics"]["status"] != "READY":
-        reasons.append("Instagram metrics not configured")
-    if caps["external_apify_discovery"]["status"] != "READY":
-        reasons.append("Apify discovery not configured")
+
+    reasons = []
+    if caps["notion_sync"]["status"] != "READY":
+        reasons.append("Notion sync not configured (evidence in Sheets stays valid)")
+    if caps["private_instagram_insights"]["status"] != "READY":
+        reasons.append("private Instagram Insights not connected (optional: no saves/"
+                       "reach/impressions/demographics)")
 
     runs = last_runs(sheets, n=1)
     last = runs[0] if runs else None
@@ -566,30 +709,47 @@ def health_state(sheets=None) -> dict:
                 "readiness": caps, "last_run": None}
     age = _seconds_since(last.get("FINISHED_AT") or last.get("STARTED_AT", ""))
     if age is not None and age > cadence * 86400:
-        return {"state": "STALE", "reasons": [f"last refresh {int(age // 86400)}d ago "
-                                              f"(> {cadence}d)"] + reasons,
+        return {"state": "STALE",
+                "reasons": [f"last refresh {int(age // 86400)}d ago (> {cadence}d)"] + reasons,
                 "readiness": caps, "last_run": last}
-    if str(last.get("STATUS", "")).lower() in ("failed", "partial") or reasons:
-        return {"state": "PARTIAL", "reasons": (reasons or [f"last run {last.get('STATUS')}"]),
+    if str(last.get("STATUS", "")).lower() in ("failed", "partial"):
+        return {"state": "PARTIAL", "reasons": [f"last run {last.get('STATUS')}"] + reasons,
                 "readiness": caps, "last_run": last}
-    return {"state": "HEALTHY", "reasons": [], "readiness": caps, "last_run": last}
+    # Optional-only gaps are reported, but the brain is HEALTHY in public mode.
+    optional_only = all("optional" in r or "Notion" in r for r in reasons)
+    if reasons and not optional_only:
+        return {"state": "PARTIAL", "reasons": reasons, "readiness": caps, "last_run": last}
+    return {"state": "HEALTHY", "reasons": reasons, "readiness": caps, "last_run": last}
+
+
+def missing_because_no_meta() -> list:
+    """Exactly what is unavailable without the optional Meta connection — used by
+    Slack to answer 'are we missing anything because Meta isn't connected?'"""
+    if config.private_insights_configured():
+        return []
+    return ["saves", "reach", "impressions", "profile visits", "website clicks",
+            "audience demographics (age/gender/location)", "follower vs non-follower"]
 
 
 def next_scheduled_note() -> str:
-    return (f"scheduled every {config.INTELLIGENCE_REFRESH_CADENCE_DAYS} days once a Railway Cron "
+    return (f"every {config.INTELLIGENCE_REFRESH_CADENCE_DAYS} days once a Railway Cron "
             "invokes `refresh-intelligence` (not enabled until that cron exists)")
 
 
 def render_readiness(caps: dict) -> str:
-    lines = ["Intelligence refresh readiness (no secrets shown):"]
-    order = ["instagram_owned_discovery", "instagram_metrics", "internal_video_analysis",
-             "external_apify_discovery", "gemini_analysis", "sheets", "notion_sync",
-             "run_secret", "owned_tiktok"]
+    lines = ["Intelligence refresh readiness — PUBLIC MODE (no secrets shown):"]
+    order = ["owned_account_identity", "owned_public_discovery", "public_metrics",
+             "internal_video_analysis", "external_apify_discovery", "gemini_analysis",
+             "sheets", "notion_sync", "run_secret",
+             "private_instagram_insights", "cookie_fallback", "owned_tiktok"]
     for k in order:
-        c = caps[k]
-        line = f"  {k:26} {c['status']}"
-        if c.get("required") and c["status"] != "READY":
-            line += f"   -> needs {c['required']}"
+        c = caps.get(k) or {}
+        tag = " (optional)" if c.get("optional") else ""
+        line = f"  {k:28} {c.get('status', '?')}{tag}"
+        if k == "owned_account_identity" and c.get("handle"):
+            line += f"   @{c['handle']}"
+        if c.get("required") and c.get("status") != "READY":
+            line += f"   -> {c['required']}"
         lines.append(line)
     return "\n".join(lines)
 

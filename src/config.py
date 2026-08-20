@@ -297,6 +297,48 @@ def owned_tiktok_configured() -> bool:
     return bool(STORELLI_TIKTOK_HANDLE)
 
 
+# ---------------------------------------------------------------------------
+# PUBLIC MODE — owned Storelli discovery via Apify (no Meta/Instagram API).
+# ---------------------------------------------------------------------------
+# The one exact trusted owner handle. Derived from trusted internal data: every
+# profile-scoped LINK in the POC sheet resolves to `storellisoccer` (170/170,
+# 100% consistent), so it is the canonical owned account. It is NOT a secret, so
+# it ships as a default and can still be overridden per-environment. Ownership is
+# matched ONLY against this exact handle — never inferred from logo, caption,
+# content, brand mentions, or a similar username.
+STORELLI_INSTAGRAM_HANDLE = (os.getenv("STORELLI_INSTAGRAM_HANDLE", "").strip()
+                             .lstrip("@").lower() or "storellisoccer")
+
+# Bounded owned-account scan: how many recent posts to pull per refresh, and the
+# lookback used when we have no previous successful refresh to anchor on.
+try:
+    OWNED_SCAN_MAX_RESULTS = int(os.getenv("OWNED_SCAN_MAX_RESULTS", "30") or 30)
+except ValueError:
+    OWNED_SCAN_MAX_RESULTS = 30
+OWNED_SCAN_MAX_RESULTS = max(1, min(200, OWNED_SCAN_MAX_RESULTS))
+try:
+    OWNED_SCAN_LOOKBACK_DAYS = int(os.getenv("OWNED_SCAN_LOOKBACK_DAYS", "30") or 30)
+except ValueError:
+    OWNED_SCAN_LOOKBACK_DAYS = 30
+# Safety buffer added to "since last successful refresh" so a late-indexed post
+# is never missed at the boundary.
+try:
+    OWNED_SCAN_BUFFER_DAYS = int(os.getenv("OWNED_SCAN_BUFFER_DAYS", "3") or 3)
+except ValueError:
+    OWNED_SCAN_BUFFER_DAYS = 3
+
+
+def owned_public_discovery_configured() -> bool:
+    """Public owned discovery needs only an Apify token + the trusted handle."""
+    return bool(APIFY_TOKEN and STORELLI_INSTAGRAM_HANDLE)
+
+
+def private_insights_configured() -> bool:
+    """OPTIONAL enrichment only (saves/reach/impressions/demographics). Its
+    absence must never block the public-mode brain."""
+    return instagram_configured()
+
+
 def require_sheets() -> None:
     _require("GOOGLE_SHEET_ID")
     _require("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")

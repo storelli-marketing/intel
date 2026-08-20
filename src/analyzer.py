@@ -117,18 +117,25 @@ def _parse_with_retry(produce_text, label: str) -> dict:
 
 
 def analyze_and_compile(gemini, ig_link: str, product: str, icp: str,
-                        notes: str, qa_enabled: bool = True) -> dict:
+                        notes: str, qa_enabled: bool = True,
+                        media_url: str = "") -> dict:
     """Pass 1 (video analysis) -> optional QA compiler pass -> signal columns.
 
     With qa_enabled=False the QA pass is skipped (1 Gemini call instead of 2);
     pass-1 already emits confidence, so the needs_review guardrail still works.
     Each Gemini call retries once on invalid JSON. Raises on download or
     persistent failure so the caller can mark the row failed.
+
+    `media_url` is an optional already-public media URL (e.g. supplied by the
+    Apify owned-content scan). When present the acquisition hierarchy uses it
+    first, so the reel is never re-fetched from Instagram and no cookie session
+    is required.
     """
     taxonomy_block = render_taxonomy()
 
     parsed1 = _parse_with_retry(
-        lambda: gemini.analyze(ig_link, taxonomy_block, product, icp, notes),
+        lambda: gemini.analyze(ig_link, taxonomy_block, product, icp, notes,
+                               media_url=media_url),
         "Gemini analysis",
     )
     if not qa_enabled:

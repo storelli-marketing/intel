@@ -163,10 +163,76 @@ class GeminiClient:
             .replace("{taxonomy}", taxonomy_block)
         )
 
+    # ---- acquisition hierarchy (Part 7) --------------------------------------
+    # Preferred order: (1) an Apify-supplied direct media URL — no Instagram
+    # round-trip, no cookies; (2) public yt-dlp; (3) cookie-authenticated yt-dlp.
+    # Cookies are therefore a FALLBACK, not an architectural dependency. The
+    # method actually used is recorded on `self.last_acquisition`.
+    last_acquisition: str = ""
+
+    def _download_direct(self, media_url: str) -> str:
+        """Fetch an already-public media URL straight to a temp file."""
+        import httpx
+        tmp_dir = tempfile.mkdtemp(prefix="storelli_")
+        path = os.path.join(tmp_dir, "video.mp4")
+        with httpx.stream("GET", media_url, timeout=120.0,
+                          follow_redirects=True) as resp:
+            resp.raise_for_status()
+            with open(path, "wb") as fh:
+                for chunk in resp.iter_bytes():
+                    fh.write(chunk)
+        if os.path.getsize(path) <= 0:
+            raise VideoDownloadError(f"empty media body for {media_url[:60]}")
+        return path
+
+    def _download_ytdlp(self, ig_link: str, use_cookies: bool) -> str:
+        """yt-dlp acquisition, with or without the cookie session."""
+        try:
+            import yt_dlp
+        except ImportError as e:
+            raise VideoDownloadError("yt-dlp not installed") from e
+        tmp_dir = tempfile.mkdtemp(prefix="storelli_")
+        opts = {"outtmpl": os.path.join(tmp_dir, "video.%(ext)s"), "format": "mp4/best",
+                "quiet": True, "no_warnings": True, "noprogress": True}
+        if use_cookies and config.YTDLP_COOKIES_PATH:
+            opts["cookiefile"] = config.YTDLP_COOKIES_PATH
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([ig_link])
+        for fn in os.listdir(tmp_dir):
+            if fn.startswith("video."):
+                return os.path.join(tmp_dir, fn)
+        raise VideoDownloadError(f"no file produced for {ig_link}")
+
+    def acquire(self, ig_link: str, media_url: str = "") -> tuple:
+        """Return (path, method). Tries each allowed path in order and only fails
+        after ALL of them fail; the final error names every attempt."""
+        attempts, errors = [], []
+        if media_url:
+            attempts.append(("apify_media_url", lambda: self._download_direct(media_url)))
+        attempts.append(("ytdlp_public", lambda: self._download_ytdlp(ig_link, False)))
+        if config.YTDLP_COOKIES_PATH:
+            attempts.append(("ytdlp_cookies", lambda: self._download_ytdlp(ig_link, True)))
+        for method, fn in attempts:
+            try:
+                path = fn()
+                self.last_acquisition = method
+                log.info("acquired video via %s", method)
+                return path, method
+            except Exception as e:  # noqa: BLE001 - try the next path
+                errors.append(f"{method}: {type(e).__name__}")
+                log.info("acquisition via %s failed (%s); trying next", method,
+                         type(e).__name__)
+        tried = ", ".join(errors) or "no path available"
+        hint = ("" if config.YTDLP_COOKIES_PATH else
+                " (no cookie fallback configured: YTDLP_COOKIES_B64)")
+        raise VideoDownloadError(f"all acquisition paths failed for {ig_link} "
+                                 f"[{tried}]{hint}")
+
     def analyze(self, ig_link: str, taxonomy_block: str, product: str, icp: str,
-                notes: str) -> str:
-        """Download -> upload -> generate. Returns raw model text (expected JSON)."""
-        path = self._download(ig_link)
+                notes: str, media_url: str = "") -> str:
+        """Acquire -> upload -> generate. Returns raw model text (expected JSON).
+        `media_url` (e.g. an Apify-provided video URL) skips Instagram entirely."""
+        path, _method = self.acquire(ig_link, media_url)
         try:
             uploaded = self._upload_and_wait(path)
             prompt = self._build_prompt(taxonomy_block, product, icp, notes)

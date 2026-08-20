@@ -17,6 +17,7 @@ import re
 from typing import Optional
 
 import conversation_evidence as CE
+import conversation_refresh as CR
 import conversation_resolver as R
 import conversation_response_planner as P
 import conversation_state as CS
@@ -73,6 +74,103 @@ def route_info(text: str, context: Optional[list] = None, sheets=None) -> dict:
     return info
 
 
+# ---------------------------------------------------------------------------
+# refresh-aware turns (Part 14/16) — routed THROUGH this agent, not a status bot
+# ---------------------------------------------------------------------------
+# Deliberately NARROW: only phrases a refresh answer itself produces. Generic
+# words like "winning profile" or "new reel" appear in ordinary idea answers and
+# would hijack idea follow-ups.
+# Deliberately NARROW: only phrases a refresh answer itself produces. Generic
+# words like "winning profile" or "new reel" appear in ordinary idea answers and
+# would hijack idea follow-ups. Includes this layer's own follow-up phrasings so
+# a multi-turn refresh thread stays on-topic across intermediate answers.
+_REFRESH_MARKERS = ("new storelli reel", "new external reference", "last refresh",
+                    "no automatic refresh has landed", "private insights",
+                    "evidence got stronger", "nothing new since",
+                    "new external references", "new storelli reels",
+                    "where our internal proof already is", "compounding evidence",
+                    "the thread i'd follow", "tightens the same case",
+                    "rather than opening something new")
+_REFRESH_LOOKBACK_TURNS = 4
+
+
+def _prior_was_refresh(ctx: list) -> bool:
+    """True when a RECENT assistant turn was a refresh answer, so a bare
+    follow-up ('why?', 'show me the evidence') stays in that thread even after an
+    intermediate answer that didn't repeat the tell-tale phrasing."""
+    assistants = [m.get("text", "") for m in (ctx or []) if m.get("role") == "assistant"]
+    for text in assistants[-_REFRESH_LOOKBACK_TURNS:]:
+        low = (text or "").lower()
+        if any(m in low for m in _REFRESH_MARKERS):
+            return True
+    return False
+
+
+def _maybe_refresh(text: str, ctx: list, act: str, key: str, sheets):
+    """Answer a refresh question, or a follow-up to a refresh answer, in context."""
+    topic = CR.detect_refresh_topic(text)
+    follow_up = _prior_was_refresh(ctx)
+    if not topic and not follow_up:
+        return None
+    ordinal = re.search(r"(#[123]\b|\b(?:first|second|third|1st|2nd|3rd)\b)",
+                        " " + text.lower())
+    if not topic and follow_up and ordinal:
+        # "what about the second one?" inside a refresh thread -> that item
+        topic = CR.WHAT_MATTERS
+    if not topic:
+        # resolve the follow-up act against the prior refresh answer
+        if act == R.EXPLAIN:
+            topic = CR.WHY
+        elif act == R.EVIDENCE:
+            topic = CR.EVIDENCE
+        elif act in (R.CONFIRM, R.CORRECT, R.RESET):
+            return None
+        elif act == R.ASK_NEW:
+            # a bare "what about X?" continuation inside a refresh thread
+            if "what about" in text.lower():
+                topic = CR.WHAT_MATTERS
+            else:
+                return None
+        elif act == R.CHALLENGE:
+            topic = CR.WHY
+        elif act == R.DEEPER:
+            topic = CR.EVIDENCE
+        else:
+            return None
+    try:
+        pack = CR.build_refresh_pack(sheets)
+    except Exception as e:  # noqa: BLE001
+        log.warning("refresh pack failed: %s", e)
+        return None
+    mode = st.detect_response_mode(text)
+    idx = None
+    m = re.search(r"(#[123]\b|\b(?:first|second|third|1st|2nd|3rd)\b)", " " + text.lower())
+    if m:
+        idx = R._ORDINAL.get(m.group(1).strip())
+    LAST_DEBUG.update(dialogue_act=act, contextual_followup="yes" if follow_up else "no",
+                      conversation_topic="self_update_refresh", evidence_pack_type="refresh",
+                      response_shape=topic, LLM_used="no", fallback_used="no")
+    answer_text = CR.render(topic, pack, mode, focus_index=idx)
+    _remember_refresh(key, ctx, pack, topic)
+    return answer_text
+
+
+def _remember_refresh(key: str, ctx: list, pack: dict, topic: str) -> None:
+    if not key:
+        return
+    try:
+        state = CS.build_state(ctx, key=key)
+        state["last_refresh_discussed"] = pack.get("when", "")
+        state["new_internal_reels"] = [{"link": r["link"]} for r in pack.get("new_reels", [])[:3]]
+        state["new_external_count"] = pack.get("external_added", 0)
+        state["strongest_changed_pattern"] = pack.get("top_pattern", "")
+        state["winning_profiles_changed"] = bool(pack.get("profiles_changed"))
+        state["last_refresh_recommendation"] = topic
+        CS.put(key, state)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _load_ideas(sheets):
     if sheets is None:
         from inspiration_sheets import InspirationSheets
@@ -126,11 +224,24 @@ def answer(text: str, context: Optional[list] = None, sheets=None, gemini="auto"
     LAST_DEBUG.clear()
     ctx = context or []
     last_assistant = CS.last_assistant_text(ctx)
+    act = R.classify_dialogue_act(text)
+    LAST_DEBUG.update(dialogue_act=act, contextual_followup="no")
+
+    # An explicit self-update question is answerable on the FIRST turn too — it
+    # must flow through this agent rather than a templated status renderer.
+    if CR.detect_refresh_topic(text):
+        early = _maybe_refresh(text, ctx, act, key, sheets)
+        if early:
+            return early
     if not last_assistant:
         return None                          # no prior turn -> not a follow-up
 
-    act = R.classify_dialogue_act(text)
-    LAST_DEBUG.update(dialogue_act=act, contextual_followup="no")
+    # Self-update follow-ups ("why?", "what about the second one?") must resolve
+    # against the prior refresh answer BEFORE the act gate below, which would
+    # otherwise drop a plain ASK_NEW-shaped follow-up.
+    refresh_answer = _maybe_refresh(text, ctx, act, key, sheets)
+    if refresh_answer:
+        return refresh_answer
 
     # RESET: an explicit topic switch. Clear memory; if the new message names a
     # product, answer it FRESH (a new retrieval, not a follow-up); else defer.

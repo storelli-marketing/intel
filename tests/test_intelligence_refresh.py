@@ -68,7 +68,7 @@ class TestQueryEconomics(unittest.TestCase):
 class OrchBase(unittest.TestCase):
     def setUp(self):
         self._orig = {k: getattr(ir, k) for k in (
-            "_internal_append", "_internal_metrics", "_internal_analyze", "_internal_recompute",
+            "_owned_scan", "_internal_metrics", "_internal_analyze", "_internal_recompute",
             "_external_discovery", "_external_analyze", "_external_match",
             "_external_quality", "_external_connections", "_write_run_row",
             "_lock_active", "_read_runs")}
@@ -77,9 +77,9 @@ class OrchBase(unittest.TestCase):
         ir._lock_active = lambda s: None
         ir._read_runs = lambda s: []
         # default: everything succeeds with a material change
-        ir._internal_append = lambda dry: {"stage": "internal_append", "status": "success", "created": 4, "_appended": 4, "_new_media": 4}
+        ir._owned_scan = lambda dry, sheets=None: {"stage": "owned_scan", "status": "success", "created": 4, "_appended": 4, "_new_media": 4, "_owned": []}
         ir._internal_metrics = lambda dry: {"stage": "internal_metrics", "status": "success", "updated": 12, "_new_media": 2}
-        ir._internal_analyze = lambda dry, limit: {"stage": "internal_analyze", "status": "success", "created": 3, "_analyzed": 3}
+        ir._internal_analyze = lambda dry, limit, owned=None: {"stage": "internal_analyze", "status": "success", "created": 3, "_analyzed": 3}
         ir._internal_recompute = lambda dry: {"stage": "internal_recompute", "status": "success", "created": 1, "updated": 2, "_correlations_rebuilt": True, "_profiles_created": 1, "_profiles_updated": 2}
         ir._external_discovery = lambda dry, s: {"stage": "external_discovery", "status": "success", "processed": 40, "created": 31, "_added": 31}
         ir._external_analyze = lambda dry, s: {"stage": "external_analyze", "status": "success", "created": 31}
@@ -100,7 +100,7 @@ class TestOrchestration(OrchBase):
     def test_full_run_all_stages_and_regen(self):
         rep = self.run_refresh(mode="full", trigger="test")
         names = [s["stage"] for s in rep["stages"]]
-        self.assertEqual(names, ["internal_append", "internal_metrics", "internal_analyze",
+        self.assertEqual(names, ["owned_scan", "internal_metrics", "internal_analyze",
                                  "internal_recompute", "external_discovery", "external_analyze",
                                  "external_match", "external_quality", "external_connections"])
         self.assertEqual(rep["status"], "success")
@@ -108,9 +108,9 @@ class TestOrchestration(OrchBase):
         self.assertEqual(len(self.written), 2)          # lock row + final history row
 
     def test_change_detection_skips_recompute(self):
-        ir._internal_append = lambda dry: {"stage": "internal_append", "status": "skipped", "_appended": 0}
+        ir._owned_scan = lambda dry, sheets=None: {"stage": "owned_scan", "status": "skipped", "_appended": 0, "_owned": []}
         ir._internal_metrics = lambda dry: {"stage": "internal_metrics", "status": "success", "updated": 0}
-        ir._internal_analyze = lambda dry, limit: {"stage": "internal_analyze", "status": "skipped", "_analyzed": 0}
+        ir._internal_analyze = lambda dry, limit, owned=None: {"stage": "internal_analyze", "status": "skipped", "_analyzed": 0}
         rep = self.run_refresh(mode="internal", trigger="test")
         rec = next(s for s in rep["stages"] if s["stage"] == "internal_recompute")
         self.assertEqual(rec["status"], "skipped")
@@ -140,7 +140,7 @@ class TestOrchestration(OrchBase):
         self.assertEqual(rep["status"], "partial")
 
     def test_quota_stop_respected(self):
-        ir._internal_analyze = lambda dry, limit: {"stage": "internal_analyze", "status": "partial",
+        ir._internal_analyze = lambda dry, limit, owned=None: {"stage": "internal_analyze", "status": "partial",
                                                    "created": 5, "reason": "Gemini quota stop", "_analyzed": 5}
         rep = self.run_refresh(mode="internal", trigger="test")
         a = next(s for s in rep["stages"] if s["stage"] == "internal_analyze")
@@ -148,8 +148,8 @@ class TestOrchestration(OrchBase):
         self.assertIn("quota", a["reason"].lower())
 
     def test_no_op_success(self):
-        ir._internal_append = lambda dry: {"stage": "internal_append", "status": "skipped", "_appended": 0}
-        ir._internal_analyze = lambda dry, limit: {"stage": "internal_analyze", "status": "skipped", "_analyzed": 0}
+        ir._owned_scan = lambda dry, sheets=None: {"stage": "owned_scan", "status": "skipped", "_appended": 0, "_owned": []}
+        ir._internal_analyze = lambda dry, limit, owned=None: {"stage": "internal_analyze", "status": "skipped", "_analyzed": 0}
         ir._internal_metrics = lambda dry: {"stage": "internal_metrics", "status": "skipped", "updated": 0}
         rep = self.run_refresh(mode="internal", trigger="test")
         self.assertEqual(rep["status"], "success")       # a quiet no-op is a success
@@ -170,7 +170,7 @@ class TestOrchestration(OrchBase):
         # internal loop never contains an external stage and vice versa
         internal = self.run_refresh(mode="internal", trigger="test")
         external = self.run_refresh(mode="external", trigger="test")
-        self.assertTrue(all(s["stage"].startswith("internal_") for s in internal["stages"]))
+        self.assertTrue(all(s["stage"].startswith(("internal_", "owned_")) for s in internal["stages"]))
         self.assertTrue(all(s["stage"].startswith("external_") for s in external["stages"]))
 
     def test_history_row_built(self):

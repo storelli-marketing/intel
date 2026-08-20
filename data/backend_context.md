@@ -20,6 +20,27 @@ holds Slack thread context (resets on restart).
 
 ## Major flows
 
+**PUBLIC MODE (primary owned path, no Meta).** Owned Storelli content is
+discovered from PUBLIC Apify data via `src/owned_discovery.py`: a bounded scan of
+the ONE trusted account (`config.STORELLI_INSTAGRAM_HANDLE`, default
+`storellisoccer` — derived from the POC sheet's own links, 170/170 consistent)
+using `directUrls` + `resultsType` + `onlyPostsNewerThan` ("since last successful
+refresh + buffer"). Ownership is `creator_handle == trusted handle`, matched
+EXACTLY and only AFTER acquisition — a lookalike handle or a brand mention in a
+caption is EXTERNAL_INSPIRATION, never internal. The orchestrator's `owned_scan`
+stage appends new owned reels, refreshes mutable PUBLIC metrics (views/likes/
+comments/shares + FOLLOWERS_AT_MEASUREMENT), and passes Apify `videoUrl`s into
+analysis. Acquisition hierarchy in `gemini_client.acquire()`: (1) Apify media URL
+— no Instagram round-trip, no cookies; (2) public yt-dlp; (3) cookie-authenticated
+yt-dlp. Cookies are a FALLBACK, not a dependency. Meta credentials are OPTIONAL
+enrichment (`private_instagram_insights: NOT_CONFIGURED`) and never cause BLOCKED;
+private-only metrics (saves/reach/impressions/demographics/follower-split) stay
+absent and are NEVER inferred. Slack discusses refreshes THROUGH the stateful
+strategist via `src/conversation_refresh.py` (topics: new findings / what matters
+/ why / act-on-it / evidence / meta-gap), so "did we find anything new?" → "what
+actually matters?" → "why?" → "what should we shoot?" all resolve in one thread
+with varying answer shapes — not a templated status bot.
+
 **Self-updating intelligence scheduler** (`src/intelligence_refresh.py`,
 `src/query_economics.py`): orchestrates the EXISTING jobs (never duplicates them)
 into two isolated bounded loops on a weekly cadence — INTERNAL (Storelli = proof:

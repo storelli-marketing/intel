@@ -186,11 +186,15 @@ class TestTikTokOwnership(unittest.TestCase):
 class TestReadinessHealth(unittest.TestCase):
     def test_readiness_reports_blockers_with_env_hints(self):
         caps = ir.refresh_readiness()
-        # in the test env IG/Apify are absent -> BLOCKED with the exact env var
+        # Apify absent in the test env -> BLOCKED with the exact env var
         self.assertEqual(caps["external_apify_discovery"]["status"], "BLOCKED")
         self.assertIn("APIFY_TOKEN", caps["external_apify_discovery"]["required"])
-        self.assertIn("INSTAGRAM_ACCESS_TOKEN", caps["instagram_owned_discovery"]["required"])
+        self.assertIn("APIFY_TOKEN", caps["owned_public_discovery"]["required"])
         self.assertIn("status", caps["sheets"])
+        # Meta is OPTIONAL now: NOT_CONFIGURED, flagged optional, never BLOCKED
+        meta = caps["private_instagram_insights"]
+        self.assertEqual(meta["status"], "NOT_CONFIGURED")
+        self.assertTrue(meta["optional"])
 
     def test_health_blocked_without_core(self):
         h = ir.health_state()
@@ -198,12 +202,13 @@ class TestReadinessHealth(unittest.TestCase):
         self.assertIn(h["state"], ("BLOCKED", "PARTIAL", "STALE"))
         self.assertIsInstance(h["reasons"], list)
 
-    def test_cookie_message_present_when_blocked(self):
+    def test_cookies_are_optional_not_a_blocker(self):
         caps = ir.refresh_readiness()
-        # internal video analysis blocked without cookies -> the health reason names it
-        if caps["internal_video_analysis"]["status"] != "READY":
-            self.assertIn("cookies", caps["internal_video_analysis"]["required"].lower()
-                          + " " + ir._COOKIE_REFRESH_MSG.lower())
+        cookie = caps["cookie_fallback"]
+        self.assertTrue(cookie["optional"])
+        self.assertIn(cookie["status"], ("READY", "NOT_CONFIGURED"))
+        # a missing cookie session must never be a core blocker
+        self.assertNotIn("cookie_fallback", ir._CORE_CAPS)
 
 
 if __name__ == "__main__":

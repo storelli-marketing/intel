@@ -184,6 +184,8 @@
         "instagram_configured",
         "instagram_missing_vars",
         "owned_tiktok_configured",
+        "owned_public_discovery_configured",
+        "private_insights_configured",
         "require_sheets",
         "require_gemini",
         "require_apify",
@@ -201,6 +203,9 @@
     "src/conversation_agent.py": {
       "functions": [
         "route_info",
+        "_prior_was_refresh",
+        "_maybe_refresh",
+        "_remember_refresh",
         "_load_ideas",
         "_recover_memory",
         "_connection_for",
@@ -232,6 +237,19 @@
       "classes": [
         "_Src"
       ]
+    },
+    "src/conversation_refresh.py": {
+      "functions": [
+        "_lower",
+        "detect_refresh_topic",
+        "_n",
+        "build_refresh_pack",
+        "_recent_internal_evidence",
+        "_sources",
+        "_no_run_yet",
+        "render"
+      ],
+      "classes": []
     },
     "src/conversation_resolver.py": {
       "functions": [
@@ -590,7 +608,10 @@
         "_read_runs",
         "_lock_active",
         "_write_run_row",
-        "_internal_append",
+        "_owned_scan",
+        "_as_media_dicts",
+        "_insights_from_owned",
+        "_refresh_public_metrics",
         "_internal_metrics",
         "_internal_analyze",
         "_internal_recompute",
@@ -599,6 +620,7 @@
         "_external_match",
         "_external_quality",
         "_external_connections",
+        "_media_url_index",
         "_internal_loop",
         "_external_loop",
         "_should_regenerate_ideas",
@@ -609,6 +631,7 @@
         "refresh_readiness",
         "_seconds_since",
         "health_state",
+        "missing_because_no_meta",
         "next_scheduled_note",
         "render_readiness",
         "last_runs"
@@ -648,6 +671,7 @@
         "_to_int",
         "_row_value_ci",
         "_determine_performance",
+        "_media_url_for",
         "cmd_analyze",
         "cmd_analyze_all",
         "print_tagging_summary",
@@ -771,6 +795,22 @@
       "classes": [
         "NotionRetrieval"
       ]
+    },
+    "src/owned_discovery.py": {
+      "functions": [
+        "_s",
+        "_to_int",
+        "normalize_handle",
+        "is_owned_handle",
+        "build_owned_scan_input",
+        "lookback_expression",
+        "normalize_owned_item",
+        "available_public_metrics",
+        "route_by_ownership",
+        "scan_owned_media",
+        "current_follower_count"
+      ],
+      "classes": []
     },
     "src/performance.py": {
       "functions": [
@@ -1490,6 +1530,9 @@
     "NOTION_API_KEY",
     "NOTION_DASHBOARD_URL",
     "NOTION_PARENT_PAGE_ID",
+    "OWNED_SCAN_BUFFER_DAYS",
+    "OWNED_SCAN_LOOKBACK_DAYS",
+    "OWNED_SCAN_MAX_RESULTS",
     "QA_COMPILER_ENABLED",
     "RUN_SECRET",
     "SLACK_BOT_TOKEN",
@@ -1500,6 +1543,7 @@
     "SLACK_STRATEGIST_MODE_ENABLED",
     "SLACK_WEBHOOK_URL",
     "STORELLI_IG_FOLLOWER_COUNT",
+    "STORELLI_INSTAGRAM_HANDLE",
     "STORELLI_TIKTOK_HANDLE",
     "YTDLP_COOKIES_B64",
     "YTDLP_COOKIES_PATH"

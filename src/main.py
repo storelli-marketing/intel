@@ -108,11 +108,26 @@ def _determine_performance(row: dict, reprocess: bool) -> tuple[str | None, str]
     return None, ""
 
 
+def _media_url_for(link: str, media_urls: dict | None) -> str:
+    """Look up an Apify-supplied public media URL for this row's link."""
+    if not media_urls:
+        return ""
+    try:
+        import social_metrics_ingest as smi
+        return media_urls.get(smi._poc_key(link), "") or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # analyze
 # ---------------------------------------------------------------------------
 def cmd_analyze(reprocess: bool, limit: int | None = None,
-                qa_enabled: bool = True) -> dict:
+                qa_enabled: bool = True, media_urls: dict | None = None) -> dict:
+    """`media_urls` maps a canonical link key -> an already-public media URL (e.g.
+    supplied by the Apify owned-content scan). When a row's link is present, the
+    acquisition hierarchy uses that URL first, so the reel is not re-fetched from
+    Instagram and no cookie session is needed."""
     from analyzer import analyze_and_compile
     from gemini_client import GeminiClient, QuotaExhaustedError, VideoDownloadError
 
@@ -172,6 +187,7 @@ def cmd_analyze(reprocess: bool, limit: int | None = None,
                 icp=str(r.get("ICP", "")),
                 notes=str(r.get("Storytelling structure", "")),
                 qa_enabled=qa_enabled,
+                media_url=_media_url_for(link, media_urls),
             )
 
             # Confidence guardrail: suppress low-confidence taxonomy fields and

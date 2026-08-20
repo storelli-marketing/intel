@@ -32,7 +32,7 @@ log = get_logger()
 # import honest rather than faking a value.
 _API_FILLABLE_COLUMNS = ("DURATION_SECONDS", "POST_DATE", "VIEWS", "LIKES", "COMMENTS",
                          "SAVES", "SHARES", "ENGAGEMENT_RATE", "REACH", "IMPRESSIONS",
-                         "PROFILE_VISITS", "WEBSITE_CLICKS")
+                         "PROFILE_VISITS", "WEBSITE_CLICKS", "FOLLOWERS_AT_MEASUREMENT")
 
 ACCOUNT_INSIGHTS_TAB = "INSTAGRAM_ACCOUNT_INSIGHTS"
 ACCOUNT_INSIGHTS_COLUMNS = ("PERIOD", "PULLED_AT", "METRIC", "BREAKDOWN", "SPLIT", "SOURCE")
@@ -53,7 +53,8 @@ _IMMUTABLE_COLUMNS = ("POST_DATE", "DURATION_SECONDS")
 # cell is one WE wrote (its value equals the last value we synced). If the cell
 # no longer matches what we last wrote, a human edited it -> we never overwrite.
 _CUMULATIVE_COLUMNS = ("VIEWS", "REACH", "LIKES", "COMMENTS", "SAVES", "SHARES",
-                       "IMPRESSIONS", "PROFILE_VISITS", "WEBSITE_CLICKS", "ENGAGEMENT_RATE")
+                       "IMPRESSIONS", "PROFILE_VISITS", "WEBSITE_CLICKS", "ENGAGEMENT_RATE",
+                       "FOLLOWERS_AT_MEASUREMENT")
 # HUMAN fields (REEL_TYPE, and everything outside the metric set) are never
 # written by the API at all.
 
@@ -183,6 +184,8 @@ def build_metric_values(media: dict, insights: dict) -> dict:
     put("IMPRESSIONS", "impressions")
     put("PROFILE_VISITS", "profile_visits", "profile_activity")
     put("WEBSITE_CLICKS", "website_clicks")
+    # Public follower count used for THIS measurement (never a stale global).
+    put("FOLLOWERS_AT_MEASUREMENT", "followers_at_measurement", "follower_count")
 
     inter = insights.get("total_interactions")
     reach = insights.get("reach")
