@@ -790,12 +790,29 @@ def _mode_grounded_fallback(user_text: str) -> str:
     # breath) — say what's missing and name the test that would settle it.
     if strength == EC.UNKNOWN:
         where = f" for {scope_label}" if scope_label else ""
+        layer_name = top['layer'].replace('_', ' ')
+        # A forced choice still gets an answer. Refusing to pick when the human
+        # has already accepted the constraint ("we can only shoot three") answers
+        # a different question than the one asked — so commit, and label the
+        # commitment as judgement rather than dressing it up as proof.
+        if EC.forced_choice_requested(user_text):
+            return style.compact_slack_response(
+                EC.committed_judgement(
+                    pick=f"Go with *{top['label']}* ({layer_name})",
+                    because=f"it's the strongest signal we have{where}, and nothing "
+                            f"else in that slice is separating from it",
+                    sample_note=f"it rests on {vids}",
+                    runner_up=(f"{win[1]['label']} ({win[1]['layer'].replace('_', ' ')})"
+                               if len(win) > 1 else ""),
+                    would_change=(f"{weak[0]['label']} outperforming it once we have "
+                                  f"a few more posts on each side" if weak else "")),
+                style.detect_response_mode(user_text))
         ab = EC.abstention(scope_label or "this",
                            missing=f"the strongest candidate{where} rests on {vids}")
         alt = f" {win[1]['label']} is the other candidate." if len(win) > 1 else ""
         return style.compact_slack_response(
             f"Not enough to call yet — {ab['gap']}. The nearest signal is "
-            f"*{top['label']}* ({top['layer'].replace('_', ' ')}), but I'd treat it as a "
+            f"*{top['label']}* ({layer_name}), but I'd treat it as a "
             f"hypothesis.{alt} {ab['proposed_test'].capitalize()}.",
             style.detect_response_mode(user_text))
 
@@ -1230,6 +1247,19 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     if last_assistant and _classify_followup(text) == "source_debug":
         return social_strategist.render_source_debug(text, context)
 
+    # DATA LIMITS: the question turns on a metric we genuinely cannot report
+    # (private-only Insights, or something no source we could connect provides).
+    # Answered from the metric registry BEFORE any retrieval, because every
+    # downstream route would otherwise substitute a different metric's evidence
+    # and quietly answer a question nobody asked.
+    try:
+        import metric_registry
+        limit = metric_registry.limit_answer(text)
+        if limit:
+            return limit
+    except Exception as e:  # noqa: BLE001 - never block an answer on this check
+        log.info("metric-limit check skipped: %s", e)
+
     # Rated-idea retrieval (Milestone 4B) is deterministic, cited, and read-only —
     # answer it directly instead of routing idea asks through the LLM strategist.
     # Follow-up transforms (e.g. "turn this into a brief") are NOT idea queries
@@ -1290,6 +1320,24 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
         # a disciplined, evidence-first answer (external is never proof). Read-only
         # except the EVIDENCE_GAPS artifact (only via the CLI, not from Slack).
         import evidence_audit as ea
+        # Coverage ranking first: "which product do we have the LEAST evidence
+        # for?" is a question about our sample, and answering it with the Parents
+        # gap audit would talk about a different slice than the one asked about.
+        # "What do we never make?" is about ABSENT territory and must not be
+        # answered with the thin-sample list — untested and tried-and-failed need
+        # opposite responses.
+        # Each of these owns a narrow question shape and must fail in isolation:
+        # a Sheet hiccup in one may never skip the handlers below it.
+        for _matches, _handler in ((ea.is_never_made_query, ea.answer_never_made),
+                                   (ea.is_comparison_query, ea.compare_slices),
+                                   (ea.is_coverage_query, ea.answer_coverage)):
+            try:
+                if _matches(text):
+                    _out = _handler(text)
+                    if _out:
+                        return _finish_conversational(_out, text, skip_polish=True)
+            except Exception as _e:  # noqa: BLE001
+                log.info("evidence-coverage handler skipped: %s", _e)
         if ea.is_evidence_gap_query(text, context):
             gap = ea.answer_evidence_gap(text, context)
             if gap:

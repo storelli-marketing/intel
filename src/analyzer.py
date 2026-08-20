@@ -63,6 +63,20 @@ def _as_list(value) -> list:
     return []
 
 
+def _as_text(value) -> str:
+    """Normalize a field the schema calls a string but the model sometimes
+    returns as a list (or a number) — a whole row must not fail over that."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        return " ".join(_as_text(v) for v in value if v not in (None, "")).strip()
+    if isinstance(value, dict):
+        return " ".join(_as_text(v) for v in value.values() if v not in (None, "")).strip()
+    return str(value).strip()
+
+
 def to_signal_columns(parsed: dict) -> dict:
     """Turn parsed JSON into {column: 0/1} + primary_<layer> + suggestions.
 
@@ -73,9 +87,9 @@ def to_signal_columns(parsed: dict) -> dict:
     cols = {c: 0 for c in taxonomy.all_signal_columns()}
     conf = parsed.get("confidence") or {}
     meta = {
-        "ai_summary": (parsed.get("summary") or "").strip(),
-        "icp_suggested": (parsed.get("icp_suggested") or "").strip(),
-        "product_suggested": (parsed.get("product_suggested") or "").strip(),
+        "ai_summary": _as_text(parsed.get("summary")),
+        "icp_suggested": _as_text(parsed.get("icp_suggested")),
+        "product_suggested": _as_text(parsed.get("product_suggested")),
         # confidence for the gated layers; default medium so a missing value
         # doesn't force every row into needs_review
         "conf_hook": str(conf.get("hook", "medium")).strip().lower() or "medium",

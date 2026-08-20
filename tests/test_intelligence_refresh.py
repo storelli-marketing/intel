@@ -68,7 +68,8 @@ class TestQueryEconomics(unittest.TestCase):
 class OrchBase(unittest.TestCase):
     def setUp(self):
         self._orig = {k: getattr(ir, k) for k in (
-            "_owned_scan", "_internal_metrics", "_internal_analyze", "_internal_recompute",
+            "_owned_scan", "_internal_metrics", "_internal_analyze", "_internal_maturity",
+            "_internal_recompute",
             "_external_discovery", "_external_analyze", "_external_match",
             "_external_quality", "_external_connections", "_write_run_row",
             "_lock_active", "_read_runs")}
@@ -80,6 +81,7 @@ class OrchBase(unittest.TestCase):
         ir._owned_scan = lambda dry, sheets=None: {"stage": "owned_scan", "status": "success", "created": 4, "_appended": 4, "_new_media": 4, "_owned": []}
         ir._internal_metrics = lambda dry: {"stage": "internal_metrics", "status": "success", "updated": 12, "_new_media": 2}
         ir._internal_analyze = lambda dry, limit, owned=None: {"stage": "internal_analyze", "status": "success", "created": 3, "_analyzed": 3}
+        ir._internal_maturity = lambda dry: {"stage": "internal_maturity", "status": "success", "updated": 0, "_classified": 0}
         ir._internal_recompute = lambda dry: {"stage": "internal_recompute", "status": "success", "created": 1, "updated": 2, "_correlations_rebuilt": True, "_profiles_created": 1, "_profiles_updated": 2}
         ir._external_discovery = lambda dry, s: {"stage": "external_discovery", "status": "success", "processed": 40, "created": 31, "_added": 31}
         ir._external_analyze = lambda dry, s: {"stage": "external_analyze", "status": "success", "created": 31}
@@ -101,6 +103,7 @@ class TestOrchestration(OrchBase):
         rep = self.run_refresh(mode="full", trigger="test")
         names = [s["stage"] for s in rep["stages"]]
         self.assertEqual(names, ["owned_scan", "internal_metrics", "internal_analyze",
+                                 "internal_maturity",
                                  "internal_recompute", "external_discovery", "external_analyze",
                                  "external_match", "external_quality", "external_connections"])
         self.assertEqual(rep["status"], "success")

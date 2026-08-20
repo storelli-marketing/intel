@@ -115,6 +115,24 @@ def resolve_idea_reference(text: str, ideas: list[dict], memory: dict) -> tuple:
 # ---------------------------------------------------------------------------
 # Part B — intent detection
 # ---------------------------------------------------------------------------
+def _norm_option(v: str) -> str:
+    """Fold spacing so 'Raw / UGC' and 'raw/ugc' are the same option name."""
+    return re.sub(r"\s*([/&+-])\s*", r"\1", re.sub(r"\s+", " ", str(v).strip().lower()))
+
+
+def _names_taxonomy_options(lowered_text: str) -> int:
+    """How many distinct taxonomy option names the text mentions."""
+    import taxonomy
+    hay = _norm_option(lowered_text)
+    seen = set()
+    for layer, options in taxonomy.LAYERS.items():
+        for opt in options:
+            name = _norm_option(opt)
+            if len(name) >= 3 and name in hay:
+                seen.add((layer, name))
+    return len(seen)
+
+
 def detect_intent(text: str, memory: dict) -> str:
     t = " " + (text or "").lower() + " "
     if ("urgent" in t or "priorit" in t) and ("test" in t or "idea" in t):
@@ -122,6 +140,13 @@ def detect_intent(text: str, memory: dict) -> str:
     if "what should we test" in t or "what to test" in t:
         return "urgent_tests"
     if any(k in t for k in ("compare", " vs ", "versus", "which is better", "better idea")):
+        # "compare X against Y" where X and Y are TAXONOMY OPTIONS (Raw/UGC vs
+        # Polished, POV vs Demo) is a question about our patterns, not about the
+        # ideas on the table. Binding it to ideas answers the wrong question with
+        # confident-looking evidence, so let it fall through to the grounded
+        # signal path instead.
+        if _names_taxonomy_options(t) >= 2:
+            return "fallback_question"
         return "compare_ideas"
     if "why" in t and any(k in t for k in (" before ", " over ", " instead of ",
                                            " rather than ", " ahead of ")):

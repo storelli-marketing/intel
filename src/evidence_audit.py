@@ -505,3 +505,382 @@ def run_audit(sheets: Optional[InspirationSheets] = None, write: bool = True,
             "profile_justified": justified, "reason": reason,
             "created": created, "updated": updated,
             "tracker_created": tracker_created, "tracker_existing": tracker_existing}
+
+
+# ---------------------------------------------------------------------------
+# Coverage ranking — which slices we actually have evidence for.
+#
+# This answers a family of questions the brain previously fell through on:
+# "which product do we have the least evidence for?", "what does this account
+# never make?", "if we had to double down on one product, which?". The key
+# distinction it preserves is NO DATA (never tried) vs LOW SAMPLE (tried, too
+# few to read) vs ACTIVELY WEAK (tried enough, and it underperforms) — collapsing
+# those three into one "gap" is how a brain talks people out of untested ideas
+# and into ones that already failed.
+# ---------------------------------------------------------------------------
+NO_DATA = "NO DATA"
+LOW_SAMPLE = "LOW SAMPLE"
+ACTIVELY_WEAK = "ACTIVELY WEAK"
+SUPPORTED_SLICE = "SUPPORTED"
+
+_MIN_READABLE = 4          # below this a slice cannot be read at all
+
+
+def _slice_state(total: int, positives: int) -> str:
+    if total == 0:
+        return NO_DATA
+    if total < _MIN_READABLE:
+        return LOW_SAMPLE
+    if positives == 0:
+        return ACTIVELY_WEAK
+    return SUPPORTED_SLICE
+
+
+def _field_value(row: dict, field: str) -> str:
+    """Read a column case-insensitively — the POC header uses 'Product'/'ICP'
+    while callers name them PRODUCT/ICP."""
+    want = field.strip().lower()
+    for k, v in row.items():
+        if str(k).strip().lower() == want:
+            return _norm(v)
+    return ""
+
+
+def canonical_slices(value: str) -> list:
+    """Split a free-text Product/ICP cell into canonical slice names.
+
+    The POC field is hand-typed, so the same product arrives as "ExoShield Head
+    Guard" and "ExoShield Head Guards", and one row often names two products
+    ("BodyShield GK 3/4 Undershirt and BodyShield NoBurn GK Leggings"). Treating
+    those as distinct single-post slices makes every product look like n=1 and
+    understates evidence we actually have — so aggregate on a canonical form, and
+    count a multi-product row toward each product it names (it IS evidence for
+    both).
+    """
+    raw = _norm(value)
+    if not raw:
+        return []
+    # NB: a slash between digits is a size ("GK 3/4 Leggings"), not a list
+    # separator — splitting there invents a product called "BodyShield GK 3".
+    parts = [p for p in re.split(r"\s*(?:,|;|\band\b|\+|&|(?<!\d)/(?!\d))\s*", raw)
+             if p.strip()]
+    out, seen = [], set()
+    for part in parts:
+        words = part.strip().split()
+        if not words:
+            continue
+        # de-pluralize the final word so Guard/Guards collapse
+        if len(words[-1]) > 3 and words[-1].lower().endswith("s") \
+                and not words[-1].lower().endswith("ss"):
+            words[-1] = words[-1][:-1]
+        name = " ".join(w for w in words)
+        key = name.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(name)
+    return out
+
+
+def coverage_by(rows: list, field: str, universe=None) -> list:
+    """Evidence coverage per distinct value of `field` (e.g. PRODUCT, ICP).
+
+    `universe` optionally lists values we EXPECT to exist, so a value with no
+    rows at all is reported as NO DATA instead of silently missing from the
+    ranking. Returns dicts sorted weakest-evidence-first.
+    """
+    import performance
+    buckets = performance.buckets_for_rows(rows)
+    tally: dict = {}
+    for r in rows:
+        names = canonical_slices(_field_value(r, field))
+        positive = performance.is_positive(buckets.get(r.get("_row"), ""))
+        for key in (names or ["(unspecified)"]):
+            t = tally.setdefault(key, {"slice": key, "total": 0, "positive": 0})
+            t["total"] += 1
+            if positive:
+                t["positive"] += 1
+    for expected in (universe or []):
+        tally.setdefault(_norm(expected), {"slice": _norm(expected), "total": 0,
+                                           "positive": 0})
+    out = []
+    for t in tally.values():
+        t["state"] = _slice_state(t["total"], t["positive"])
+        out.append(t)
+    order = {NO_DATA: 0, LOW_SAMPLE: 1, ACTIVELY_WEAK: 2, SUPPORTED_SLICE: 3}
+    return sorted(out, key=lambda t: (order[t["state"]], t["total"], t["slice"]))
+
+
+_COVERAGE_KW = ("least evidence", "most evidence", "never make", "never made",
+                "never tried", "not making", "double down", "least data",
+                "thinnest", "best covered", "worst covered", "least tested",
+                "coverage")
+
+
+def is_coverage_query(text: str) -> bool:
+    t = " " + (text or "").lower() + " "
+    if any(k in t for k in _COVERAGE_KW):
+        return True
+    return ("evidence" in t or "data" in t) and any(
+        k in t for k in ("which product", "which icp", "which audience",
+                         "least", "most", "weakest", "strongest"))
+
+
+def answer_coverage(text: str, sheets=None) -> Optional[str]:
+    """Rank slices by how much evidence we actually have, weakest first."""
+    import taxonomy
+    from sheets_client import SheetsClient
+    t = (text or "").lower()
+    sc = sheets or SheetsClient()
+    sc.validate_columns()
+    rows = [r for r in sc.read_rows() if SheetsClient.is_analyzed(r)]
+    if not rows:
+        return None
+    field = "ICP" if ("icp" in t or "audience" in t or "who" in t) else "PRODUCT"
+    ranked = coverage_by(rows, field)
+    if not ranked:
+        return None
+    wants_strongest = any(k in t for k in ("most evidence", "double down", "best covered",
+                                          "strongest"))
+    label = field.lower()
+
+    if wants_strongest:
+        best = [r for r in ranked if r["state"] == SUPPORTED_SLICE]
+        if not best:
+            return (f"Nothing has enough evidence to double down on yet — every "
+                    f"{label} we've analyzed is still under {_MIN_READABLE} readable "
+                    f"posts or has no positive result. I'd rather we build the sample "
+                    f"first than commit on this.")
+        pick = max(best, key=lambda r: (r["positive"], r["total"]))
+        runner = [r for r in best if r["slice"] != pick["slice"]]
+        parts = [f"*{pick['slice']}* — it has the most evidence behind it: "
+                 f"{pick['positive']} strong of {pick['total']} analyzed posts."]
+        if runner:
+            r2 = max(runner, key=lambda r: (r["positive"], r["total"]))
+            parts.append(f"*Closest alternative:* {r2['slice']} "
+                         f"({r2['positive']} of {r2['total']}).")
+        parts.append("Associated with performance, not causal — and it reflects what "
+                     "we've *shot*, not everything that could work.")
+        return " ".join(parts)
+
+    real = [r for r in ranked if r["slice"] != "(unspecified)"] or ranked
+    ranked = real
+    weakest = ranked[0]
+    lines = [f"Weakest evidence by {label}:"]
+    for r in ranked[:5]:
+        if r["state"] == NO_DATA:
+            note = "no posts at all — untested, not disproven"
+        elif r["state"] == LOW_SAMPLE:
+            note = (f"{r['total']} post(s) — too few to read either way")
+        elif r["state"] == ACTIVELY_WEAK:
+            note = (f"{r['total']} posts, none landed — this one we've actually "
+                    f"tried and it underperformed")
+        else:
+            note = f"{r['positive']} strong of {r['total']} — readable"
+        lines.append(f"  • *{r['slice']}* — {r['state']}: {note}")
+    lines.append(f"The one I'd fix first is *{weakest['slice']}* — "
+                 + ("we've never shot it, so there's nothing to learn from yet."
+                    if weakest["state"] == NO_DATA
+                    else "the sample is too thin to trust in either direction."))
+    lines.append("_NO DATA and ACTIVELY WEAK are different problems: the first "
+                 "needs a first test, the second needs a different approach._")
+    return "\n".join(lines)
+
+
+def coverage_by_signal(rows: list, layer: Optional[str] = None) -> list:
+    """Evidence coverage per TAXONOMY OPTION (hook, format, visual style, ...).
+
+    Unlike product coverage this has a real universe: every option the taxonomy
+    defines. So an option with zero posts is genuinely NEVER MADE — territory we
+    have not tested — which is a different fact from an option we shot several
+    times that never landed.
+    """
+    import performance
+    import taxonomy
+    buckets = performance.buckets_for_rows(rows)
+    out = []
+    layers = {layer: taxonomy.LAYERS[layer]} if layer in taxonomy.LAYERS else taxonomy.LAYERS
+    for lyr, options in layers.items():
+        for opt in options:
+            col = taxonomy.column_for(lyr, opt)
+            total = positive = 0
+            for r in rows:
+                if str(r.get(col, "")).strip() != "1":
+                    continue
+                total += 1
+                if performance.is_positive(buckets.get(r.get("_row"), "")):
+                    positive += 1
+            out.append({"slice": opt, "layer": lyr, "total": total,
+                        "positive": positive, "state": _slice_state(total, positive)})
+    order = {NO_DATA: 0, LOW_SAMPLE: 1, ACTIVELY_WEAK: 2, SUPPORTED_SLICE: 3}
+    return sorted(out, key=lambda t: (order[t["state"]], t["total"], t["slice"]))
+
+
+_NEVER_KW = ("never make", "never made", "never tried", "never shot", "not making",
+             "haven't tried", "havent tried", "have we never", "untested territory")
+
+
+def is_never_made_query(text: str) -> bool:
+    t = " " + (text or "").lower() + " "
+    return any(k in t for k in _NEVER_KW)
+
+
+def answer_never_made(text: str, sheets=None) -> Optional[str]:
+    """What territory we have genuinely never shot — kept strictly separate from
+    what we shot and it failed."""
+    from sheets_client import SheetsClient
+    sc = sheets or SheetsClient()
+    sc.validate_columns()
+    rows = [r for r in sc.read_rows() if SheetsClient.is_analyzed(r)]
+    if not rows:
+        return None
+    cov = coverage_by_signal(rows)
+    absent = [c for c in cov if c["state"] == NO_DATA]
+    weak = [c for c in cov if c["state"] == ACTIVELY_WEAK]
+    thin = [c for c in cov if c["state"] == LOW_SAMPLE]
+    lines = []
+    if absent:
+        names = ", ".join(f"*{c['slice']}* ({c['layer'].replace('_', ' ')})"
+                          for c in absent[:6])
+        lines.append(f"Never shot at all — {len(absent)} option(s) in the taxonomy "
+                     f"have zero posts: {names}. That's untested, not disproven.")
+    else:
+        lines.append("Nothing in the taxonomy is completely untouched — every hook, "
+                     "format and style has at least one post. So the honest answer is "
+                     "that we don't have absent territory, we have *thin* territory.")
+    if thin:
+        names = ", ".join(f"{c['slice']} ({c['total']})" for c in thin[:5])
+        lines.append(f"*Barely tested* (under {_MIN_READABLE} posts, unreadable either "
+                     f"way): {names}.")
+    if weak:
+        names = ", ".join(f"{c['slice']} ({c['total']} posts, none landed)"
+                          for c in weak[:5])
+        lines.append(f"*Different problem — tried and it didn't work:* {names}. "
+                     f"Re-testing these the same way is not a gap to fill.")
+    lines.append("_Untested and failed look identical in a gap list and need opposite "
+                 "responses — the first needs a first attempt, the second needs a new "
+                 "angle or a decision to stop._")
+    return "\n\n".join(lines)
+
+
+def _named_taxonomy_options(text: str) -> list:
+    import taxonomy
+
+    def norm(v):
+        return re.sub(r"\s*([/&+-])\s*", r"\1",
+                      re.sub(r"\s+", " ", str(v).strip().lower()))
+
+    hay = norm(text)
+    found = []
+    for lyr, options in taxonomy.LAYERS.items():
+        for opt in options:
+            if len(norm(opt)) >= 3 and norm(opt) in hay:
+                found.append((lyr, opt))
+    return found
+
+
+_DURATION_KW = ("longer", "shorter", "duration", "how long", "length")
+
+
+def is_comparison_query(text: str) -> bool:
+    """Cheap text-only test — must be true before we touch the Sheet."""
+    t = " " + (text or "").lower() + " "
+    comparative = any(k in t for k in ("compare", " vs ", "versus", "against",
+                                       "beat", "better", "worse", "outperform"))
+    if not comparative:
+        return False
+    return len(_named_taxonomy_options(t)) >= 2 or any(k in t for k in _DURATION_KW)
+
+
+def compare_slices(text: str, sheets=None) -> Optional[str]:
+    """Head-to-head on a named dimension: 'Raw/UGC vs Polished', 'longer vs
+    shorter reels'. Reports the direction if the samples support one, and says
+    plainly when they don't — 'too close to call on this sample' is a real answer,
+    'both are good' is not."""
+    from sheets_client import SheetsClient
+    t = (text or "").lower()
+    if not is_comparison_query(t):
+        return None
+    sc = sheets or SheetsClient()
+    sc.validate_columns()
+    rows = [r for r in sc.read_rows() if SheetsClient.is_analyzed(r)]
+    if not rows:
+        return None
+    named = _named_taxonomy_options(t)
+    if len(named) >= 2:
+        cov = {(c["layer"], c["slice"]): c for c in coverage_by_signal(rows)}
+        picked = [cov[k] for k in named[:2] if k in cov]
+        if len(picked) < 2:
+            return None
+        return _render_head_to_head(picked[0], picked[1])
+
+    if any(k in t for k in ("longer", "shorter", "duration", "length", "how long")):
+        return _compare_duration(rows)
+    return None
+
+
+def _rate(c) -> Optional[float]:
+    return (c["positive"] / c["total"]) if c["total"] else None
+
+
+def _render_head_to_head(a: dict, b: dict) -> str:
+    ra, rb = _rate(a), _rate(b)
+    head = (f"*{a['slice']}*: {a['positive']} strong of {a['total']} · "
+            f"*{b['slice']}*: {b['positive']} strong of {b['total']}.")
+    if a["total"] < _MIN_READABLE or b["total"] < _MIN_READABLE:
+        thin = a if a["total"] <= b["total"] else b
+        rich = b if thin is a else a
+        if thin["total"] == 0:
+            return (f"{head} We don't have a single {thin['slice']} post, so there's "
+                    f"nothing to compare it against — too few to read a direction, and "
+                    f"that's an untested gap rather than a verdict. If you want the "
+                    f"comparison, {thin['slice']} needs shooting at least "
+                    f"{_MIN_READABLE} times; {rich['slice']} is already readable.")
+        return (f"{head} I can't tell them apart on this sample — {thin['slice']} has "
+                f"only {thin['total']} post(s), too few to read a direction from. "
+                f"Not a tie, just not measurable yet: a few more {thin['slice']} posts "
+                f"and it becomes answerable.")
+    lead, trail = (a, b) if (ra or 0) >= (rb or 0) else (b, a)
+    gap = abs((ra or 0) - (rb or 0))
+    if gap < 0.10:
+        return (f"{head} Too close to call — {gap * 100:.0f} points apart on samples this "
+                f"size is noise, so I wouldn't choose between them on the data. "
+                f"Pick on production cost instead.")
+    return (f"{head} *{lead['slice']}* is ahead — {(_rate(lead) or 0) * 100:.0f}% of its "
+            f"posts landed versus {(_rate(trail) or 0) * 100:.0f}% for {trail['slice']}. "
+            f"Associated with performance, not causal, and it reflects the posts we "
+            f"happened to shoot.")
+
+
+def _compare_duration(rows: list) -> Optional[str]:
+    """Longer vs shorter, using the real DURATION_SECONDS values we have."""
+    import performance
+    buckets = performance.buckets_for_rows(rows)
+    have = []
+    for r in rows:
+        raw = _field_value(r, "DURATION_SECONDS") or _field_value(r, "duration seconds")
+        try:
+            secs = float(re.sub(r"[^\d.]", "", raw))
+        except (TypeError, ValueError):
+            continue
+        if secs > 0:
+            have.append((secs, performance.is_positive(buckets.get(r.get("_row"), ""))))
+    if len(have) < 2 * _MIN_READABLE:
+        return (f"I can't answer that yet — only {len(have)} analyzed post(s) have a "
+                f"duration recorded, which isn't enough to compare long against short. "
+                f"Duration now arrives automatically on new posts, so this becomes "
+                f"answerable as the library fills in.")
+    have.sort()
+    mid = len(have) // 2
+    short, long_ = have[:mid], have[mid:]
+    cut = have[mid][0]
+    s_rate = sum(1 for _, p in short if p) / len(short)
+    l_rate = sum(1 for _, p in long_ if p) / len(long_)
+    head = (f"Split at {cut:.0f}s: under it, {sum(1 for _, p in short if p)} strong of "
+            f"{len(short)}; over it, {sum(1 for _, p in long_ if p)} of {len(long_)}.")
+    if abs(s_rate - l_rate) < 0.10:
+        return (f"{head} No real difference — length isn't what separates our posts, "
+                f"so I'd choose duration on what the idea needs, not on this data.")
+    winner = "Shorter" if s_rate > l_rate else "Longer"
+    return (f"{head} {winner} reels do better for us "
+            f"({max(s_rate, l_rate) * 100:.0f}% vs {min(s_rate, l_rate) * 100:.0f}%). "
+            f"Associated with performance, not causal.")

@@ -260,6 +260,48 @@ def find_contradictions(overall: list, segment: list, key: str = "label") -> lis
 # ---------------------------------------------------------------------------
 # Phase 15 — productive abstention
 # ---------------------------------------------------------------------------
+# Phrasings that make a decision mandatory. When the human has already accepted
+# the constraint ("we only have one shoot day", "if you had to pick one"),
+# answering "not enough evidence" is not honesty — it's a non-answer to a
+# question about what to do next. The honest form is to COMMIT and label the
+# commitment as judgement, with the condition that would change it.
+_FORCED_CHOICE = (
+    r"\b(?:we can only|can only|only have|we only have|if (?:we|you) had to"
+    r"|if (?:we|you) could only|had to (?:pick|choose|double down)"
+    r"|force[d]? (?:me|you|us) to|pick (?:one|just one)|which one\b"
+    r"|what are we not|what do we (?:cut|drop|kill|not shoot|film first)"
+    r"|entirely\b|one shoot day|single session|no more than"
+    r"|and what are|which (?:three|two|3|2)\b)")
+
+
+def forced_choice_requested(text: str) -> bool:
+    """True when the question demands a decision rather than an assessment."""
+    return bool(re.search(_FORCED_CHOICE, str(text or ""), re.IGNORECASE))
+
+
+def committed_judgement(pick: str, because: str, sample_note: str = "",
+                        runner_up: str = "", would_change: str = "") -> str:
+    """A decision made on thin evidence, honestly labelled.
+
+    Deliberately NOT hedge-then-recommend: the call comes first and plainly, the
+    epistemic status is stated once, and the reader is told what would overturn
+    it. This is the answer shape for a forced choice we cannot prove.
+    """
+    parts = [f"{pick}."]
+    if because:
+        parts.append(f"*Why:* {because}.")
+    status = "That's a judgement call, not a proven result"
+    if sample_note:
+        status += f" — {sample_note}"
+    parts.append(status + ".")
+    if runner_up:
+        parts.append(f"*Closest alternative:* {runner_up}.")
+    parts.append("*What would change it:* "
+                 + (would_change or "a few more posts on either side, so the "
+                                    "comparison stops resting on one video"))
+    return " ".join(parts)
+
+
 def abstention(topic: str, missing: str = "", test_hint: str = "") -> dict:
     """UNKNOWN with a useful next move, never a bare 'insufficient data'."""
     test = test_hint or ("the cleanest test would be the same concept shot twice with one "

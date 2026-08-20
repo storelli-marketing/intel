@@ -103,13 +103,33 @@ class TestAutoInserter(_Guard):
         self.assertTrue(r["dry_run"])
         self.assertIn("DRY-RUN", sa.render_insert_result(r))
 
-    def test_refuses_unsafe_boundary(self):
-        # Status NOT immediately before HOOK (a stray metadata col between them)
+    def test_extra_metadata_columns_are_still_safe(self):
+        # Metadata columns accumulate over time, so Status need not be adjacent
+        # to HOOK — what matters is that everything before HOOK has a blank
+        # row-1 category. This layout IS safe.
         row1 = ["", "", "", "", "", "", "", "", "HOOK"]
         row2 = ["ID", "LINK", "PERFORMANCE", "Storytelling structure", "ICP", "Product",
-                "Status", "StrayCol", "Curiosity Gap"]
+                "Status", "VIEWS", "Curiosity Gap"]
         sa._poc_values = lambda: [row1, row2]
-        r = sa.insert_poc_metric_columns(apply=True)     # even with apply, must refuse
+        pf = sa.preflight_poc_structure([row1, row2])
+        self.assertTrue(pf["safe"])
+        self.assertTrue(pf["metadata_block_contiguous"])
+        self.assertFalse(pf["status_immediately_before_hook"])
+        r = sa.insert_poc_metric_columns(apply=False)     # dry-run plans cleanly
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["plan"]["insert_at_col"], 9)   # right before HOOK
+
+    def test_refuses_unsafe_boundary(self):
+        # A pre-HOOK column carrying a NON-blank row-1 category means the
+        # metadata block is not contiguous — inserting could land inside a
+        # taxonomy group, so this must be refused even with apply=True.
+        row1 = ["", "", "", "", "", "", "", "HOOK", "", "FORMAT"]
+        row2 = ["ID", "LINK", "PERFORMANCE", "Storytelling structure", "ICP", "Product",
+                "Status", "Curiosity Gap", "Fear / Risk", "POV"]
+        # inject a stray categorised column before the first blank-run ends
+        row1[6] = "HOOK"          # Status column now sits under a category
+        sa._poc_values = lambda: [row1, row2]
+        r = sa.insert_poc_metric_columns(apply=True)
         self.assertFalse(r["ok"])
         self.assertFalse(r["wrote"])
         self.assertIn("unsafe", r["error"].lower())

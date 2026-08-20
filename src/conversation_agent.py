@@ -106,6 +106,17 @@ def _prior_was_refresh(ctx: list) -> bool:
     return False
 
 
+# "is that proof or just movement?" / "is that real or noise?" — a question about
+# the EPISTEMIC STATUS of what was just said, not a new retrieval.
+_PROOF_STATUS_RE = re.compile(
+    r"\b(?:proof|proven|real signal|just (?:movement|noise|activity|churn))\b"
+    r"|\breal or\b|\bor just\b", re.IGNORECASE)
+
+
+def _asks_proof_status(text: str) -> bool:
+    return bool(_PROOF_STATUS_RE.search(str(text or "")))
+
+
 def _maybe_refresh(text: str, ctx: list, act: str, key: str, sheets):
     """Answer a refresh question, or a follow-up to a refresh answer, in context."""
     topic = CR.detect_refresh_topic(text)
@@ -117,6 +128,11 @@ def _maybe_refresh(text: str, ctx: list, act: str, key: str, sheets):
     if not topic and follow_up and ordinal:
         # "what about the second one?" inside a refresh thread -> that item
         topic = CR.WHAT_MATTERS
+    if not topic and follow_up and _asks_proof_status(text):
+        # "is that proof or just movement?" is an epistemics question ABOUT the
+        # refresh we just described — answering it from the generic pattern
+        # fallback silently changes the subject to a different slice.
+        topic = CR.EVIDENCE
     if not topic:
         # resolve the follow-up act against the prior refresh answer
         if act == R.EXPLAIN:

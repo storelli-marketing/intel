@@ -37,6 +37,11 @@ log = get_logger()
 _FINDINGS_PROMPT = os.path.join(os.path.dirname(__file__), "..", "prompts", "findings_summary_prompt.md")
 
 
+def _now_stamp() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
 def _valid_icp(value: str) -> str:
     """Return a canonical ICP label if the suggestion matches one, else ''."""
     target = taxonomy.slug(value)
@@ -82,30 +87,49 @@ def _row_value_ci(row: dict, *aliases) -> str:
 def _determine_performance(row: dict, reprocess: bool) -> tuple[str | None, str]:
     """Decide which PERFORMANCE label to use for this row.
 
-    Returns (label, write_value). `label` is the display value used for
-    correlations (or None to skip the row). `write_value` is non-empty only
-    when we should persist a freshly-computed PERFORMANCE to the sheet
-    (existing cell blank, or --reprocess).
+    Returns (label, write_value, analyze_ok). `label` is the display value used
+    for correlations (None when the row carries no usable label). `write_value`
+    is non-empty only when a freshly-computed PERFORMANCE should be persisted.
+    `analyze_ok` is False only when the row should be skipped entirely — an
+    immature post returns (None, "", True): analyze it, but hold the label.
     """
     existing = str(row.get("PERFORMANCE", "")).strip()
     el = existing.lower()
     if el == "non classified":
-        return None, ""  # explicit human skip
+        return None, "", False        # explicit human skip -> don't analyze
     has_existing = el in _PERF_DISPLAY
 
     views = _to_int(_row_value_ci(row, "views"))
-    followers = _to_int(_row_value_ci(row, "followers")) or config.STORELLI_IG_FOLLOWER_COUNT
+    # Denominator preference: the follower count actually measured for this row,
+    # then the legacy at-post column, then the configured fallback. Today's
+    # account-level count is never written into a field claiming to be the count
+    # at publication.
+    followers = (_to_int(_row_value_ci(row, "followers_at_measurement",
+                                       "followers at measurement"))
+                 or _to_int(_row_value_ci(row, "followers_at_post", "followers at post"))
+                 or _to_int(_row_value_ci(row, "followers"))
+                 or config.STORELLI_IG_FOLLOWER_COUNT)
     computed = None
     if views is not None and followers and followers > 0:
         computed = performance.ratio_to_performance(views / followers)
 
+    # A human label always wins and is never recomputed or overwritten.
     if has_existing and not reprocess:
-        return _PERF_DISPLAY[el], ""
+        return _PERF_DISPLAY[el], "", True
+    # MATURITY GATE: an auto-classification of a post that is still accumulating
+    # distribution is misleading, so we withhold the label (and keep the row out
+    # of correlations) while analyzing/ingesting/refreshing it as normal.
+    if not has_existing and not performance.is_mature(row):
+        age = performance.post_age_days(row)
+        log.info("Row %s: %.1fd old (< %dd maturity) -> analyzing, PERFORMANCE held pending",
+                 row.get("_row"), age if age is not None else -1,
+                 config.PERFORMANCE_MATURITY_DAYS)
+        return None, "", True         # analyze, but do not label
     if computed:
-        return computed, computed   # write to sheet (blank existing or reprocess)
+        return computed, computed, True
     if has_existing:
-        return _PERF_DISPLAY[el], ""  # can't compute -> keep existing
-    return None, ""
+        return _PERF_DISPLAY[el], "", True   # can't compute -> keep existing
+    return None, "", False
 
 
 def _media_url_for(link: str, media_urls: dict | None) -> str:
@@ -173,13 +197,16 @@ def cmd_analyze(reprocess: bool, limit: int | None = None,
         # Determine PERFORMANCE first — keep existing, or auto-compute from
         # views/followers. If neither works, skip the row entirely (no write,
         # no Gemini) so it stays eligible once performance is added later.
-        perf_label, perf_write = _determine_performance(r, reprocess)
-        if perf_label is None:
+        perf_label, perf_write, analyze_ok = _determine_performance(r, reprocess)
+        if not analyze_ok:
             log.info("Row %d: no determinable PERFORMANCE -> skipped", row_idx)
             stats["skipped_no_performance"] += 1
             continue
+        if perf_label is None:
+            stats["pending_maturity"] = stats.get("pending_maturity", 0) + 1
 
-        log.info("Analyzing row %d (PERFORMANCE=%s): %s", row_idx, perf_label, link)
+        log.info("Analyzing row %d (PERFORMANCE=%s): %s", row_idx,
+                 perf_label or "pending-maturity", link)
         try:
             cols = analyze_and_compile(
                 gemini, link,
@@ -207,6 +234,8 @@ def cmd_analyze(reprocess: bool, limit: int | None = None,
                 product_fill="" if product_low else str(cols.get("product_suggested", "")).strip(),
                 status_value="needs_review" if needs_review else "completed",
                 performance_value=perf_write,
+                performance_source=config.PERF_SOURCE_AUTO if perf_write else "",
+                performance_measured_at=_now_stamp() if perf_write else "",
             )
             # Reflect the written values in-memory only AFTER the write.
             r["PERFORMANCE"] = perf_label
@@ -292,7 +321,7 @@ def cmd_analyze_all(reprocess: bool, limit: int | None = None,
         # existing human value or an auto-computed one from views/followers).
         # Unlike `analyze`, we do NOT skip the row when it can't be
         # determined — tagging proceeds either way.
-        perf_label, perf_write = _determine_performance(r, reprocess)
+        perf_label, perf_write, _ok = _determine_performance(r, reprocess)
 
         log.info("Tagging row %d (PERFORMANCE=%s): %s",
                  row_idx, perf_label or "n/a", link)
@@ -316,6 +345,8 @@ def cmd_analyze_all(reprocess: bool, limit: int | None = None,
                 product_fill="" if product_low else str(cols.get("product_suggested", "")).strip(),
                 status_value="needs_review" if needs_review else "completed",
                 performance_value=perf_write,
+                performance_source=config.PERF_SOURCE_AUTO if perf_write else "",
+                performance_measured_at=_now_stamp() if perf_write else "",
             )
             if perf_label:
                 r["PERFORMANCE"] = perf_label

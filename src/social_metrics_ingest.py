@@ -186,6 +186,9 @@ def build_metric_values(media: dict, insights: dict) -> dict:
     put("WEBSITE_CLICKS", "website_clicks")
     # Public follower count used for THIS measurement (never a stale global).
     put("FOLLOWERS_AT_MEASUREMENT", "followers_at_measurement", "follower_count")
+    # When these public numbers were read, so a stale metric is visibly stale.
+    if insights.get("metrics_measured_at"):
+        out["METRICS_MEASURED_AT"] = str(insights["metrics_measured_at"])
 
     inter = insights.get("total_interactions")
     reach = insights.get("reach")

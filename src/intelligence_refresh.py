@@ -92,7 +92,13 @@ def _load_sheets():
 # ---------------------------------------------------------------------------
 def _runs_ws(sheets):
     import gspread
-    sh = sheets.ws.spreadsheet if hasattr(sheets, "ws") else sheets._ws(RUNS_TAB).spreadsheet
+    # Get the SPREADSHEET handle without asking for the run-log tab itself —
+    # requesting a tab that doesn't exist yet raises before the create branch
+    # below can run, which is how the run log silently never got written.
+    sh = (getattr(sheets, "_sh", None)
+          or getattr(getattr(sheets, "ws", None), "spreadsheet", None))
+    if sh is None:
+        sh = sheets._ws(RUNS_TAB).spreadsheet
     try:
         return sh.worksheet(RUNS_TAB)
     except gspread.WorksheetNotFound:
@@ -177,7 +183,9 @@ def _owned_scan(dry_run: bool, sheets=None) -> dict:
     rows = poc.read_rows()
     life = smi.classify_owned_media(_as_media_dicts(owned), rows)
     new = life["NEW_MEDIA"]
-    followers = od.current_follower_count(owned)
+    # Real measured denominator: post results, else one profile-details call.
+    followers = scan.get("followers") or od.current_follower_count(owned)
+    follower_src = scan.get("follower_source", "unavailable")
     metrics_avail = ", ".join(k for k, v in (scan.get("metrics_available") or {}).items() if v)
 
     if dry_run:
@@ -187,7 +195,9 @@ def _owned_scan(dry_run: bool, sheets=None) -> dict:
                 "reason": f"account @{scan['handle']}: {len(owned)} owned post(s), "
                           f"{len(new)} new would append, "
                           f"{len(scan.get('external_rejected', []))} non-owned rejected; "
-                          f"public metrics [{metrics_avail or 'none'}] (no writes)"}
+                          f"public metrics [{metrics_avail or 'none'}]; "
+                          f"followers={followers or 'unavailable'} ({follower_src}) "
+                          f"(no writes)"}
 
     appended = 0
     if new:
@@ -199,8 +209,10 @@ def _owned_scan(dry_run: bool, sheets=None) -> dict:
     return {"stage": "owned_scan", "status": "success", "processed": len(owned),
             "created": appended, "updated": updated, "_appended": appended,
             "_new_media": appended, "_owned": owned, "_followers": followers,
+            "_follower_source": follower_src,
             "reason": f"@{scan['handle']}: +{appended} appended, {updated} metric cell(s) "
-                      f"updated; public metrics [{metrics_avail or 'none'}]"}
+                      f"updated; public metrics [{metrics_avail or 'none'}]; "
+                      f"followers={followers or 'unavailable'} ({follower_src})"}
 
 
 def _as_media_dicts(owned: list) -> list:
@@ -235,9 +247,14 @@ def _refresh_public_metrics(poc, owned: list, followers) -> int:
     if not mapping["matched"]:
         return 0
     insights = _insights_from_owned(owned)
-    if followers:
-        for mid in insights:
+    from datetime import datetime as _dt, timezone as _tz
+    stamp = _dt.now(_tz.utc).strftime("%Y-%m-%d %H:%M UTC")
+    for mid in insights:
+        # The denominator and the read time belong to THIS measurement — never
+        # backdated into a field claiming the count at publication.
+        if followers:
             insights[mid]["followers_at_measurement"] = followers
+        insights[mid]["metrics_measured_at"] = stamp
     plan = smi.plan_incremental(mapping, insights, list(poc.meta_col.keys()),
                                smi.read_sync_state(poc))
     if not plan["fills"]:
@@ -299,6 +316,60 @@ def _internal_analyze(dry_run: bool, limit: Optional[int], owned: Optional[list]
             "reason": ("Gemini quota stop — remaining rows kept for next run"
                        if stats.get("quota_stopped") else ""),
             "_analyzed": stats.get("analyzed", 0)}
+
+
+def _internal_maturity(dry_run: bool) -> dict:
+    """Label posts whose PERFORMANCE was withheld for being too young and that
+    have now crossed PERFORMANCE_MATURITY_DAYS.
+
+    Uses the EXISTING performance methodology (views / measured followers ->
+    ratio_to_performance). Only ever fills a BLANK PERFORMANCE on a row the
+    automation is measuring; a human label is never touched, and a row whose
+    age cannot be established is never labelled here."""
+    import gspread
+    import performance
+    from main import _determine_performance, _now_stamp
+    from sheets_client import SheetsClient
+    poc = SheetsClient()
+    poc.validate_columns()
+    rows = poc.read_rows()
+    pending = [r for r in rows
+               if not str(r.get("PERFORMANCE", "")).strip()
+               and performance.post_age_days(r) is not None
+               and performance.is_mature(r)]
+    if not pending:
+        held = performance.pending_maturity_rows(rows)
+        return _stage("internal_maturity", "success",
+                      reason=(f"{len(held)} post(s) still inside the "
+                              f"{config.PERFORMANCE_MATURITY_DAYS}-day maturity window"
+                              if held else "no posts awaiting maturity"))
+    graded = []
+    for r in pending:
+        label, write_value, _ok = _determine_performance(r, reprocess=False)
+        if write_value:
+            graded.append((r, write_value))
+    if dry_run:
+        return _stage("internal_maturity", "success", processed=len(pending),
+                      updated=len(graded),
+                      reason=f"would classify {len(graded)}/{len(pending)} matured post(s): "
+                             + ", ".join(f"row {r['_row']}={v}" for r, v in graded[:5]))
+    stamp = _now_stamp()
+    updates = []
+    for r, value in graded:
+        for col, val in (("PERFORMANCE", value),
+                         ("PERFORMANCE_SOURCE", config.PERF_SOURCE_AUTO),
+                         ("PERFORMANCE_MEASURED_AT", stamp)):
+            idx = poc.meta_col.get(col)
+            if idx:
+                updates.append({"range": gspread.utils.rowcol_to_a1(r["_row"], idx),
+                                "values": [[val]]})
+    if updates:
+        poc.ws.batch_update(updates)
+    return {"stage": "internal_maturity", "status": "success", "processed": len(pending),
+            "updated": len(graded),
+            "reason": f"{len(graded)} matured post(s) classified "
+                      f"({len(pending) - len(graded)} lacked a usable view count)",
+            "_classified": len(graded)}
 
 
 def _internal_recompute(dry_run: bool) -> dict:
@@ -444,11 +515,16 @@ def _internal_loop(dry_run: bool, limit: Optional[int], sheets=None) -> list:
     # 3) analysis, reusing Apify media URLs when available.
     analyze = _run_stage("internal_analyze", lambda: _internal_analyze(dry_run, limit, owned))
     stages.append(analyze)
+    # 4) label posts that were held back as too young and have now matured, so
+    #    they enter correlations with a settled view count instead of a day-one one.
+    mature = _run_stage("internal_maturity", lambda: _internal_maturity(dry_run))
+    stages.append(mature)
     # Recompute ONLY when internal evidence actually changed.
     changed = (analyze.get("_analyzed", analyze.get("created", 0)) > 0
                or metrics.get("updated", 0) > 0
                or scan.get("_appended", 0) > 0
-               or scan.get("updated", 0) > 0)
+               or scan.get("updated", 0) > 0
+               or mature.get("_classified", 0) > 0)
     if dry_run:
         stages.append(_run_stage("internal_recompute", lambda: _internal_recompute(True)))
     elif changed:

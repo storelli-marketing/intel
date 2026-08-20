@@ -228,8 +228,10 @@ The runner picks the row's `PERFORMANCE` in this order:
 1. **Existing manual value** (`Great` / `Good` / `Ok` / `Underdog`) — kept as-is
    unless `--reprocess` is passed.
 2. **Auto-computed from views/followers ratio** when the sheet has a `Views`
-   column (and optionally a `Followers` column; otherwise the env var
-   `STORELLI_IG_FOLLOWER_COUNT`, default `170000`, is used):
+   column. The denominator is taken in this order:
+   `FOLLOWERS_AT_MEASUREMENT` (the count actually measured for that row) →
+   `FOLLOWERS_AT_POST` → a generic `Followers` column → the env var
+   `STORELLI_IG_FOLLOWER_COUNT` (default `170000`) as a last resort:
    - `r > 1.0` → `Great`
    - `0.5 ≤ r ≤ 1.0` → `Good`
    - `r < 0.5` → `Underdog`
@@ -246,12 +248,101 @@ Underdog             -> Bad    (low)
 Non classified / blank -> skipped
 ```
 
+### Maturity + provenance (automated labels only)
+
+A view count on a two-day-old reel is not the number that reel will settle at,
+so labelling it immediately poisons every correlation it enters. Two columns
+record where a label came from:
+
+| Column | Meaning |
+| --- | --- |
+| `PERFORMANCE_SOURCE` | `HUMAN` or `AUTO_PUBLIC_METRICS` — blank means unknown provenance |
+| `PERFORMANCE_MEASURED_AT` | when the automation computed the label |
+| `FOLLOWERS_AT_MEASUREMENT` | the denominator actually used (never backdated to post time) |
+| `METRICS_MEASURED_AT` | when the public metrics were last read |
+
+Rules, in order of precedence:
+
+- **A human label is never touched.** Not overwritten, not withheld for being
+  young, not cleared when provenance is uncertain. A blank
+  `PERFORMANCE_SOURCE` counts as uncertain, so it is left alone.
+- A post younger than `PERFORMANCE_MATURITY_DAYS` (default `7`, clamped 0–90)
+  is still **analyzed** — the taxonomy, duration and metrics are all written —
+  but its `PERFORMANCE` is **held blank** rather than guessed.
+- Held rows are excluded from correlations and reported as `pending_maturity`.
+- The `internal_maturity` refresh stage labels them once they cross the
+  threshold, using the existing formula, and stamps provenance.
+- **Unknown post age counts as mature.** The pre-existing library has no
+  `POST_DATE`; treating unknown as immature would silently discard the entire
+  historical evidence base.
+
 ## Correlation engine
 
 Per signal: count of videos with it, **`Great` rate** with vs without the
 signal, and **lift** (the difference). Confidence by sample size: High ≥ 20,
 Medium 8–19, Low < 8. These are **correlations / associations, never
 causation.**
+
+## Answer classes and data limits
+
+Every substantive answer falls into one of three classes, and the class is
+visible in the answer rather than implied:
+
+| Class | When | Obligation |
+| --- | --- | --- |
+| **HARD DATA** | internal Storelli measured evidence exists | cite it, with the sample size when asked |
+| **STRATEGIC JUDGEMENT** | no direct measurement, but a defensible call from adjacent evidence | commit, and label it as judgement — never as proof |
+| **UNKNOWN** | the data genuinely cannot answer it | say so plainly **and** say what would be needed |
+
+`src/metric_registry.py` is the single authority on which is which. It
+classifies every metric as `apify_public` (we have it), `instagram_insights_private`
+(needs a Meta connection), or `unobtainable` (no source we could connect
+provides it — retention curves, revenue attribution, a competitor's internal
+numbers, causal attribution from observational data). A question that turns on
+an unavailable metric is answered from the registry **before** any retrieval
+runs, because every downstream route would otherwise substitute a different
+metric's evidence and confidently answer a question nobody asked.
+
+Meta-questions are deliberately excluded from that gate: "what fields would we
+need to add to answer demographics?" is a question about the data model, not a
+request for a demographic split, and the schema-plan handler answers it better.
+
+A forced choice ("we can only shoot three", "if you had to pick one") is never
+met with "not enough evidence". When the human has already accepted the
+constraint, refusing answers a different question — so the brain commits, states
+plainly that it is a judgement call, and names what would overturn it
+(`evidence_contract.committed_judgement`).
+
+### Coverage: absent vs thin vs actively weak
+
+`NO DATA` (never shot), `LOW SAMPLE` (shot, too few to read) and
+`ACTIVELY WEAK` (shot enough, and it underperformed) are tracked separately.
+Collapsing them into one "gap" list is how a brain talks people out of untested
+territory and into ideas that already failed.
+
+Because the `Product` column is hand-typed, coverage aggregates on a canonical
+form: `ExoShield Head Guard`/`Head Guards` collapse, a row naming two products
+counts toward both, and a slash between digits (`GK 3/4 Leggings`) is a size,
+not a separator. Without this every product looks like n=1 and the brain
+understates evidence it actually has.
+
+### Strategist benchmark
+
+`python -m tests.strategist_benchmark.test_benchmark --report` runs 78 cases
+across 9 question categories plus 4 multi-turn chains, in two modes:
+
+- **floor** (default) — Gemini stubbed. Measures the deterministic guarantee:
+  what a user gets when the model is unavailable, over quota, or its output
+  fails claim validation. Gated on every *lookup* case plus 100% safety.
+- **live** (`--live`) — the real production path against the real sheet.
+  Gated on all cases. Cases marked `needs_composition` require generating a
+  plan or creative wording; the deterministic engine renders evidence and does
+  not write, so those are the LLM path's responsibility.
+
+Safety assertions (no fabricated private metrics, demographics, retention or
+revenue; no external-as-proof; no unhedged causal language) are checked over
+**all** cases in **both** modes — that is the property the floor exists to
+guarantee.
 
 ## Guardrails
 

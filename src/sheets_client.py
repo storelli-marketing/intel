@@ -211,7 +211,8 @@ class SheetsClient:
     def plan_writes(self, row_index: int, existing_row: dict, signal_values: dict,
                     reprocess: bool = False, icp_fill: str = "",
                     product_fill: str = "", status_value: str = STATUS_DONE,
-                    performance_value: str = "") -> list[dict]:
+                    performance_value: str = "", performance_source: str = "",
+                    performance_measured_at: str = "") -> list[dict]:
         """Pure: compute the batch_update payload without touching the network.
 
         Writes: taxonomy (1/0) cells (empty-only unless reprocess), Status,
@@ -244,16 +245,25 @@ class SheetsClient:
             existing_perf = str(existing_row.get("PERFORMANCE", "")).strip()
             if not existing_perf or reprocess:
                 _cell(self.meta_col["PERFORMANCE"], performance_value)
+                # Provenance: record that automation produced this label, so a
+                # later audit can tell it apart from a human judgement (and only
+                # auto labels are ever revisited).
+                if performance_source and "PERFORMANCE_SOURCE" in self.meta_col:
+                    _cell(self.meta_col["PERFORMANCE_SOURCE"], performance_source)
+                if performance_measured_at and "PERFORMANCE_MEASURED_AT" in self.meta_col:
+                    _cell(self.meta_col["PERFORMANCE_MEASURED_AT"], performance_measured_at)
 
         return updates
 
     def write_row(self, row_index: int, existing_row: dict, signal_values: dict,
                   reprocess: bool = False, icp_fill: str = "",
                   product_fill: str = "", status_value: str = STATUS_DONE,
-                  performance_value: str = "") -> None:
+                  performance_value: str = "", performance_source: str = "",
+                  performance_measured_at: str = "") -> None:
         updates = self.plan_writes(row_index, existing_row, signal_values,
                                    reprocess, icp_fill, product_fill,
-                                   status_value, performance_value)
+                                   status_value, performance_value,
+                                   performance_source, performance_measured_at)
         if updates:
             self.ws.batch_update(updates)
 

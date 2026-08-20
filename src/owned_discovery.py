@@ -176,7 +176,7 @@ def route_by_ownership(items: list) -> dict:
 # ---------------------------------------------------------------------------
 def scan_owned_media(client=None, handle: Optional[str] = None,
                      max_results: Optional[int] = None,
-                     last_refresh_iso: str = "", results_type: str = "posts") -> dict:
+                     last_refresh_iso: str = "", results_type: str = "reels") -> dict:
     """Bounded public scan of the trusted Storelli account.
 
     Returns {ok, owned, external_rejected, metrics_available, handle, error}.
@@ -205,10 +205,40 @@ def scan_owned_media(client=None, handle: Optional[str] = None,
     if normalized and not owned:
         log.warning("owned scan returned %d item(s) but none matched the trusted handle %r",
                     len(normalized), handle)
+    followers = current_follower_count(owned) or fetch_profile_followers(client, handle)
     return {"ok": True, "error": "", "handle": handle, "owned": owned,
             "external_rejected": routed[EXTERNAL_INSPIRATION],
-            "fetched": len(normalized),
+            "fetched": len(normalized), "followers": followers,
+            "follower_source": ("post_results" if current_follower_count(owned)
+                                else ("profile_details" if followers else "unavailable")),
             "metrics_available": available_public_metrics(owned)}
+
+
+def fetch_profile_followers(client=None, handle: Optional[str] = None) -> Optional[int]:
+    """One cheap `resultsType: details` call for the REAL current follower count.
+
+    Post/reel results do NOT expose ownerFollowersCount (verified against the live
+    actor), so the denominator has to come from the profile itself. Returns None
+    on any failure — callers then fall back to a stored snapshot, then to
+    config.STORELLI_IG_FOLLOWER_COUNT."""
+    handle = normalize_handle(handle or config.STORELLI_INSTAGRAM_HANDLE)
+    if client is None:
+        if not config.APIFY_TOKEN:
+            return None
+        from inspiration_discovery import ApifyClient
+        client = ApifyClient()
+    try:
+        data = client.run_actor(config.APIFY_INSTAGRAM_ACTOR_ID, {
+            "directUrls": [f"https://www.instagram.com/{handle}/"],
+            "resultsType": "details", "resultsLimit": 1})
+    except Exception as e:  # noqa: BLE001
+        log.warning("profile-details follower lookup failed: %s", e)
+        return None
+    for item in (data or []):
+        n = _to_int(item.get("followersCount") or item.get("followers_count"))
+        if n:
+            return n
+    return None
 
 
 def current_follower_count(owned: list) -> Optional[int]:

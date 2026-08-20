@@ -328,6 +328,22 @@ except ValueError:
     OWNED_SCAN_BUFFER_DAYS = 3
 
 
+# Performance maturity gate. A post younger than this is still accumulating
+# distribution, so auto-classifying it from public metrics is misleading — the
+# live one-reel proof labelled a 2-day-old reel "Underdog" off 36k views. Such a
+# post is still ingested, analyzed and metric-refreshed; only the PERFORMANCE
+# label (and its entry into correlations) waits until it matures.
+try:
+    PERFORMANCE_MATURITY_DAYS = int(os.getenv("PERFORMANCE_MATURITY_DAYS", "7") or 7)
+except ValueError:
+    PERFORMANCE_MATURITY_DAYS = 7
+PERFORMANCE_MATURITY_DAYS = max(0, min(90, PERFORMANCE_MATURITY_DAYS))
+
+# Provenance values for the PERFORMANCE column.
+PERF_SOURCE_HUMAN = "HUMAN"
+PERF_SOURCE_AUTO = "AUTO_PUBLIC_METRICS"
+
+
 def owned_public_discovery_configured() -> bool:
     """Public owned discovery needs only an Apify token + the trusted handle."""
     return bool(APIFY_TOKEN and STORELLI_INSTAGRAM_HANDLE)

@@ -1891,7 +1891,14 @@ def preflight_poc_structure(values: Optional[list] = None) -> dict:
     hook_col = next((i + 1 for i, c in enumerate(row1) if str(c).strip()), None)
     metadata = [str(c).strip() for i, c in enumerate(row2)
                 if str(c).strip() and (hook_col is None or i < hook_col - 1)]
-    safe = bool(status_col and hook_col and status_col < hook_col)
+    # The load-bearing invariant is NOT "Status is adjacent to HOOK" (metadata
+    # columns accumulate over time), it is: every column before the first
+    # taxonomy category has a BLANK row-1 category, i.e. the metadata block is
+    # contiguous and the insertion point sits at its end, immediately before
+    # HOOK. Inserting there can never land inside a taxonomy group.
+    pure_metadata_region = bool(hook_col) and all(
+        not str(row1[i]).strip() for i in range(0, hook_col - 1) if i < len(row1))
+    safe = bool(status_col and hook_col and status_col < hook_col and pure_metadata_region)
     return {
         "ok": True,
         "status_col": status_col,
@@ -1903,6 +1910,7 @@ def preflight_poc_structure(values: Optional[list] = None) -> dict:
         "insert_before_col": hook_col,
         "status_immediately_before_hook": bool(status_col and hook_col
                                                and status_col == hook_col - 1),
+        "metadata_block_contiguous": pure_metadata_region,
         "safe": safe,
     }
 
@@ -1916,12 +1924,14 @@ def _col_letter(n: int) -> str:
     return s
 
 
-def insertion_plan(include_optional: bool = True, values: Optional[list] = None) -> dict:
+def insertion_plan(include_optional: bool = True, values: Optional[list] = None,
+                   columns: Optional[list] = None) -> dict:
     """The exact plan for adding the metric columns between Status and HOOK.
 
     Read-only (computes the plan; performs no write)."""
     pf = preflight_poc_structure(values)
-    cols = list(_REQUIRED_METRIC_COLUMNS) + (list(_OPTIONAL_COLUMNS) if include_optional else [])
+    cols = list(columns) if columns else (
+        list(_REQUIRED_METRIC_COLUMNS) + (list(_OPTIONAL_COLUMNS) if include_optional else []))
     plan = {"ok": pf["ok"], "preflight": pf, "columns": cols, "count": len(cols),
             "row1_value": "(blank)", "include_optional": include_optional}
     if pf["ok"]:
@@ -1943,7 +1953,8 @@ def render_insertion_plan(plan: dict) -> str:
         f"  Worksheet metadata columns (row 2): {', '.join(pf['metadata_columns'])}",
         f"  Status column: {_col_letter(pf['status_col'])} (col {pf['status_col']})",
         f"  First taxonomy category HOOK: {_col_letter(pf['hook_col'])} (col {pf['hook_col']})",
-        f"  Status immediately before HOOK: {'YES (safe)' if pf['status_immediately_before_hook'] else 'NO — review'}",
+        f"  Metadata block contiguous (safe to insert before HOOK): "
+        f"{'YES' if pf.get('metadata_block_contiguous') else 'NO — review'}",
         "",
         f"  INSERT {plan['count']} new columns starting at {plan['insert_at_a1']},",
         "  pushing the taxonomy block right. For every new column: row 1 (category) = BLANK,",
@@ -1971,7 +1982,8 @@ def render_insertion_plan(plan: dict) -> str:
 # taxonomy category so the two-row header stays intact and taxonomy shifts right
 # (values preserved; taxonomy is matched by (category, option) each run).
 # ---------------------------------------------------------------------------
-def insert_poc_metric_columns(include_optional: bool = True, apply: bool = False) -> dict:
+def insert_poc_metric_columns(include_optional: bool = True, apply: bool = False,
+                              columns: Optional[list] = None) -> dict:
     """Plan (and, only when apply=True + guards pass, perform) the insertion of
     the metric columns between Status and HOOK.
 
@@ -1981,7 +1993,7 @@ def insert_poc_metric_columns(include_optional: bool = True, apply: bool = False
     row 2; data cells are left empty (no fabricated values). Existing analyzed
     data is shifted right, never overwritten."""
     values = _poc_values()
-    plan = insertion_plan(include_optional, values)
+    plan = insertion_plan(include_optional, values, columns)
     if not plan["ok"]:
         return {"ok": False, "error": "POC header unreadable", "wrote": False}
     # Idempotency FIRST: if the columns are already there, a re-run is a no-op —
@@ -1993,9 +2005,10 @@ def insert_poc_metric_columns(include_optional: bool = True, apply: bool = False
         return {"ok": True, "wrote": False, "plan": plan, "already_present": already,
                 "note": "some/all target columns already exist — nothing to insert (idempotent)"}
     pf = plan["preflight"]
-    if not (pf["safe"] and pf["status_immediately_before_hook"]):
+    if not pf["safe"]:
         return {"ok": False, "wrote": False, "plan": plan,
-                "error": "unsafe insertion boundary (Status is not immediately before HOOK)"}
+                "error": ("unsafe insertion boundary: the columns before the first taxonomy "
+                          "category are not a contiguous blank-category metadata block")}
     if not apply:
         return {"ok": True, "wrote": False, "dry_run": True, "plan": plan}
     # ---- APPLY (gated) ----------------------------------------------------
