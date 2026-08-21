@@ -15,6 +15,12 @@ Guardrails:
 - Raw human columns (ID, LINK, PERFORMANCE, Storytelling structure) are never
   written.
 - Taxonomy cells are written only when currently empty, unless reprocess=True.
+- A reel younger than `config.ANALYSIS_MIN_AGE_DAYS` (one week by default) is
+  NOT analyzed at all — not tagged, no Gemini call, no Status. A post that has
+  been up for two days has not had time to collect engagement, so any metric read
+  off it is unrealistic and anything derived from it is noise. It stays eligible
+  and is picked up automatically once it crosses the threshold. Rows with no
+  determinable POST_DATE (the whole pre-existing library) count as old enough.
 """
 from __future__ import annotations
 
@@ -25,6 +31,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 import config
+import performance
 import taxonomy
 from logger import get_logger
 
@@ -178,6 +185,9 @@ class SheetsClient:
         perf = str(row.get("PERFORMANCE", "")).strip().lower()
         if perf == "non classified":
             return False  # explicit human skip; never reprocess these
+        if not performance.is_old_enough_to_analyze(row):
+            # Too recent to have earned its metrics (see the module docstring).
+            return False
         if reprocess:
             return True
         return not SheetsClient.is_processed(row)
@@ -192,9 +202,15 @@ class SheetsClient:
         later count as evidence for correlations is handled by
         `performance.buckets_for_rows` (which filters by valid performance
         AND by `is_reference_row`) — never by the tagger.
+
+        The one exception is age: a reel younger than
+        `config.ANALYSIS_MIN_AGE_DAYS` is not tagged either, for the same reason
+        `should_process` skips it.
         """
         link = str(row.get("LINK", "")).strip()
         if not link:
+            return False
+        if not performance.is_old_enough_to_analyze(row):
             return False
         if reprocess:
             return True

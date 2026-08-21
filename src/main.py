@@ -177,16 +177,26 @@ def cmd_analyze(reprocess: bool, limit: int | None = None,
         log.info("Limiting this run to %d of %d eligible row(s)", limit, len(eligible))
         targets = eligible[:limit]
 
+    # Reels withheld purely for being too recent. Reported rather than silently
+    # absent: an operator seeing "0 eligible" needs to know whether the library is
+    # done or simply waiting out the maturity window.
+    held_recent = performance.analysis_held_rows(rows)
+
     stats = {
         "scanned": len(rows),
         "eligible": len(eligible),
         "skipped_already_analyzed": skipped_already,
         "skipped_no_performance": 0,
+        "skipped_too_recent": len(held_recent),
         "analyzed": 0,
         "needs_review": 0,
         "failed": 0,
         "quota_stopped": False,
     }
+    if held_recent:
+        log.info("Holding %d reel(s) from analysis: younger than the %d-day "
+                 "minimum age (rows %s)", len(held_recent), config.ANALYSIS_MIN_AGE_DAYS,
+                 ", ".join(str(r) for r in held_recent[:10]))
 
     gemini = GeminiClient() if targets else None
 
@@ -300,11 +310,18 @@ def cmd_analyze_all(reprocess: bool, limit: int | None = None,
         log.info("Limiting analyze-all to %d of %d eligible row(s)", limit, len(eligible))
         targets = eligible[:limit]
 
+    held_recent = performance.analysis_held_rows(rows)
+    if held_recent:
+        log.info("Holding %d reel(s) from tagging: younger than the %d-day minimum "
+                 "age (rows %s)", len(held_recent), config.ANALYSIS_MIN_AGE_DAYS,
+                 ", ".join(str(r) for r in held_recent[:10]))
+
     stats = {
         "scanned": len(rows),
         "eligible": len(eligible),
         "skipped_no_link": skipped_no_link,
         "skipped_already_analyzed": skipped_already,
+        "skipped_too_recent": len(held_recent),
         "analyzed": 0,
         "needs_review": 0,
         "failed": 0,
@@ -380,6 +397,8 @@ def print_tagging_summary(stats: dict) -> None:
     print(f"Eligible rows found:        {stats.get('eligible', 0)}")
     print(f"Skipped (no LINK):          {stats.get('skipped_no_link', 0)}")
     print(f"Skipped (already analyzed): {stats.get('skipped_already_analyzed', 0)}")
+    print(f"Held (younger than {config.ANALYSIS_MIN_AGE_DAYS}d):    "
+          f"{stats.get('skipped_too_recent', 0)}")
     print(f"Analyzed:                   {stats.get('analyzed', 0)}")
     print(f"Needs review:               {stats.get('needs_review', 0)}")
     print(f"Failed:                     {stats.get('failed', 0)}")
@@ -1058,6 +1077,8 @@ def print_run_summary(stats: dict, results: list[dict], notion_done: bool) -> No
     print(f"Eligible rows found:        {stats.get('eligible', 0)}")
     print(f"Skipped (already analyzed): {stats.get('skipped_already_analyzed', 0)}")
     print(f"Skipped (no performance):   {stats.get('skipped_no_performance', 0)}")
+    print(f"Held (younger than {config.ANALYSIS_MIN_AGE_DAYS}d):    "
+          f"{stats.get('skipped_too_recent', 0)}")
     print(f"Analyzed:                   {stats.get('analyzed', 0)}")
     print(f"Needs review:               {stats.get('needs_review', 0)}")
     print(f"Failed:                     {stats.get('failed', 0)}")

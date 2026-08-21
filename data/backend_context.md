@@ -82,6 +82,27 @@ TikTok: `STORELLI_TIKTOK_HANDLE` + `is_owned_tiktok()` — only the exact config
 handle can enter the internal pipeline (never inferred from content); owned-TikTok
 metrics are limited (no official API here).
 
+**Analysis age gate** (`config.ANALYSIS_MIN_AGE_DAYS`, default = PERFORMANCE_MATURITY_DAYS
+= one week): a reel is NOT analyzed until it is at least that old. Enforced at the
+single choke point, `SheetsClient.should_process` / `should_tag` via
+`performance.is_old_enough_to_analyze`, so `cmd_analyze`, `cmd_analyze_all` and the
+refresh loop's `internal_analyze` all inherit it. Rationale: the older maturity
+gate only withheld the PERFORMANCE label while still tagging the row and reading
+its metrics, so a two-day-old reel entered the brain carrying numbers it had not
+had time to earn (the live proof labelled a 2-day-old reel Underdog off 36k views).
+Ingestion is unchanged — `owned_scan` still appends every new owned reel
+immediately so its URL is tracked from day one; only analysis waits, and the row
+becomes eligible automatically on the first run after it crosses the threshold.
+`--reprocess` does NOT override the gate (idempotency override, not a licence to
+read unearned metrics). Unknown age counts as old enough, so the undated
+pre-existing library is never frozen. Held reels are reported, never silently
+absent: `skipped_too_recent` in the run stats, `Held (younger than Nd)` in the CLI
+summaries, `N held (younger than Nd)` on the internal_analyze stage reason, and
+`performance.analysis_held_rows()` lists them. `performance.post_age_days` prefers
+POST_TIMESTAMP and parses precise formats first — parsing the date-only column
+first truncated a real timestamp to midnight and let a 6.9-day-old reel through a
+7-day gate.
+
 **Explicit-analytics precedence** (`src/analytics_query.py`, the "how many seconds"
 fix): a clearly specified factual question about our own numbers answers the metric
 it actually asks about, even inside a live decision frame. `parse()` returns a
@@ -317,7 +338,8 @@ build-request handoff: `SLACK_DEV_ALLOWED_USER_IDS`, `BUILD_REQUEST_TARGET`,
 `GITHUB_TOKEN`, `GITHUB_REPO`, `GITHUB_DISPATCH_EVENT`. Cookies (optional,
 Instagram auth): `YTDLP_COOKIES_B64`, `YTDLP_COOKIES_PATH`. Misc:
 `STORELLI_IG_FOLLOWER_COUNT`, `DASHBOARD_URL`,
-`STORELLI_POSTING_TIMEZONE` (empty = posting-time analytics stay UTC and say so).
+`STORELLI_POSTING_TIMEZONE` (empty = posting-time analytics stay UTC and say so),
+`ANALYSIS_MIN_AGE_DAYS` (empty = follow PERFORMANCE_MATURITY_DAYS).
 
 ## Current safety rules (Dev Brain must state these accurately, never soften them)
 

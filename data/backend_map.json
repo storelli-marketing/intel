@@ -983,6 +983,8 @@
         "performance_source",
         "is_auto_labelled",
         "is_mature",
+        "is_old_enough_to_analyze",
+        "analysis_held_rows",
         "is_immature_auto",
         "buckets_for_rows",
         "pending_maturity_rows",
@@ -1717,6 +1719,7 @@
     "refresh-readiness"
   ],
   "env_vars": [
+    "ANALYSIS_MIN_AGE_DAYS",
     "APIFY_INSTAGRAM_ACTOR_ID",
     "APIFY_TIKTOK_ACTOR_ID",
     "APIFY_TOKEN",

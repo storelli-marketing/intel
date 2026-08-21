@@ -267,15 +267,49 @@ Rules, in order of precedence:
 - **A human label is never touched.** Not overwritten, not withheld for being
   young, not cleared when provenance is uncertain. A blank
   `PERFORMANCE_SOURCE` counts as uncertain, so it is left alone.
+- A post younger than `ANALYSIS_MIN_AGE_DAYS` is **not analyzed at all** — see
+  below.
 - A post younger than `PERFORMANCE_MATURITY_DAYS` (default `7`, clamped 0–90)
-  is still **analyzed** — the taxonomy, duration and metrics are all written —
-  but its `PERFORMANCE` is **held blank** rather than guessed.
+  has its `PERFORMANCE` **held blank** rather than guessed. (With the default
+  configuration the analysis gate already caught it; this still applies when the
+  two thresholds are deliberately set apart.)
 - Held rows are excluded from correlations and reported as `pending_maturity`.
 - The `internal_maturity` refresh stage labels them once they cross the
   threshold, using the existing formula, and stamps provenance.
 - **Unknown post age counts as mature.** The pre-existing library has no
   `POST_DATE`; treating unknown as immature would silently discard the entire
   historical evidence base.
+
+### Analysis age gate — nothing is analyzed in its first week
+
+Ingestion and analysis are deliberately separated. The owned scan **still
+appends every new owned reel immediately**, so the URL is in the brain and its
+public metrics start being tracked from day one. What waits is the *analysis*:
+
+- A reel younger than `ANALYSIS_MIN_AGE_DAYS` is **not tagged, not sent to
+  Gemini, and given no `Status`**. A post that has been up for two days has not
+  had time to collect engagement, so any metric read off it is unrealistic and
+  anything derived from it is noise. (The live one-reel proof labelled a
+  two-day-old reel `Underdog` off 36k views.)
+- It stays eligible and is picked up **automatically** on the first run after it
+  crosses the threshold — no re-discovery, no manual requeue.
+- `ANALYSIS_MIN_AGE_DAYS` defaults to `PERFORMANCE_MATURITY_DAYS` (**one week**),
+  so raising the label threshold can never leave analysis running ahead of it by
+  accident. Set it explicitly (clamped 0–90) to separate the two.
+- **`--reprocess` does not override it.** Reprocess is an idempotency override,
+  not a licence to read metrics a reel has not earned yet.
+- **Unknown age counts as old enough**, for the same reason as the maturity gate:
+  the pre-existing library carries no `POST_DATE`, and treating unknown as
+  too-young would freeze analysis of the whole historical evidence base.
+- Held reels are **reported, never silently absent** — `Held (younger than 7d)`
+  in every run summary, and `N held (younger than 7d)` on the
+  `internal_analyze` refresh stage, so "0 eligible" is distinguishable from
+  "waiting out the window".
+
+Post age itself is read at full resolution: `post_age_days` prefers
+`POST_TIMESTAMP` and tries the precise formats first. Parsing the date-only
+column first truncated a real timestamp to midnight, which was enough to slip a
+6.9-day-old reel through a 7-day gate.
 
 ## Correlation engine
 

@@ -77,7 +77,12 @@ def bucket_from_performance(value) -> str | None:
 
 
 # --- maturity + provenance -------------------------------------------------
-_DATE_ALIASES = ("post_date", "posted", "date", "published", "publish date", "posted at")
+# POST_TIMESTAMP first: it carries the publication TIME, while POST_DATE is
+# date-only by construction. Age drives the analysis and label gates, so reading
+# the date when a full timestamp exists rounds a post's age to the nearest
+# midnight and can release a 6.9-day-old reel through a 7-day gate.
+_DATE_ALIASES = ("post_timestamp", "post timestamp", "published_at", "published at",
+                 "post_date", "posted", "date", "published", "publish date", "posted at")
 _SOURCE_ALIASES = ("performance_source", "performance source")
 _MEASURED_ALIASES = ("performance_measured_at", "performance measured at")
 
@@ -98,16 +103,34 @@ def _ci(row: dict, aliases) -> str:
 
 
 def post_age_days(row: dict, now=None) -> float | None:
-    """Age of the post in days from its POST_DATE, or None when unknown."""
+    """Age of the post in days from its timestamp/date, or None when unknown.
+
+    Full-resolution formats are tried FIRST. Trying the date-only format first
+    silently truncated a real timestamp to midnight, which made a post look up to
+    a day older than it was — enough to slip a 6.9-day-old reel through the
+    7-day analysis gate. A date-only value still parses exactly as before.
+    """
     raw = _ci(row, _DATE_ALIASES)
     if not raw:
         return None
     from datetime import datetime, timezone
     now = now or datetime.now(timezone.utc)
-    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y", "%m/%d/%Y"):
+
+    def _age(ts) -> float:
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (now - ts).total_seconds() / 86400.0
+
+    # ISO 8601 (what Apify/Meta deliver), including an offset or trailing Z.
+    try:
+        return _age(datetime.fromisoformat(raw.strip().replace("Z", "+00:00")))
+    except ValueError:
+        pass
+    # Longest (most precise) format first so a time component is never discarded.
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M",
+                "%Y-%m-%d %H:%M", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
         try:
-            ts = datetime.strptime(raw[:len(fmt) + 2].strip()[:19], fmt)
-            return (now - ts.replace(tzinfo=timezone.utc)).total_seconds() / 86400.0
+            return _age(datetime.strptime(raw.strip()[:len(fmt) + 2].strip(), fmt))
         except ValueError:
             continue
     return None
@@ -127,6 +150,32 @@ def is_mature(row: dict, now=None) -> bool:
     just because it has no POST_DATE."""
     age = post_age_days(row, now)
     return True if age is None else age >= config.PERFORMANCE_MATURITY_DAYS
+
+
+def is_old_enough_to_analyze(row: dict, now=None) -> bool:
+    """True when a reel has had long enough to collect engagement to be worth
+    analyzing at all (`config.ANALYSIS_MIN_AGE_DAYS`, one week by default).
+
+    This is a stricter gate than `is_mature`: that one only withheld the
+    PERFORMANCE label while still tagging the row and reading its metrics, which
+    meant a two-day-old reel entered the brain carrying numbers it had not had
+    time to earn. Nothing is analyzed until the reel is old enough.
+
+    Unknown age counts as old enough, for the same reason `is_mature` does: the
+    pre-existing library has no POST_DATE, and treating unknown as too-young
+    would freeze analysis of the entire historical evidence base.
+    """
+    age = post_age_days(row, now)
+    return True if age is None else age >= config.ANALYSIS_MIN_AGE_DAYS
+
+
+def analysis_held_rows(rows: list[dict], now=None) -> list[int]:
+    """Rows withheld from analysis purely for being too recent — reported, never
+    silently dropped, so an operator can see what is waiting."""
+    return [r["_row"] for r in rows
+            if not is_reference_row(r)
+            and str(r.get("LINK", "")).strip()
+            and not is_old_enough_to_analyze(r, now)]
 
 
 def is_immature_auto(row: dict, now=None) -> bool:

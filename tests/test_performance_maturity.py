@@ -111,13 +111,19 @@ class TestProvenance(unittest.TestCase):
         self.assertEqual(write_value, "", "existing label must not be rewritten")
         self.assertTrue(analyze_ok)
 
-    def test_young_unlabelled_row_is_analyzed_but_not_labelled(self):
+    def test_young_unlabelled_row_holds_its_label(self):
+        """The label-hold contract, which still matters when the two gates are
+        configured apart (ANALYSIS_MIN_AGE_DAYS below PERFORMANCE_MATURITY_DAYS).
+
+        With the defaults the analysis gate means such a row never reaches this
+        function at all — see TestAnalysisAgeGate.
+        """
         from main import _determine_performance
         r = row(POST_DATE=days_ago(1), PERFORMANCE="", VIEWS="20000")
         label, write_value, analyze_ok = _determine_performance(r, reprocess=False)
         self.assertIsNone(label)
         self.assertEqual(write_value, "")
-        self.assertTrue(analyze_ok, "taxonomy analysis still happens")
+        self.assertTrue(analyze_ok)
 
     def test_mature_unlabelled_row_is_labelled_with_provenance(self):
         from main import _determine_performance
@@ -126,6 +132,150 @@ class TestProvenance(unittest.TestCase):
         self.assertTrue(write_value, "a matured row must get a computed label")
         self.assertEqual(label, write_value)
         self.assertTrue(analyze_ok)
+
+
+class TestAnalysisAgeGate(unittest.TestCase):
+    """A reel is not ANALYZED AT ALL until it has had time to collect engagement.
+
+    The older maturity gate only withheld the PERFORMANCE label: the row was
+    still tagged and its metrics were still read at whatever age it happened to
+    be discovered, so a two-day-old reel entered the brain carrying numbers it
+    had not earned. These lock the stricter gate, and — just as importantly —
+    lock the two things it must NOT break: the undated historical library, and
+    the label-hold behaviour when the two thresholds are configured apart.
+    """
+
+    def test_default_is_one_week(self):
+        self.assertEqual(config.ANALYSIS_MIN_AGE_DAYS, 7)
+
+    def test_gate_follows_the_maturity_threshold_by_default(self):
+        """Raising the label threshold can never leave analysis running ahead."""
+        self.assertEqual(config.ANALYSIS_MIN_AGE_DAYS,
+                         config.PERFORMANCE_MATURITY_DAYS)
+
+    def test_too_recent_is_not_old_enough(self):
+        for d in (0, 1, 3, 6):
+            self.assertFalse(
+                performance.is_old_enough_to_analyze(row(POST_DATE=days_ago(d))),
+                f"{d}d old must not be analyzed")
+
+    def test_a_week_or_more_is_old_enough(self):
+        for d in (7, 8, 30, 365):
+            self.assertTrue(
+                performance.is_old_enough_to_analyze(row(POST_DATE=days_ago(d))),
+                f"{d}d old must be analyzed")
+
+    def test_unknown_age_counts_as_old_enough(self):
+        """The pre-existing library has no POST_DATE. Treating unknown as
+        too-young would silently freeze the entire historical evidence base."""
+        self.assertTrue(performance.is_old_enough_to_analyze(row()))
+        self.assertTrue(performance.is_old_enough_to_analyze(row(POST_DATE="")))
+        self.assertTrue(performance.is_old_enough_to_analyze({"_row": 3}))
+
+    def test_eligibility_rejects_a_fresh_reel(self):
+        from sheets_client import SheetsClient
+        fresh = row(POST_DATE=days_ago(2), PERFORMANCE="", Status="")
+        self.assertFalse(SheetsClient.should_process(fresh))
+        self.assertFalse(SheetsClient.should_tag(fresh))
+
+    def test_eligibility_accepts_a_matured_reel(self):
+        from sheets_client import SheetsClient
+        aged = row(POST_DATE=days_ago(9), PERFORMANCE="", Status="")
+        self.assertTrue(SheetsClient.should_process(aged))
+        self.assertTrue(SheetsClient.should_tag(aged))
+
+    def test_undated_library_rows_stay_eligible(self):
+        from sheets_client import SheetsClient
+        legacy = row(POST_DATE="", PERFORMANCE="", Status="")
+        self.assertTrue(SheetsClient.should_process(legacy))
+        self.assertTrue(SheetsClient.should_tag(legacy))
+
+    def test_reprocess_does_not_override_the_age_gate(self):
+        """--reprocess is an idempotency override, not a licence to read metrics
+        a reel has not earned yet."""
+        from sheets_client import SheetsClient
+        fresh = row(POST_DATE=days_ago(2), PERFORMANCE="Great", Status="completed")
+        self.assertFalse(SheetsClient.should_process(fresh, reprocess=True))
+        self.assertFalse(SheetsClient.should_tag(fresh, reprocess=True))
+
+    def test_a_matured_reel_is_still_reprocessable(self):
+        from sheets_client import SheetsClient
+        aged = row(POST_DATE=days_ago(20), PERFORMANCE="Great", Status="completed")
+        self.assertTrue(SheetsClient.should_process(aged, reprocess=True))
+
+    def test_non_classified_is_still_skipped_regardless_of_age(self):
+        from sheets_client import SheetsClient
+        r = row(POST_DATE=days_ago(40), PERFORMANCE="Non classified")
+        self.assertFalse(SheetsClient.should_process(r))
+
+    def test_held_rows_are_reported_not_silently_dropped(self):
+        rows = [row(_row=3, POST_DATE=days_ago(1)),
+                row(_row=4, POST_DATE=days_ago(2)),
+                row(_row=5, POST_DATE=days_ago(30)),
+                row(_row=6, POST_DATE="")]
+        self.assertEqual(performance.analysis_held_rows(rows), [3, 4])
+
+    def test_external_rows_are_not_reported_as_held(self):
+        rows = [row(_row=3, POST_DATE=days_ago(1),
+                    SOURCE_TYPE="EXTERNAL_INSPIRATION")]
+        self.assertEqual(performance.analysis_held_rows(rows), [])
+
+    def test_a_row_with_no_link_is_not_reported_as_held(self):
+        rows = [row(_row=3, POST_DATE=days_ago(1), LINK="")]
+        self.assertEqual(performance.analysis_held_rows(rows), [])
+
+    def test_gate_respects_an_explicitly_configured_threshold(self):
+        real = config.ANALYSIS_MIN_AGE_DAYS
+        try:
+            config.ANALYSIS_MIN_AGE_DAYS = 14
+            self.assertFalse(
+                performance.is_old_enough_to_analyze(row(POST_DATE=days_ago(9))))
+            self.assertTrue(
+                performance.is_old_enough_to_analyze(row(POST_DATE=days_ago(15))))
+        finally:
+            config.ANALYSIS_MIN_AGE_DAYS = real
+
+
+class TestAgePrecision(unittest.TestCase):
+    """Age drives both gates, so rounding it to midnight is a correctness bug:
+    it let a 6.9-day-old reel through a 7-day gate."""
+
+    @staticmethod
+    def _iso(days):
+        from datetime import datetime, timedelta, timezone
+        return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    def test_full_timestamp_is_not_truncated_to_midnight(self):
+        age = performance.post_age_days(row(POST_TIMESTAMP=self._iso(6.9)))
+        self.assertAlmostEqual(age, 6.9, places=1)
+        self.assertFalse(performance.is_old_enough_to_analyze(
+            row(POST_TIMESTAMP=self._iso(6.9))))
+
+    def test_boundary_is_exact(self):
+        self.assertFalse(performance.is_old_enough_to_analyze(
+            row(POST_TIMESTAMP=self._iso(6.99))))
+        self.assertTrue(performance.is_old_enough_to_analyze(
+            row(POST_TIMESTAMP=self._iso(7.01))))
+
+    def test_timestamp_wins_over_the_date_only_column(self):
+        r = row(POST_DATE=days_ago(30), POST_TIMESTAMP=self._iso(1))
+        self.assertAlmostEqual(performance.post_age_days(r), 1.0, places=1)
+        self.assertFalse(performance.is_old_enough_to_analyze(r))
+
+    def test_trailing_z_offset_parses(self):
+        from datetime import datetime, timedelta, timezone
+        ts = (datetime.now(timezone.utc) - timedelta(days=10)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        self.assertAlmostEqual(performance.post_age_days(row(POST_TIMESTAMP=ts)),
+                               10.0, places=1)
+
+    def test_legacy_date_only_shapes_still_parse(self):
+        for value in ("2025-01-06", "2025-01-06 18:30:00", "2025-01-06T18:30:00"):
+            self.assertIsNotNone(performance.post_age_days(row(POST_DATE=value)),
+                                 value)
+
+    def test_unparseable_value_is_unknown_not_zero(self):
+        self.assertIsNone(performance.post_age_days(row(POST_DATE="garbage")))
 
 
 class TestFollowerDenominator(unittest.TestCase):

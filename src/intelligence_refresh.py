@@ -206,12 +206,26 @@ def _owned_scan(dry_run: bool, sheets=None) -> dict:
         poc = SheetsClient()          # re-read so the new rows are visible downstream
         poc.validate_columns()
     updated = _refresh_public_metrics(poc, owned, followers)
+    # Ingestion still appends every new owned reel — the URL enters the brain
+    # immediately so metrics start being tracked. What waits is ANALYSIS: a reel
+    # younger than ANALYSIS_MIN_AGE_DAYS has not had time to collect engagement,
+    # so it is left untagged (and unlabelled) until it crosses the threshold, at
+    # which point it becomes eligible with no re-discovery needed.
+    import performance
+    # `new` is already in the media-dict shape classify_owned_media returned, so
+    # the publication time is on `timestamp`.
+    young = sum(1 for m in new
+                if not performance.is_old_enough_to_analyze(
+                    {"POST_DATE": str(m.get("timestamp") or "")}))
+    young_note = (f", {young} of them too recent to analyze yet "
+                  f"(<{config.ANALYSIS_MIN_AGE_DAYS}d)" if young else "")
     return {"stage": "owned_scan", "status": "success", "processed": len(owned),
             "created": appended, "updated": updated, "_appended": appended,
             "_new_media": appended, "_owned": owned, "_followers": followers,
-            "_follower_source": follower_src,
-            "reason": f"@{scan['handle']}: +{appended} appended, {updated} metric cell(s) "
-                      f"updated; public metrics [{metrics_avail or 'none'}]; "
+            "_follower_source": follower_src, "_appended_too_recent": young,
+            "reason": f"@{scan['handle']}: +{appended} appended{young_note}, {updated} "
+                      f"metric cell(s) updated; public metrics "
+                      f"[{metrics_avail or 'none'}]; "
                       f"followers={followers or 'unavailable'} ({follower_src})"}
 
 
@@ -292,30 +306,40 @@ def _internal_analyze(dry_run: bool, limit: Optional[int], owned: Optional[list]
     """Analyze eligible internal rows via the EXISTING pipeline. When the owned
     scan supplied Apify video URLs, they're passed through so acquisition needs
     neither an Instagram round-trip nor cookies."""
+    import performance
     from sheets_client import SheetsClient
     sheets = SheetsClient()
     sheets.validate_columns()
     rows = sheets.read_rows()
     eligible = [r for r in rows if SheetsClient.should_process(r, False)]
     media_urls = _media_url_index(owned)
+    # Reels the age gate is holding back. Surfaced in the stage reason so a run
+    # that analyzed nothing is distinguishable from a run that had nothing to do:
+    # freshly-appended reels wait out the window and are picked up automatically.
+    held = performance.analysis_held_rows(rows)
+    held_note = (f"; {len(held)} held (younger than "
+                 f"{config.ANALYSIS_MIN_AGE_DAYS}d)" if held else "")
     if dry_run:
         acq = ("Apify media URL (no cookies needed)" if media_urls else
                "public yt-dlp" + (" -> cookie fallback" if config.YTDLP_COOKIES_PATH else ""))
         return _stage("internal_analyze", "success", processed=len(eligible),
-                      reason=f"{len(eligible)} eligible row(s) would be analyzed via {acq} "
-                             "(no writes)")
+                      reason=f"{len(eligible)} eligible row(s) would be analyzed via {acq}"
+                             f"{held_note} (no writes)")
     if not eligible:
-        return _stage("internal_analyze", "skipped", reason="no eligible internal rows")
+        return _stage("internal_analyze", "skipped",
+                      reason=f"no eligible internal rows{held_note}")
     from main import cmd_analyze
     stats = cmd_analyze(reprocess=False, limit=limit, qa_enabled=config.QA_COMPILER_ENABLED,
                         media_urls=media_urls)
     status = "partial" if stats.get("quota_stopped") or stats.get("failed") else "success"
+    reason = ("Gemini quota stop — remaining rows kept for next run"
+              if stats.get("quota_stopped") else "")
     return {"stage": "internal_analyze", "status": status,
             "processed": stats.get("eligible", 0), "created": stats.get("analyzed", 0),
             "updated": stats.get("needs_review", 0), "failed": stats.get("failed", 0),
-            "reason": ("Gemini quota stop — remaining rows kept for next run"
-                       if stats.get("quota_stopped") else ""),
-            "_analyzed": stats.get("analyzed", 0)}
+            "reason": (reason + held_note).lstrip("; ") if held_note else reason,
+            "_analyzed": stats.get("analyzed", 0),
+            "_held_too_recent": stats.get("skipped_too_recent", 0)}
 
 
 def _internal_maturity(dry_run: bool) -> dict:

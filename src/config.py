@@ -364,6 +364,27 @@ except ValueError:
     PERFORMANCE_MATURITY_DAYS = 7
 PERFORMANCE_MATURITY_DAYS = max(0, min(90, PERFORMANCE_MATURITY_DAYS))
 
+# Analysis maturity gate. A reel is not ANALYZED AT ALL until it is at least this
+# old. The maturity gate above only withheld the PERFORMANCE *label* — the row
+# was still tagged, and its metrics were still read and written, at whatever age
+# it happened to be discovered. Those numbers are not what the reel will settle
+# at: a two-day-old post has not had time to collect engagement, so anything
+# derived from them is unrealistic.
+#
+# Defaults to PERFORMANCE_MATURITY_DAYS (one week) so the two gates move together
+# unless someone deliberately separates them — raising the label threshold can
+# never leave analysis running ahead of it by accident.
+#
+# A post whose age CANNOT be established is treated as old enough. The
+# pre-existing library carries no POST_DATE, so treating unknown as too-young
+# would silently freeze analysis of the entire historical evidence base.
+try:
+    ANALYSIS_MIN_AGE_DAYS = int(os.getenv("ANALYSIS_MIN_AGE_DAYS", "")
+                                or PERFORMANCE_MATURITY_DAYS)
+except ValueError:
+    ANALYSIS_MIN_AGE_DAYS = PERFORMANCE_MATURITY_DAYS
+ANALYSIS_MIN_AGE_DAYS = max(0, min(90, ANALYSIS_MIN_AGE_DAYS))
+
 # Provenance values for the PERFORMANCE column.
 PERF_SOURCE_HUMAN = "HUMAN"
 PERF_SOURCE_AUTO = "AUTO_PUBLIC_METRICS"
