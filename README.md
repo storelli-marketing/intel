@@ -140,6 +140,7 @@ python src/main.py refine-ideas                   # creative-director polish (re
 python src/main.py rate-calendar-ideas            # rate proposed Notion calendar ideas (read-only Notion)
 python src/main.py build-semantic-connections     # link internal proof <-> external inspiration videos
 python src/main.py evaluate-notion-idea --url "<notion-page-url>"   # score one pasted Notion idea (read-only Notion)
+python src/main.py audit-analytics-coverage        # what the dataset can/can't answer per analytic dimension
 ```
 
 (`python -m src.main <command>` works too.)
@@ -337,6 +338,144 @@ Debug with `route_debug <question>`: `decision_frame_active`,
 `decision_frame_topic`, `inherited_scope`, `optimization_goal`,
 `retrieval_scope`, `scope_broadened`, `challenge_mode`,
 `recommendation_referent`.
+
+## Explicit analytics questions
+
+A clearly specified factual question about our own numbers answers **the metric
+it actually asks about** — even mid-thread, even with a live decision frame.
+
+Production showed why this needs to be a rule rather than a keyword list:
+
+> T1: "trial vs standard reels, in terms of demographic views?"
+> → correctly: we can't split that.
+> T2: "ok sounds good… how many seconds long are our highest performing reels?"
+> → **wrong**: a shoot recommendation ("Dive Without The Sting").
+
+`"highest performing"` is an optimisation-objective cue in
+`decision_frame.detect_objective`, and the frame layer runs before the analytics
+router, so the frame claimed a question about seconds and re-ranked the idea pool.
+(The unavailability answer in T1 had also become the frame's anchor, with
+`prior_recommendation` set to the words "Data check".)
+
+`src/analytics_query.py` is the fix. `parse()` returns a structured contract —
+question type, metric, dimensions, filters, cohort, aggregation, scope source,
+`requires_private_data` — so the strategist model *interprets results* instead of
+inventing the query. Routing precedence, highest first:
+
+1. explicit hard-data / analytics question
+2. explicit topic / scope change
+3. contextual decision-frame continuation
+4. ambiguous follow-up resolution
+5. generic strategy / recommendation routes
+
+The parser is deliberately conservative and returns `None` — leaving every
+existing route untouched — for anything **prescriptive** ("what should we
+shoot?"), **predictive** ("what content is *most likely* to get comments?"),
+**ordinal** ("tell me more about the second one") or a bare transform
+("shorter"). `decision_frame` no longer anchors on an answer that establishes
+nothing, and `conversation_agent` enforces the same precedence locally.
+
+**Cohort definitions are fixed, not improvised.** "Highest performing" always
+means *reels currently classified Great* by the existing methodology
+(`performance.buckets_for_rows`, which already drops external rows and immature
+AUTO labels), and the answer says so. Name your own yardstick ("highest views",
+"by normalized performance") and yours is used instead. The brain never drifts
+silently between raw views, normalized views, Great rate and engagement.
+
+**The frame is an optional scope filter, never an override.** "How long are our
+highest-performing reels?" is global. "Within the BodyShield stuff we just
+discussed, how long are the best reels?" inherits that scope. And the mirror
+image stays a *recommendation*: "how long should the concept we just discussed
+be?" is answered as a target range built on that concept's own duration evidence
+(`analytics_query.parse_recommendation`), not as a global median and not as an
+idea list.
+
+### Duration and time as first-class dimensions
+
+`DURATION_SECONDS` answers with count, median, mean, range, buckets, the
+comparison against non-Great reels, and coverage. The source hierarchy is never
+blended and never mislabelled:
+
+1. exact `DURATION_SECONDS`
+2. Content-audit coarse buckets — **stated as approximate**, never as a median
+3. nothing — say so, and name the backfill (`Apify videoDuration` / yt-dlp)
+
+Temporal dimensions, all reported honestly by
+`python src/main.py audit-analytics-coverage`:
+
+| Group | Fields |
+| --- | --- |
+| Content | `DURATION_SECONDS` |
+| Publication | `POST_DATE`, `POST_TIMESTAMP`, derived `POST_DAY_OF_WEEK` / `POST_HOUR` |
+| Lifecycle | post age, maturity state, `METRICS_MEASURED_AT`, `PERFORMANCE_MEASURED_AT` |
+| System | last metrics refresh, last intelligence refresh, last correlation rebuild |
+
+`POST_DATE` is date-only, so the ingest no longer truncates the source timestamp:
+`build_metric_values` also writes **`POST_TIMESTAMP`** (full resolution) when the
+column exists, which is the only thing that makes hour-of-day answerable.
+Hours are **UTC** and said to be UTC — `STORELLI_POSTING_TIMEZONE` is empty by
+default because the project has never recorded which local zone Storelli
+publishes on, and guessing one would shift every bucket.
+
+A best posting time is only claimed when at least
+`_MIN_PER_TIME_WINDOW` (3) performance-labelled posts sit in each window being
+compared. Otherwise: *"the timestamps exist, the per-window sample doesn't"* —
+which is a real answer, not a dodge.
+
+**Trial vs Standard stays unavailable.** Public Apify data carries no trial-reel
+flag, so `REEL_TYPE` is never inferred. That is honest behaviour, not a bug.
+
+### Availability drives the answer
+
+Four states, deliberately distinguished — collapsing them is how a brain invents
+a metric (`social_analytics.availability`):
+
+`COLUMN_MISSING` → `COLUMN_EXISTS` → `DATA_EXISTS` → `ENOUGH_DATA`, plus
+`COMPARABLE_DATA` once *each* side of a comparison clears the bar. Nothing is
+computed until the ladder allows it.
+
+## Source integrity — citations must support claims
+
+Sources appear only when they materially support what the answer just said.
+
+The failure this closes:
+
+> Q: "What is the best time to post?" → "We don't have enough evidence."
+> Sources: three Great reels with nothing to do with posting time.
+
+Those reels were in the retrieved pack because they are the account's strongest
+content. `social_strategist.compose_strategic_answer` then attached them anyway:
+when the model cited nothing it fell back to `cited_norm or all_norm` — and an
+abstention cites nothing, so the fallback manufactured false support.
+
+`src/source_binding.py` replaces "what was in the pack" with explicit
+claim → evidence binding (`{claim_id, claim, evidence_refs, evidence_role}`) and
+these roles:
+
+| Role | Supports |
+| --- | --- |
+| `AGGREGATE_EVIDENCE` | rates, averages, lift, distribution, sample size, patterns |
+| `EXAMPLE_CONTENT` | illustrates a pattern — never proves the aggregate |
+| `SCHEMA_EVIDENCE` | field unavailable / empty / coverage limits |
+| `REFRESH_HISTORY` | last update, what changed since the previous run |
+| `EXTERNAL_REFERENCE` | inspiration / execution reference only |
+| `STRATEGIC_INFERENCE` | judgement — needs no source at all |
+
+Rules enforced before rendering:
+
+- an inline-cited `[S#]` is bound to the sentence it appears in and survives;
+- an **orphan** — in the Sources block but bound to no claim — is dropped;
+- an `EXAMPLE_CONTENT` source can never support a claim alone, and when it does
+  ride along with an aggregate it is labelled *"(example, not the aggregate)"*;
+- a **missing-data answer gets no Sources block at all**, because no reel
+  supports an absence of data;
+- so does a pure clarification or strategic inference. **Sources are optional** —
+  no block is strictly better than a misleading one.
+
+Debug with `route_debug`: `explicit_analytics_query`, `analytics_metric`,
+`analytics_dimensions`, `analytics_filters`, `analytics_scope`,
+`context_frame_ignored_reason`, `source_count_before_validation`,
+`source_count_after_validation`, `orphan_sources_removed`.
 
 ## Answer classes and data limits
 

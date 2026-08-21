@@ -80,7 +80,11 @@ class TestInsertionPlan(unittest.TestCase):
 
     def test_required_only_plan(self):
         plan = sa.insertion_plan(include_optional=False, values=[_ROW1, _ROW2])
-        self.assertEqual(plan["count"], 14)
+        # 15 = the 14 original required metric columns + POST_TIMESTAMP, which is
+        # the only place a full-resolution publication time can live (POST_DATE is
+        # date-only, so hour-of-day analytics is impossible without it).
+        self.assertEqual(plan["count"], 15)
+        self.assertIn("POST_TIMESTAMP", [p["name"] for p in plan["positions"]])
         self.assertNotIn("REACH", [p["name"] for p in plan["positions"]])
 
     def test_render_names_insertion_location(self):
@@ -159,7 +163,8 @@ class TestAutoInserter(_Guard):
 class TestStagingSchema(unittest.TestCase):
     def test_staging_columns_exact(self):
         self.assertEqual(list(sa.STAGING_COLUMNS), [
-            "LINK", "REEL_TYPE", "DURATION_SECONDS", "POST_DATE", "VIEWS", "LIKES", "COMMENTS",
+            "LINK", "REEL_TYPE", "DURATION_SECONDS", "POST_DATE", "POST_TIMESTAMP",
+            "VIEWS", "LIKES", "COMMENTS",
             "SAVES", "SHARES", "ENGAGEMENT_RATE", "FOLLOWERS_AT_POST", "AGE_SPLIT", "GENDER_SPLIT",
             "LOCATION_SPLIT", "FOLLOWER_NONFOLLOWER_SPLIT", "REACH", "IMPRESSIONS",
             "PROFILE_VISITS", "WEBSITE_CLICKS", "PRODUCT_CLICKS", "TRIAL_CLICKS", "QUALIFIED_DMS",

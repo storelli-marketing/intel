@@ -122,8 +122,43 @@ def route_debug(text: str, context: Optional[list] = None) -> str:
         except Exception:  # noqa: BLE001
             return "route_debug unavailable (import error)."
 
+        # EXPLICIT ANALYTICS takes precedence over the decision frame, so the
+        # debug view reports it first or it misrepresents the real route.
+        try:
+            import analytics_query as AQ
+            import decision_frame as _DF0
+            import source_binding as _SB0     # noqa: F401 - presence check only
+            _frame0 = _DF0.derive(context, q)
+            _aq = AQ.parse(q, frame=_frame0, context=context)
+            if _aq is not None:
+                _audit = getattr(sa, "LAST_SOURCE_AUDIT", {}) or {}
+                _ignored = ("explicit_analytics_question"
+                            if _DF0.is_active(_frame0) else "no active frame")
+                return (
+                    "*route_debug* (developer view — not shown to users):\n"
+                    f"• route: `explicit_analytics`\n"
+                    f"• explicit_analytics_query: yes\n"
+                    f"• analytics_question_type: {_aq['question_type']}\n"
+                    f"• analytics_metric: {_aq['metric']}\n"
+                    f"• analytics_dimensions: {_aq['dimensions'] or '(none)'}\n"
+                    f"• analytics_filters: {_aq['filters'] or '(none)'}\n"
+                    f"• analytics_cohort: {_aq['cohort'].get('label')}\n"
+                    f"• analytics_aggregation: {_aq['aggregation']}\n"
+                    f"• analytics_scope: {_aq['scope_source']}\n"
+                    f"• requires_private_data: "
+                    f"{'yes' if _aq['requires_private_data'] else 'no'}\n"
+                    f"• context_frame_ignored_reason: {_ignored}\n"
+                    f"• source_count_before_validation: {_audit.get('before', '—')}\n"
+                    f"• source_count_after_validation: {_audit.get('after', '—')}\n"
+                    f"• orphan_sources_removed: {_audit.get('dropped') or '(none)'}"
+                    f" ({_audit.get('reason', 'not yet computed')})\n"
+                    f"• llm_used: no (deterministic)\n"
+                    f"• likely_sources: claim-bound aggregate/schema evidence only")
+        except Exception:  # noqa: BLE001 - debug view must never raise
+            pass
+
         # Decision-frame turns take precedence over every keyword handler, so the
-        # debug view has to report them first or it misrepresents the real route.
+        # debug view has to report them next or it misrepresents the real route.
         try:
             import decision_frame as DF
             import conversation_resolver as CR2

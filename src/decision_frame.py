@@ -266,6 +266,31 @@ def pattern_strength(anchor_text: str, evidence_refs=None) -> str:
     return order[min(order.index(by_refs), order.index(by_language))]
 
 
+def _establishes_nothing(text: str) -> bool:
+    """True when an answer decides nothing a later turn could continue.
+
+    A missing-data reply ("I can't split trial vs standard — there's no
+    trial/standard indicator in the data") is a legitimate, useful answer, but it
+    establishes no decision, no scope and no recommendation. Letting it anchor a
+    frame made the NEXT turn inherit a phantom decision whose recommendation was
+    a stray bullet label. A reply that reports an absence AND names no product or
+    ICP is skipped when choosing the anchor.
+    """
+    txt = str(text or "")
+    if not txt.strip():
+        return True
+    try:
+        import source_binding as SB
+        if not SB.is_missing_data_answer(txt):
+            return False
+    except Exception:  # noqa: BLE001 - never let this check break derivation
+        return False
+    # An unavailability answer that still names a real product/ICP scope may be
+    # a genuine scoped finding ("for Parents the evidence is thin"), so keep it.
+    return not (_find_vocab(txt.lower(), _PRODUCT_VOCAB)
+                or _find_vocab(txt.lower(), _ICP_VOCAB))
+
+
 def derive(context: Optional[list], user_text: str = "",
            state: Optional[dict] = None) -> dict:
     """Read the active decision frame out of the conversation.
@@ -315,6 +340,8 @@ def derive(context: Optional[list], user_text: str = "",
         role, txt = turns[i]
         if role != "assistant" or not txt.strip():
             continue
+        if _establishes_nothing(txt):
+            continue
         probe = new_frame()
         for key, vocab in (("product", _PRODUCT_VOCAB), ("icp", _ICP_VOCAB)):
             found = _find_vocab(txt, vocab)
@@ -325,7 +352,17 @@ def derive(context: Optional[list], user_text: str = "",
             anchor_asked = next((t for r, t in reversed(turns[start:i]) if r == "user"), "")
             break
     if not anchor:
-        anchor = assistants[-1]
+        # Last resort: the most recent answer that actually established something.
+        # An answer whose whole content is "I can't tell you that" decides nothing,
+        # so it must never become the anchor — that is how a Trial-vs-Standard
+        # unavailability reply ended up as a live creative frame whose
+        # `prior_recommendation` was the words "Data check".
+        for txt in reversed(assistants):
+            if txt.strip() and not _establishes_nothing(txt):
+                anchor = txt
+                break
+        if not anchor:
+            return frame
         anchor_asked = next((t for r, t in reversed(turns) if r == "user"), "")
 
     # Scope comes from the ANCHOR answer (what was established), widened by the

@@ -269,6 +269,23 @@ def _maybe_frame(text: str, ctx: list, act: str, key: str, sheets, gemini):
     """
     import decision_frame as DF
     import frame_reasoning as FR
+
+    # An EXPLICIT analytics question is never a frame continuation, however
+    # strongly its wording resembles one. "How many seconds long are our highest
+    # performing reels?" contains an optimisation-objective cue ("highest
+    # performing") purely as a COHORT SELECTOR; reading it as a new criterion for
+    # the live creative decision is what produced a shoot recommendation to a
+    # question about seconds. social_brain routes these before us; this is the
+    # same rule enforced locally so the agent stays correct when called directly.
+    try:
+        import analytics_query
+        if analytics_query.is_explicit_analytics_question(text):
+            LAST_DEBUG.update(decision_frame_active="no",
+                              context_frame_ignored_reason="explicit_analytics_question")
+            return None
+    except Exception as e:  # noqa: BLE001
+        log.info("analytics precedence check skipped in frame: %s", e)
+
     state = CS.build_state(ctx, text, key)
     frame = DF.derive(ctx, text, state)
 

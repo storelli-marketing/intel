@@ -111,6 +111,7 @@ _OPTIONAL_FIELDS = ("reach", "impressions", "profile_visits", "website_clicks",
 # Missing-field -> the exact column name we recommend adding (Task 5 / schema plan).
 _RECOMMENDED_COLUMNS = {
     "reel_type": "REEL_TYPE", "duration": "DURATION_SECONDS", "date": "POST_DATE",
+    "timestamp": "POST_TIMESTAMP",
     "views": "VIEWS", "likes": "LIKES", "comments": "COMMENTS", "saves": "SAVES",
     "shares": "SHARES", "engagement_rate": "ENGAGEMENT_RATE", "followers": "FOLLOWERS_AT_POST",
     "demo_age": "AGE_SPLIT", "demo_gender": "GENDER_SPLIT", "demo_location": "LOCATION_SPLIT",
@@ -120,7 +121,8 @@ _OPTIONAL_COLUMNS = ("REACH", "IMPRESSIONS", "PROFILE_VISITS", "WEBSITE_CLICKS",
                      "PRODUCT_CLICKS", "TRIAL_CLICKS", "QUALIFIED_DMS")
 
 # Required metric columns to add to the POC tab, in insertion order.
-_REQUIRED_METRIC_COLUMNS = ("REEL_TYPE", "DURATION_SECONDS", "POST_DATE", "VIEWS", "LIKES",
+_REQUIRED_METRIC_COLUMNS = ("REEL_TYPE", "DURATION_SECONDS", "POST_DATE",
+                            "POST_TIMESTAMP", "VIEWS", "LIKES",
                             "COMMENTS", "SAVES", "SHARES", "ENGAGEMENT_RATE",
                             "FOLLOWERS_AT_POST", "AGE_SPLIT", "GENDER_SPLIT",
                             "LOCATION_SPLIT", "FOLLOWER_NONFOLLOWER_SPLIT")
@@ -137,7 +139,8 @@ _NUMERIC_METRIC_COLUMNS = {"DURATION_SECONDS", "VIEWS", "LIKES", "COMMENTS", "SA
                            "QUALIFIED_DMS"}
 _SPLIT_METRIC_COLUMNS = {"AGE_SPLIT", "GENDER_SPLIT", "LOCATION_SPLIT",
                          "FOLLOWER_NONFOLLOWER_SPLIT"}
-_TEXT_METRIC_COLUMNS = {"REEL_TYPE", "POST_DATE", "SOURCE", "IMPORTED_AT", "NOTES", "LINK"}
+_TEXT_METRIC_COLUMNS = {"REEL_TYPE", "POST_DATE", "POST_TIMESTAMP", "SOURCE",
+                        "IMPORTED_AT", "NOTES", "LINK"}
 
 # Performance metric hierarchy (best first). Tier 1: engagement rate. Tier 2:
 # saves/comments/shares. Tier 3: views/likes. Tier 4: the manual Great/Good/
@@ -2251,3 +2254,1177 @@ def render_duration_bucket_audit(a: dict) -> str:
     lines.append("  Caveat: these are coarse buckets, NOT exact seconds. Add DURATION_SECONDS "
                  "for exact analysis.")
     return "\n".join(lines)
+
+
+# ===========================================================================
+# EXPLICIT ANALYTICS QUERIES (analytics_query contract)
+# ---------------------------------------------------------------------------
+# The contract-driven half of this module: `analytics_query.parse()` decides WHAT
+# was asked, the functions below decide whether we can answer it and compute the
+# real numbers, and the renderers turn that into ordinary strategist prose.
+#
+# Availability ladder (§10) — these four are NOT the same thing, and collapsing
+# them is how a brain ends up inventing a metric:
+#   COLUMN_EXISTS    the field is modelled in the sheet
+#   DATA_EXISTS      at least one row actually carries a value
+#   ENOUGH_DATA      enough values to read a pattern from
+#   COMPARABLE_DATA  enough values in EACH cohort being compared
+# ===========================================================================
+# Last source-relevance decision on the analytics path (route_debug only).
+LAST_SOURCE_AUDIT: dict = {}
+
+COLUMN_MISSING = "COLUMN_MISSING"
+COLUMN_EXISTS = "COLUMN_EXISTS"
+DATA_EXISTS = "DATA_EXISTS"
+ENOUGH_DATA = "ENOUGH_DATA"
+COMPARABLE_DATA = "COMPARABLE_DATA"
+
+# Minimum values before we read anything into a distribution, and minimum per
+# side before we compare two cohorts. Deliberately modest: this brain's whole
+# point is being honest about small samples, not refusing to look at them.
+_MIN_FOR_PATTERN = 5
+_MIN_PER_COHORT = 3
+# Posting-time windows need more than a couple of posts each or "best time" is
+# noise dressed up as a finding.
+_MIN_PER_TIME_WINDOW = 3
+
+# analytics_query metric -> the logical field name used by _FIELD_ALIASES.
+_METRIC_TO_FIELD = {
+    "DURATION_SECONDS": "duration", "VIEWS": "views", "LIKES": "likes",
+    "COMMENTS": "comments", "SHARES": "shares", "ENGAGEMENT_RATE": "engagement_rate",
+    "REEL_TYPE": "reel_type", "AGE_SPLIT": "demo_age", "GENDER_SPLIT": "demo_gender",
+    "PERFORMANCE": "performance_label",
+}
+
+# Full-resolution publication timestamp. POST_DATE is date-only by construction,
+# so hour-of-day analysis needs its own column; when it is absent we can still do
+# day-of-week from POST_DATE alone and say so.
+_TIMESTAMP_ALIASES = ("post_timestamp", "post timestamp", "published_at",
+                      "published at", "posted_at", "posted at", "timestamp")
+_DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+              "Saturday", "Sunday")
+
+
+def _internal_rows_only(rows: list[dict]) -> list[dict]:
+    """Internal Storelli rows with a LINK. External inspiration is never proof."""
+    return [r for r in (rows or [])
+            if not performance.is_reference_row(r) and str(r.get("LINK", "")).strip()]
+
+
+def availability(metric: str, rows: list[dict], columns: list[str],
+                 min_n: int = _MIN_FOR_PATTERN) -> dict:
+    """Walk the availability ladder for one metric. Never computes the metric —
+    only reports how far up the ladder we actually are."""
+    field = _METRIC_TO_FIELD.get(metric)
+    col = _column_for_field(columns, field) if field else None
+    internal = _internal_rows_only(rows)
+    if metric == "PERFORMANCE":
+        # The performance label is modelled by definition; what varies is how
+        # many rows carry a recognized, mature value.
+        buckets = performance.buckets_for_rows(internal)
+        n = len(buckets)
+        state = (ENOUGH_DATA if n >= min_n else DATA_EXISTS if n else COLUMN_EXISTS)
+        return {"metric": metric, "column": "PERFORMANCE", "state": state,
+                "n_with_value": n, "n_rows": len(internal), "min_n": min_n}
+    if not col:
+        return {"metric": metric, "column": None, "state": COLUMN_MISSING,
+                "n_with_value": 0, "n_rows": len(internal), "min_n": min_n}
+    n = sum(1 for r in internal if str(r.get(col, "")).strip() != "")
+    state = (ENOUGH_DATA if n >= min_n else DATA_EXISTS if n else COLUMN_EXISTS)
+    return {"metric": metric, "column": col, "state": state, "n_with_value": n,
+            "n_rows": len(internal), "min_n": min_n}
+
+
+def _apply_filters(rows: list[dict], filters: dict) -> list[dict]:
+    """Scope rows to the contract's product/ICP filters (substring, case-folded,
+    so hand-typed 'BodyShield GK Leggings' matches a 'bodyshield' filter)."""
+    out = list(rows)
+    for key, col in (("product", "Product"), ("icp", "ICP")):
+        wanted = [str(v).strip().lower() for v in (filters.get(key) or []) if str(v).strip()]
+        if not wanted:
+            continue
+        out = [r for r in out
+               if any(w in _lower(r.get(col, "")) or _lower(r.get(col, "")) in w
+                      for w in wanted)]
+    return out
+
+
+def cohort_rows(rows: list[dict], aq: dict) -> dict:
+    """Resolve the contract's cohort into concrete rows.
+
+    §4 — one definition of "highest performing", stated in the answer: reels
+    currently classified Great by the established methodology
+    (`performance.buckets_for_rows`, which already drops external rows and
+    immature AUTO labels). A user-named yardstick ("highest views") wins instead.
+    """
+    internal = _internal_rows_only(rows)
+    scoped = _apply_filters(internal, aq.get("filters") or {})
+    cohort = aq.get("cohort") or {}
+    basis = cohort.get("basis", "all")
+    buckets = performance.buckets_for_rows(scoped)
+
+    if basis == "performance_label":
+        want = cohort.get("performance", "Great")
+        target = performance.bucket_from_performance(want) or want
+        selected = [r for r in scoped if buckets.get(r["_row"]) == target]
+        rest = [r for r in scoped if r["_row"] in buckets and buckets.get(r["_row"]) != target]
+        return {"rows": selected, "rest": rest, "scoped": scoped,
+                "definition": cohort.get("label", f"reels classified {want}"),
+                "basis": basis, "labelled": len(buckets)}
+    if basis in ("metric", "normalized"):
+        metric_field = _METRIC_TO_FIELD.get(cohort.get("metric", "VIEWS"), "views")
+        ranked = []
+        for r in scoped:
+            val = _num(_row_get_ci(r, *_FIELD_ALIASES.get(metric_field, (metric_field,))))
+            if val is None:
+                continue
+            if basis == "normalized":
+                followers = _num(_row_get_ci(r, *_FIELD_ALIASES["followers"])) \
+                    or float(config.STORELLI_IG_FOLLOWER_COUNT or 0) or None
+                val = (val / followers) if followers else None
+                if val is None:
+                    continue
+            ranked.append((val, r))
+        ranked.sort(key=lambda p: p[0], reverse=True)
+        top = [r for _v, r in ranked[: max(1, int(aq.get("top_n") or 5))]]
+        return {"rows": top, "rest": [r for _v, r in ranked[len(top):]], "scoped": scoped,
+                "definition": cohort.get("label", "ranked by the metric you named"),
+                "basis": basis, "labelled": len(ranked), "ranked": ranked}
+    return {"rows": scoped, "rest": [], "scoped": scoped,
+            "definition": cohort.get("label", "all analyzed internal reels"),
+            "basis": basis, "labelled": len(buckets)}
+
+
+# ---------------------------------------------------------------------------
+# descriptive statistics (pure)
+# ---------------------------------------------------------------------------
+def _stats(values: list) -> dict:
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return {}
+    n = len(vals)
+    median = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
+    return {"n": n, "median": round(median, 1), "mean": round(sum(vals) / n, 1),
+            "min": round(vals[0], 1), "max": round(vals[-1], 1), "values": vals}
+
+
+def _bucket_counts(values: list) -> dict:
+    counts: dict[str, int] = {}
+    for v in values:
+        b = _duration_bucket(v)
+        counts[b] = counts.get(b, 0) + 1
+    return counts
+
+
+def _pct_under(values: list, threshold: float) -> Optional[int]:
+    if not values:
+        return None
+    return round(100 * sum(1 for v in values if v < threshold) / len(values))
+
+
+def _threshold_in_question(text: str) -> Optional[float]:
+    """"under 10 seconds" / "below 15s" -> 10.0 / 15.0."""
+    m = re.search(r"\b(?:under|below|less than|shorter than|<)\s*(\d{1,3})\b", _lower(text))
+    return float(m.group(1)) if m else None
+
+
+# ---------------------------------------------------------------------------
+# DURATION — first-class metric (§5/§6)
+# ---------------------------------------------------------------------------
+def duration_profile(aq: dict, rows: Optional[list[dict]] = None,
+                     columns: Optional[list[str]] = None,
+                     audit_buckets: Optional[dict] = None) -> dict:
+    """Real duration analytics for the contract's cohort.
+
+    Source hierarchy (§6), never blended and never mislabelled:
+      1. exact DURATION_SECONDS               -> source='exact'
+      2. Content audit coarse duration bucket -> source='bucket' (approximate)
+      3. nothing                              -> source='none'
+    """
+    if rows is None or columns is None:
+        rows, columns, err = _internal_sheet()
+        if err:
+            return {"ok": False, "error": err}
+    avail = availability("DURATION_SECONDS", rows, columns)
+    coh = cohort_rows(rows, aq)
+    duration_col = avail.get("column")
+
+    exact, rest_exact = [], []
+    if duration_col:
+        for r in coh["rows"]:
+            s = _parse_seconds(r.get(duration_col))
+            if s is not None:
+                exact.append(s)
+        for r in coh["rest"]:
+            s = _parse_seconds(r.get(duration_col))
+            if s is not None:
+                rest_exact.append(s)
+
+    out = {"ok": True, "error": "", "availability": avail, "cohort": coh["definition"],
+           "cohort_size": len(coh["rows"]), "scoped": len(coh["scoped"]),
+           "threshold": _threshold_in_question(aq.get("raw", "")),
+           "basis": coh["basis"]}
+
+    if exact:
+        st_ = _stats(exact)
+        out.update({
+            "source": "exact", "stats": st_, "coverage": len(exact),
+            "coverage_pct": (round(100 * len(exact) / len(coh["rows"]))
+                             if coh["rows"] else 0),
+            "buckets": _bucket_counts(exact),
+            "comparison": _stats(rest_exact) if len(rest_exact) >= _MIN_PER_COHORT else {},
+            "comparable": (COMPARABLE_DATA if len(exact) >= _MIN_PER_COHORT
+                           and len(rest_exact) >= _MIN_PER_COHORT else avail["state"]),
+        })
+        if out["threshold"] is not None:
+            out["pct_under"] = _pct_under(exact, out["threshold"])
+            if rest_exact:
+                out["rest_pct_under"] = _pct_under(rest_exact, out["threshold"])
+        return out
+
+    # ---- coarse bucket fallback: approximate, and always SAID to be ----------
+    links = {str(r.get("LINK", "")).strip() for r in coh["rows"] if str(r.get("LINK", "")).strip()}
+    if audit_buckets is None:
+        audit_buckets = content_audit_duration_buckets(links)
+    matched = {lk: b for lk, b in (audit_buckets or {}).items() if lk in links}
+    if matched:
+        dist: dict[str, int] = {}
+        for b in matched.values():
+            dist[b] = dist.get(b, 0) + 1
+        out.update({"source": "bucket", "buckets": dist,
+                    "dominant_bucket": max(dist.items(), key=lambda kv: kv[1])[0],
+                    "coverage": len(matched),
+                    "coverage_pct": round(100 * len(matched) / len(links)) if links else 0,
+                    "stats": {}, "comparison": {}})
+        return out
+
+    out.update({"source": "none", "stats": {}, "buckets": {}, "coverage": 0,
+                "comparison": {}, "backfill_field": "DURATION_SECONDS",
+                "recommended_source": "Apify videoDuration / yt-dlp info['duration']"})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# TIME — publication timestamp, day of week, hour of day (§7/§8)
+# ---------------------------------------------------------------------------
+def _parse_timestamp(raw: str):
+    """Parse a publication timestamp/date cell -> (datetime|None, has_time)."""
+    from datetime import datetime, timezone as _tz
+    s = str(raw or "").strip()
+    if not s:
+        return None, False
+    s = s.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+        has_time = bool(re.search(r"\d{1,2}:\d{2}", s))
+        return (dt if dt.tzinfo else dt.replace(tzinfo=_tz.utc)), has_time
+    except ValueError:
+        pass
+    for fmt, has_time in (("%Y-%m-%d %H:%M:%S", True), ("%Y-%m-%dT%H:%M:%S", True),
+                          ("%Y-%m-%d %H:%M", True), ("%Y-%m-%d", False),
+                          ("%d/%m/%Y", False), ("%m/%d/%Y", False)):
+        try:
+            return datetime.strptime(s[:19], fmt).replace(tzinfo=_tz.utc), has_time
+        except ValueError:
+            continue
+    return None, False
+
+
+def temporal_fields(rows: Optional[list[dict]] = None,
+                    columns: Optional[list[str]] = None) -> dict:
+    """Audit which temporal dimensions the dataset actually supports (§7).
+
+    Nothing here is derived from a field the source didn't provide: hour-of-day
+    exists only when a real timestamp with a time component exists.
+    """
+    if rows is None or columns is None:
+        rows, columns, err = _internal_sheet()
+        if err:
+            return {"ok": False, "error": err}
+    internal = _internal_rows_only(rows)
+    ts_col = None
+    have = {str(c).strip().lower(): str(c).strip() for c in (columns or [])}
+    for alias in _TIMESTAMP_ALIASES:
+        if alias in have:
+            ts_col = have[alias]
+            break
+    date_col = _column_for_field(columns, "date")
+
+    with_date, with_time = 0, 0
+    for r in internal:
+        dt, has_time = (None, False)
+        if ts_col:
+            dt, has_time = _parse_timestamp(r.get(ts_col))
+        if dt is None and date_col:
+            dt, has_time = _parse_timestamp(r.get(date_col))
+        if dt is not None:
+            with_date += 1
+            if has_time:
+                with_time += 1
+    _tz, tz_label, tz_is_utc = config.posting_timezone()
+    return {"ok": True, "error": "", "rows": len(internal),
+            "timestamp_column": ts_col, "date_column": date_col,
+            "with_date": with_date, "with_time": with_time,
+            "day_of_week_derivable": with_date > 0,
+            "hour_derivable": with_time > 0,
+            "timezone": tz_label, "timezone_is_utc_default": tz_is_utc,
+            "post_age_derivable": with_date > 0,
+            "maturity_days": config.PERFORMANCE_MATURITY_DAYS}
+
+
+def posting_time_profile(aq: dict, rows: Optional[list[dict]] = None,
+                         columns: Optional[list[str]] = None) -> dict:
+    """Day-of-week / hour-of-day performance, or an honest "not enough per
+    window" (§8). A best posting time is only ever claimed when each window it
+    compares actually carries enough mature posts."""
+    if rows is None or columns is None:
+        rows, columns, err = _internal_sheet()
+        if err:
+            return {"ok": False, "error": err}
+    tf = temporal_fields(rows, columns)
+    internal = _internal_rows_only(rows)
+    scoped = _apply_filters(internal, aq.get("filters") or {})
+    buckets = performance.buckets_for_rows(scoped)
+    wants_hour = aq.get("metric") == "POST_HOUR"
+
+    ts_col, date_col = tf.get("timestamp_column"), tf.get("date_column")
+    tzinfo, tz_label, _utc_default = config.posting_timezone()
+    by_day: dict[str, dict] = {}
+    by_hour: dict[int, dict] = {}
+    n_placed = 0
+    for r in scoped:
+        dt, has_time = (None, False)
+        if ts_col:
+            dt, has_time = _parse_timestamp(r.get(ts_col))
+        if dt is None and date_col:
+            dt, has_time = _parse_timestamp(r.get(date_col))
+        if dt is None:
+            continue
+        local = dt.astimezone(tzinfo)
+        bucket = buckets.get(r["_row"])
+        n_placed += 1
+        day = _DAY_NAMES[local.weekday()]
+        slot = by_day.setdefault(day, {"total": 0, "great": 0, "labelled": 0})
+        slot["total"] += 1
+        if bucket:
+            slot["labelled"] += 1
+            if performance.is_positive(bucket):
+                slot["great"] += 1
+        if has_time:
+            hslot = by_hour.setdefault(local.hour, {"total": 0, "great": 0, "labelled": 0})
+            hslot["total"] += 1
+            if bucket:
+                hslot["labelled"] += 1
+                if performance.is_positive(bucket):
+                    hslot["great"] += 1
+
+    dim = by_hour if wants_hour else by_day
+    windows_with_enough = [k for k, v in dim.items() if v["labelled"] >= _MIN_PER_TIME_WINDOW]
+    sufficient = len(windows_with_enough) >= 2
+    best = ""
+    if sufficient:
+        ranked = sorted(((k, v) for k, v in dim.items()
+                         if v["labelled"] >= _MIN_PER_TIME_WINDOW),
+                        key=lambda kv: (kv[1]["great"] / kv[1]["labelled"], kv[1]["labelled"]),
+                        reverse=True)
+        best = str(ranked[0][0]) if ranked else ""
+    return {"ok": True, "error": "", "temporal": tf, "dimension": "hour" if wants_hour else "day",
+            "by_day": by_day, "by_hour": by_hour, "placed": n_placed,
+            "scoped": len(scoped), "labelled": len(buckets),
+            "windows_with_enough": sorted(str(w) for w in windows_with_enough),
+            "min_per_window": _MIN_PER_TIME_WINDOW, "sufficient": sufficient,
+            "best_window": best, "timezone": tz_label,
+            "hour_derivable": tf.get("hour_derivable", False),
+            "day_derivable": tf.get("day_of_week_derivable", False)}
+
+
+def post_age_profile(aq: dict, rows: Optional[list[dict]] = None,
+                     columns: Optional[list[str]] = None) -> dict:
+    """"How old is the latest reel?" — lifecycle temporal dimension."""
+    if rows is None or columns is None:
+        rows, columns, err = _internal_sheet()
+        if err:
+            return {"ok": False, "error": err}
+    internal = _apply_filters(_internal_rows_only(rows), aq.get("filters") or {})
+    ages = []
+    for r in internal:
+        age = performance.post_age_days(r)
+        if age is not None:
+            ages.append((age, r))
+    ages.sort(key=lambda p: p[0])
+    if not ages:
+        return {"ok": True, "error": "", "n": 0, "rows": len(internal),
+                "newest_days": None, "oldest_days": None}
+    newest_age, newest = ages[0]
+    return {"ok": True, "error": "", "n": len(ages), "rows": len(internal),
+            "newest_days": round(newest_age, 1),
+            "newest_link": str(newest.get("LINK", "")).strip(),
+            "newest_performance": str(newest.get("PERFORMANCE", "")).strip(),
+            "newest_mature": performance.is_mature(newest),
+            "oldest_days": round(ages[-1][0], 1),
+            "maturity_days": config.PERFORMANCE_MATURITY_DAYS,
+            "without_date": len(internal) - len(ages)}
+
+
+def metric_profile(aq: dict, rows: Optional[list[dict]] = None,
+                   columns: Optional[list[str]] = None) -> dict:
+    """Descriptive / ranking analytics for a raw numeric metric (comments, views,
+    likes, shares, engagement rate)."""
+    if rows is None or columns is None:
+        rows, columns, err = _internal_sheet()
+        if err:
+            return {"ok": False, "error": err}
+    metric = aq["metric"]
+    avail = availability(metric, rows, columns)
+    coh = cohort_rows(rows, aq)
+    col = avail.get("column")
+
+    def _collect(rs):
+        out = []
+        for r in rs:
+            v = _num(r.get(col)) if col else None
+            if v is not None:
+                out.append({"value": v, "link": str(r.get("LINK", "")).strip(),
+                            "performance": str(r.get("PERFORMANCE", "")).strip(),
+                            "product": str(r.get("Product", "")).strip(),
+                            "_row": r.get("_row")})
+        out.sort(key=lambda d: d["value"], reverse=True)
+        return out
+
+    # Descriptive statistics describe the WHOLE scoped population, never the
+    # top-N slice: "the median is X across 5 reels" after ranking the top 5 would
+    # be the median of the winners, quietly answering a different question.
+    population = _collect(coh["scoped"])
+    ranked = _collect(coh["rows"]) if coh["basis"] != "all" else population
+    return {"ok": True, "error": "", "metric": metric, "availability": avail,
+            "cohort": coh["definition"], "cohort_size": len(coh["rows"]),
+            "stats": _stats([d["value"] for d in population]),
+            "top": ranked[: max(1, int(aq.get("top_n") or 5))],
+            "n_with_value": len(population)}
+
+
+def row_count_profile(aq: dict, rows: Optional[list[dict]] = None,
+                      columns: Optional[list[str]] = None) -> dict:
+    """"How many BodyShield reels do we have?" — a question about our sample."""
+    if rows is None or columns is None:
+        rows, columns, err = _internal_sheet()
+        if err:
+            return {"ok": False, "error": err}
+    internal = _internal_rows_only(rows)
+    scoped = _apply_filters(internal, aq.get("filters") or {})
+    buckets = performance.buckets_for_rows(scoped)
+    great = sum(1 for b in buckets.values() if performance.is_positive(b))
+    analyzed = sum(1 for r in scoped
+                   if any(str(r.get(c, "")).strip() == "1" for c in taxonomy.all_signal_columns()))
+    import analytics_query as AQ
+    scope_bits = []
+    for key in ("product", "icp"):
+        for v in (aq.get("filters") or {}).get(key, []) or []:
+            scope_bits.append(AQ.display(v))
+    return {"ok": True, "error": "", "total": len(scoped), "library": len(internal),
+            "analyzed": analyzed, "labelled": len(buckets), "great": great,
+            "scope": ", ".join(scope_bits), "pending_maturity":
+                len(performance.pending_maturity_rows(scoped))}
+
+
+def performance_slice_profile(aq: dict, rows: Optional[list[dict]] = None,
+                              columns: Optional[list[str]] = None) -> dict:
+    """"What performs better: POV or tutorial?" — Great-rate per named taxonomy
+    option, with the sample size behind each side."""
+    if rows is None or columns is None:
+        rows, columns, err = _internal_sheet()
+        if err:
+            return {"ok": False, "error": err}
+    internal = _apply_filters(_internal_rows_only(rows), aq.get("filters") or {})
+    buckets = performance.buckets_for_rows(internal)
+    terms = (aq.get("filters") or {}).get("taxonomy_terms") or []
+    sides = []
+    for term in terms:
+        col = None
+        for layer, options in taxonomy.LAYERS.items():
+            for opt in options:
+                if taxonomy.slug(opt) == taxonomy.slug(term) or _lower(opt) == _lower(term):
+                    col = taxonomy.column_for(layer, opt)
+                    break
+            if col:
+                break
+        if not col:
+            continue
+        tagged = [r for r in internal if str(r.get(col, "")).strip() == "1"
+                  and r["_row"] in buckets]
+        great = sum(1 for r in tagged if performance.is_positive(buckets[r["_row"]]))
+        sides.append({"label": term, "column": col, "n": len(tagged), "great": great,
+                      "great_rate": round(100 * great / len(tagged)) if tagged else None})
+    sides.sort(key=lambda s: (s["great_rate"] if s["great_rate"] is not None else -1,
+                              s["n"]), reverse=True)
+    comparable = all(s["n"] >= _MIN_PER_COHORT for s in sides) and len(sides) >= 2
+    return {"ok": True, "error": "", "sides": sides, "comparable": comparable,
+            "labelled": len(buckets), "min_per_cohort": _MIN_PER_COHORT}
+
+
+# ---------------------------------------------------------------------------
+# renderers — backend structured, Slack conversational (§18)
+# ---------------------------------------------------------------------------
+# Every renderer builds a ClaimLedger as it writes, so each cited source is
+# bound to the exact claim it supports and a missing-data answer renders no
+# Sources block at all (§11/§13/§14).
+_DIRECTIONAL = ("I'd treat that as directional rather than an optimal number — "
+                "duration and performance move together here, not necessarily "
+                "one because of the other.")
+
+
+def _fmt_secs(v) -> str:
+    """12.0 -> '12s'; 12.4 -> '12.4s'."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    return f"{int(f)}s" if abs(f - int(f)) < 0.05 else f"{f:.1f}s"
+
+
+def _source_line_for_row(row_link: str, label: str) -> str:
+    return f"<{row_link}|{label}>" if row_link else label
+
+
+def _cohort_sentence(aq: dict, definition: str) -> str:
+    """State the definition once, plainly, when the user's phrasing was the
+    ambiguous kind (§4) — never a silent switch between yardsticks."""
+    if not (aq.get("cohort") or {}).get("stated"):
+        return ""
+    return f"I'm reading that as {definition}."
+
+
+def _scope_suffix(aq: dict) -> str:
+    import analytics_query as AQ
+    bits = []
+    for key in ("product", "icp"):
+        for v in (aq.get("filters") or {}).get(key, []) or []:
+            bits.append(AQ.display(v))
+    if not bits:
+        return ""
+    where = " / ".join(bits)
+    if aq.get("scope_source") == "inherited":
+        return f" (staying inside {where}, as we were discussing)"
+    return f" (within {where})"
+
+
+def _render_duration_answer(aq: dict, prof: dict) -> tuple:
+    """(text, ledger, source_pairs)."""
+    import source_binding as SB
+    ledger = SB.ClaimLedger()
+    pairs: list = []
+    if not prof.get("ok"):
+        return (f"I can't reach the analyzed sheet right now, so I don't want to "
+                f"guess at reel length. ({prof.get('error')})", ledger, pairs)
+
+    scope = _scope_suffix(aq)
+    definition = prof.get("cohort", "")
+    lead = _cohort_sentence(aq, definition)
+
+    # An empty cohort is a SCOPE answer, not a schema answer: saying "there's no
+    # duration column" when the column is fine but the filter matched nothing
+    # would send someone off to fix the wrong problem.
+    if not prof.get("cohort_size"):
+        ledger.add("no reels match that scope", [], SB.SCHEMA_EVIDENCE)
+        return (f"I don't have any reels matching that{scope} — {prof.get('scoped', 0)} "
+                f"in scope, none of them in the cohort you asked about — so there's "
+                f"nothing to measure the length of yet.", ledger, pairs)
+
+    # ---- exact seconds ----------------------------------------------------
+    if prof.get("source") == "exact":
+        s = prof["stats"]
+        n, cov_pct = s["n"], prof.get("coverage_pct", 0)
+        parts = []
+        if lead:
+            parts.append(lead)
+        skew = ("skew short" if s["median"] <= 15 else
+                "sit in the mid-length range" if s["median"] <= 30 else "run long")
+        parts.append(f"They {skew}: the median is {_fmt_secs(s['median'])} across "
+                     f"{n} reel{'s' if n != 1 else ''} with an exact duration"
+                     f"{scope}, average {_fmt_secs(s['mean'])}, "
+                     f"range {_fmt_secs(s['min'])}–{_fmt_secs(s['max'])}.")
+        ledger.add(f"median duration is {s['median']}s across {n} reels",
+                   [f"S{len(pairs) + 1}"], SB.AGGREGATE_EVIDENCE)
+        pairs.append((f"S{len(pairs) + 1}",
+                      f"{n} internal reels with exact DURATION_SECONDS "
+                      f"({cov_pct}% of that cohort)"))
+
+        buckets = prof.get("buckets") or {}
+        if buckets:
+            top_bucket, top_count = max(buckets.items(), key=lambda kv: kv[1])
+            parts.append(f"The heaviest cluster is {top_bucket} "
+                         f"({top_count} of {n}).")
+            ledger.add(f"heaviest duration cluster is {top_bucket}",
+                       [pairs[0][0]], SB.AGGREGATE_EVIDENCE)
+
+        thr = prof.get("threshold")
+        if thr is not None and prof.get("pct_under") is not None:
+            under = prof["pct_under"]
+            cnt = round(under * n / 100)
+            line = (f"{cnt} of the {n} ({under}%) come in under "
+                    f"{_fmt_secs(thr)}")
+            if prof.get("rest_pct_under") is not None:
+                line += f", against {prof['rest_pct_under']}% of the rest"
+            parts.append(line + ".")
+            ledger.add(f"{under}% are under {thr}s", [pairs[0][0]], SB.AGGREGATE_EVIDENCE)
+
+        comp = prof.get("comparison") or {}
+        if comp and thr is None:
+            delta = s["median"] - comp["median"]
+            direction = ("shorter" if delta < 0 else "longer" if delta > 0
+                         else "the same length")
+            if direction == "the same length":
+                parts.append(f"That's about the same as the rest of the labelled "
+                             f"library (median {_fmt_secs(comp['median'])}, "
+                             f"n={comp['n']}).")
+            else:
+                parts.append(f"That's {_fmt_secs(abs(delta))} {direction} than the "
+                             f"rest of the labelled library "
+                             f"(median {_fmt_secs(comp['median'])}, n={comp['n']}).")
+            ledger.add(f"cohort median vs rest ({comp['median']}s, n={comp['n']})",
+                       [pairs[0][0]], SB.AGGREGATE_EVIDENCE)
+
+        if cov_pct < 100:
+            parts.append(f"Worth knowing: only {s['n']} of "
+                         f"{prof.get('cohort_size', s['n'])} in that cohort carry an "
+                         f"exact duration, so this reads the ones we can measure.")
+            ledger.add("duration coverage is partial", [pairs[0][0]], SB.SCHEMA_EVIDENCE)
+        parts.append(_DIRECTIONAL)
+        return (" ".join(p for p in parts if p), ledger, pairs)
+
+    # ---- coarse bucket proxy — approximate, and said to be ----------------
+    if prof.get("source") == "bucket":
+        dist = prof.get("buckets") or {}
+        cov, cov_pct = prof.get("coverage", 0), prof.get("coverage_pct", 0)
+        spread = ", ".join(f"{b}: {c}" for b, c in
+                           sorted(dist.items(), key=lambda kv: -kv[1])[:4])
+        pairs.append(("S1", f"Content audit coarse duration buckets for {cov} reels "
+                            f"({cov_pct}% of that cohort)"))
+        ledger.add(f"dominant duration bucket is {prof.get('dominant_bucket')}",
+                   ["S1"], SB.AGGREGATE_EVIDENCE)
+        ledger.add("only bucketed duration is available, not exact seconds",
+                   ["S1"], SB.SCHEMA_EVIDENCE)
+        text = (f"{lead + ' ' if lead else ''}I don't have exact seconds for those — "
+                f"only the coarse Content-audit length buckets, for {cov} of them "
+                f"({cov_pct}%), so this is approximate rather than a measured median. "
+                f"On that basis they land mostly in {prof.get('dominant_bucket')} "
+                f"({spread}). To get a real median we'd need DURATION_SECONDS "
+                f"backfilled from the Apify/yt-dlp video metadata.")
+        return (text, ledger, pairs)
+
+    # ---- genuinely absent -------------------------------------------------
+    avail = prof.get("availability") or {}
+    reason = ("there's no duration column in the sheet at all"
+              if avail.get("state") == COLUMN_MISSING
+              else "the duration column exists but no reel carries a value yet")
+    ledger.add("duration is not available", [], SB.SCHEMA_EVIDENCE)
+    text = (f"{lead + ' ' if lead else ''}I can't tell you how long they are — "
+            f"{reason}. Nothing in the current data lets me infer it, and I'm not "
+            f"going to estimate seconds. Backfilling DURATION_SECONDS from the "
+            f"Apify/yt-dlp video metadata would make this a real answer.")
+    return (text, ledger, pairs)
+
+
+def _render_posting_time_answer(aq: dict, prof: dict) -> tuple:
+    import source_binding as SB
+    ledger = SB.ClaimLedger()
+    pairs: list = []
+    if not prof.get("ok"):
+        return (f"I can't reach the analyzed sheet right now, so I can't read "
+                f"posting times. ({prof.get('error')})", ledger, pairs)
+
+    tf = prof.get("temporal") or {}
+    dim = prof.get("dimension")
+    scope = _scope_suffix(aq)
+    tz_note = ("" if not tf.get("timezone_is_utc_default")
+               else " (timestamps are UTC — we've never recorded which local "
+                    "timezone we publish on, so I won't pretend these are local hours)")
+
+    if dim == "hour" and not prof.get("hour_derivable"):
+        ledger.add("no publication time-of-day is stored", [], SB.SCHEMA_EVIDENCE)
+        detail = (f"We have a post date for {tf.get('with_date', 0)} of "
+                  f"{tf.get('rows', 0)} internal reels, but no time-of-day on any of "
+                  f"them — POST_DATE is date-only, so the hour is simply not in the "
+                  f"data.")
+        return (f"I can't call a best time of day to post. {detail} Day of week I "
+                f"could look at; the hour would need POST_TIMESTAMP kept at full "
+                f"resolution from the Apify timestamp instead of being truncated "
+                f"to a date.", ledger, pairs)
+
+    if not prof.get("day_derivable") and dim == "day":
+        ledger.add("no publication date is stored", [], SB.SCHEMA_EVIDENCE)
+        return ("I can't tell you which day our strongest reels go out — none of "
+                "the internal reels carry a post date, so there's nothing to group "
+                "by. Backfilling POST_DATE would fix that.", ledger, pairs)
+
+    label = "hour" if dim == "hour" else "day"
+    if not prof.get("placed"):
+        # Timestamps exist somewhere, but none survived this scope.
+        ledger.add("no dated reels match that scope", [], SB.SCHEMA_EVIDENCE)
+        return (f"I don't have any dated reels matching that{scope}, so there's no "
+                f"publication {label} to group by here.", ledger, pairs)
+    if not prof.get("sufficient"):
+        counts = prof.get("by_hour" if dim == "hour" else "by_day") or {}
+        windows = len(counts)
+        ledger.add(f"posting-{label} windows are too thin to compare", [],
+                   SB.SCHEMA_EVIDENCE)
+        lead = ("No — not yet. " if aq.get("question_type") == "availability" else "")
+        return (f"{lead}We do have the {label}s{scope} — {prof.get('placed', 0)} reels "
+                f"spread across {windows} different {label}s{tz_note} — but not "
+                f"enough performance-labelled posts in any single {label} to call a "
+                f"best one. I'd need at least {prof.get('min_per_window')} labelled "
+                f"reels in each {label} I'm comparing before that number means "
+                f"anything, and right now "
+                f"{len(prof.get('windows_with_enough') or [])} clear that bar. "
+                f"That's a real answer, not a dodge: the timestamps exist, the "
+                f"per-window sample doesn't.", ledger, pairs)
+
+    counts = prof.get("by_hour" if dim == "hour" else "by_day") or {}
+    best = prof.get("best_window")
+    slot = counts.get(int(best) if dim == "hour" and str(best).isdigit() else best, {})
+    rate = (round(100 * slot.get("great", 0) / slot["labelled"])
+            if slot.get("labelled") else 0)
+    best_label = f"{best}:00" if dim == "hour" else best
+    pairs.append(("S1", f"{prof.get('labelled', 0)} performance-labelled internal "
+                        f"reels grouped by publication {label}"))
+    ledger.add(f"{best_label} has the highest Great rate ({rate}%)", ["S1"],
+               SB.AGGREGATE_EVIDENCE)
+    ranked_rest = [
+        (k, v) for k, v in sorted(
+            counts.items(),
+            key=lambda kv: -((kv[1]["great"] / kv[1]["labelled"]) if kv[1]["labelled"] else 0))
+        if v["labelled"] >= prof.get("min_per_window", 3)
+        and str(k) != str(best)]          # never re-list the winner as "next best"
+    others = ", ".join(
+        f"{k}{'' if dim == 'day' else ':00'} "
+        f"({round(100 * v['great'] / v['labelled'])}%, n={v['labelled']})"
+        for k, v in ranked_rest[:2])
+    next_bit = f" Next: {others}." if others else ""
+    lead = ("Yes — just about. " if aq.get("question_type") == "availability" else "")
+    return (f"{lead}On what we have{scope}, {best_label} comes out strongest — "
+            f"{rate}% of the labelled reels posted then are Great "
+            f"(n={slot.get('labelled', 0)}){tz_note}.{next_bit} "
+            f"I'd hold this loosely: it's an association across a handful of "
+            f"windows, not a scheduling law, and what we post almost certainly "
+            f"matters more than when.", ledger, pairs)
+
+
+def _render_metric_answer(aq: dict, prof: dict) -> tuple:
+    import source_binding as SB
+    import metric_registry as MR
+    ledger = SB.ClaimLedger()
+    pairs: list = []
+    if not prof.get("ok"):
+        return (f"I can't reach the analyzed sheet right now. ({prof.get('error')})",
+                ledger, pairs)
+    metric = prof["metric"]
+    pretty = metric.lower().replace("_", " ")
+    avail = prof["availability"]
+    scope = _scope_suffix(aq)
+
+    if avail["state"] in (COLUMN_MISSING, COLUMN_EXISTS) or not prof.get("n_with_value"):
+        ledger.add(f"{metric} is not populated", [], SB.SCHEMA_EVIDENCE)
+        gap = MR.metric_gap_note(metric) or ""
+        why = ("that column isn't in the sheet" if avail["state"] == COLUMN_MISSING
+               else f"the column exists but none of the {avail.get('n_rows', 0)} "
+                    f"internal reels carry a value")
+        return (f"I can't rank our reels by {pretty} — {why}, so any number I gave "
+                f"you would be invented. {gap}".strip(), ledger, pairs)
+
+    s = prof.get("stats") or {}
+    top = prof.get("top") or []
+    parts = []
+    lead = _cohort_sentence(aq, prof.get("cohort", ""))
+    if lead:
+        parts.append(lead)
+    pairs.append(("S1", f"{prof['n_with_value']} internal reels with a {metric} value"))
+    if aq.get("question_type") == "ranking" and top:
+        best = top[0]
+        parts.append(f"Top by {pretty}{scope}: "
+                     f"{int(best['value']) if float(best['value']).is_integer() else best['value']}"
+                     f" on the leader, then "
+                     + ", ".join(str(int(t['value'])) for t in top[1:4]) + ".")
+        ledger.add(f"top {pretty} values across {prof['n_with_value']} reels",
+                   ["S1"], SB.AGGREGATE_EVIDENCE)
+        for i, t in enumerate(top[:3], start=2):
+            sid = f"S{i}"
+            pairs.append((sid, _source_line_for_row(
+                t["link"], f"reel with {int(t['value'])} {pretty}"
+                           f"{' — ' + t['performance'] if t['performance'] else ''}")))
+            ledger.add(f"example reel at {int(t['value'])} {pretty}", [sid],
+                       SB.EXAMPLE_CONTENT)
+    if s:
+        parts.append(f"Across {s['n']} reels with a value{scope}, the median is "
+                     f"{s['median']:g} and the average {s['mean']:g} "
+                     f"(range {s['min']:g}–{s['max']:g}).")
+        ledger.add(f"median {pretty} is {s['median']:g} across {s['n']} reels",
+                   ["S1"], SB.AGGREGATE_EVIDENCE)
+    if avail["state"] == DATA_EXISTS:
+        parts.append(f"Only {avail['n_with_value']} of {avail['n_rows']} reels carry "
+                     f"{metric}, so treat this as a partial read.")
+        ledger.add(f"{metric} coverage is partial", ["S1"], SB.SCHEMA_EVIDENCE)
+    return (" ".join(parts), ledger, pairs)
+
+
+def _render_count_answer(aq: dict, prof: dict) -> tuple:
+    import source_binding as SB
+    ledger = SB.ClaimLedger()
+    pairs: list = []
+    if not prof.get("ok"):
+        return (f"I can't reach the analyzed sheet right now. ({prof.get('error')})",
+                ledger, pairs)
+    scope = prof.get("scope") or ""
+    where = f" for {scope}" if scope else ""
+    pairs.append(("S1", f"internal POC rows{where}: {prof['total']} of "
+                        f"{prof['library']} in the library"))
+    ledger.add(f"{prof['total']} internal reels{where}", ["S1"], SB.AGGREGATE_EVIDENCE)
+    text = (f"We have {prof['total']} internal reel{'s' if prof['total'] != 1 else ''}"
+            f"{where} in the library — {prof['analyzed']} tagged with the taxonomy, "
+            f"{prof['labelled']} carrying a usable performance label, and "
+            f"{prof['great']} of those classified Great.")
+    if prof.get("pending_maturity"):
+        text += (f" {prof['pending_maturity']} are still too young to label, so "
+                 f"they're held out of the performance read.")
+        ledger.add("some reels are pending maturity", ["S1"], SB.SCHEMA_EVIDENCE)
+    if prof["total"] and prof["labelled"] < 3:
+        text += " That's too thin to read a pattern from."
+    return (text, ledger, pairs)
+
+
+def _render_post_age_answer(aq: dict, prof: dict) -> tuple:
+    import source_binding as SB
+    ledger = SB.ClaimLedger()
+    pairs: list = []
+    if not prof.get("ok"):
+        return (f"I can't reach the analyzed sheet right now. ({prof.get('error')})",
+                ledger, pairs)
+    if not prof.get("n"):
+        ledger.add("no post dates are stored", [], SB.SCHEMA_EVIDENCE)
+        return ("I can't tell you how recent our latest reel is — none of the "
+                "internal rows carry a post date, so there's nothing to measure "
+                "age from.", ledger, pairs)
+    days = prof["newest_days"]
+    pairs.append(("S1", _source_line_for_row(prof.get("newest_link", ""),
+                                             "most recent internal reel")))
+    ledger.add(f"newest reel is {days} days old", ["S1"], SB.AGGREGATE_EVIDENCE)
+    mature = ("old enough to read a performance label from"
+              if prof.get("newest_mature")
+              else f"still inside the {prof['maturity_days']}-day maturity window, so "
+                   f"its performance label is deliberately held back")
+    extra = ""
+    if prof.get("without_date"):
+        extra = (f" {prof['without_date']} rows have no date at all, so this is the "
+                 f"newest of the {prof['n']} we can date.")
+        ledger.add("some rows carry no post date", ["S1"], SB.SCHEMA_EVIDENCE)
+    return (f"The most recent reel I can date is {days:g} days old — {mature}."
+            f"{extra}", ledger, pairs)
+
+
+def _render_perf_slice_answer(aq: dict, prof: dict) -> tuple:
+    import source_binding as SB
+    ledger = SB.ClaimLedger()
+    pairs: list = []
+    if not prof.get("ok"):
+        return (f"I can't reach the analyzed sheet right now. ({prof.get('error')})",
+                ledger, pairs)
+    sides = prof.get("sides") or []
+    if len(sides) < 2:
+        return ("", ledger, pairs)          # let the normal signal routes answer
+    pairs.append(("S1", f"{prof['labelled']} performance-labelled internal reels, "
+                        f"split by tag"))
+    named = ", ".join(f"{s['label']} ({s['great_rate']}% Great of n={s['n']})"
+                      for s in sides if s["great_rate"] is not None)
+    ledger.add(f"Great-rate comparison across {len(sides)} tags", ["S1"],
+               SB.AGGREGATE_EVIDENCE)
+    if not prof.get("comparable"):
+        thin = ", ".join(f"{s['label']} n={s['n']}" for s in sides)
+        ledger.add("per-side sample is too thin to compare", ["S1"], SB.SCHEMA_EVIDENCE)
+        return (f"Not enough on each side to call it: {thin}. I'd want at least "
+                f"{prof['min_per_cohort']} labelled reels per side before comparing "
+                f"Great rates, or the winner is just noise. On what's there: "
+                f"{named}.", ledger, pairs)
+    best, second = sides[0], sides[1]
+    # Only recap the full list when there are more than the two named above,
+    # otherwise the sentence just repeats itself.
+    recap = f" Full split: {named}." if len(sides) > 2 else ""
+    return (f"*{best['label'].title()}* is ahead: {best['great_rate']}% of its "
+            f"labelled reels are Great (n={best['n']}), against "
+            f"{second['great_rate']}% for {second['label'].title()} "
+            f"(n={second['n']}).{recap} That's an association across a small "
+            f"sample, so I'd treat it as the better bet rather than a settled "
+            f"fact.", ledger, pairs)
+
+
+def answer_analytics_query(aq: dict, text: str = "",
+                           context: Optional[list] = None) -> Optional[str]:
+    """Answer an EXPLICIT analytics question from the parsed contract.
+
+    Returns None when the contract names something this layer doesn't compute, so
+    the caller's existing routing handles the turn unchanged. Read-only.
+    """
+    import analytics_query as AQ
+    import source_binding as SB
+    if not aq:
+        return None
+    metric = aq.get("metric")
+    try:
+        # A metric only private Instagram Insights could provide is answered by
+        # the registry/demographics path that already does it well.
+        if aq.get("requires_private_data"):
+            return answer_social_analytics_question(text or aq.get("raw", ""), context)
+        if metric == AQ.M_REEL_TYPE:
+            # Trial/Standard has a dedicated honest handler; keep it (§9).
+            return _render_trial_vs_standard(text or aq.get("raw", ""),
+                                             compare_trial_vs_standard())
+
+        if metric == AQ.M_DURATION:
+            body, ledger, pairs = _render_duration_answer(aq, duration_profile(aq))
+        elif metric in (AQ.M_POST_DAY, AQ.M_POST_HOUR):
+            body, ledger, pairs = _render_posting_time_answer(aq, posting_time_profile(aq))
+        elif metric == AQ.M_POST_AGE:
+            body, ledger, pairs = _render_post_age_answer(aq, post_age_profile(aq))
+        elif metric == AQ.M_ROW_COUNT:
+            body, ledger, pairs = _render_count_answer(aq, row_count_profile(aq))
+        elif metric == AQ.M_PERFORMANCE:
+            body, ledger, pairs = _render_perf_slice_answer(aq, performance_slice_profile(aq))
+        elif metric in (AQ.M_VIEWS, AQ.M_LIKES, AQ.M_COMMENTS, AQ.M_SHARES,
+                        AQ.M_ENGAGEMENT):
+            body, ledger, pairs = _render_metric_answer(aq, metric_profile(aq))
+        else:
+            return None
+        if not body:
+            return None
+
+        # Source integrity: only claim-bound sources may be rendered, and an
+        # answer that carries no supported claim renders no Sources block (§14).
+        verdict = SB.relevant_source_ids(body, [sid for sid, _l in pairs], ledger)
+        LAST_SOURCE_AUDIT.update(before=len(pairs), after=len(verdict["keep"]),
+                                 dropped=sorted(verdict["dropped"]),
+                                 reason=verdict["reason"])
+        kept = [(sid, line) for sid, line in pairs if sid in verdict["keep"]]
+        block = SB.render_sources(kept, ledger)
+        out = body if not block else f"{body}\n\n{block}"
+        return st.compact_slack_response(out, st.detect_response_mode(text or ""))
+    except Exception as e:  # noqa: BLE001 - never break the bot on an analytics ask
+        log.warning("answer_analytics_query failed: %s", e)
+        return None
+
+
+def _render_duration_recommendation(aq: dict, prof: dict) -> tuple:
+    """A length recommendation grounded in the cohort's real duration spread.
+
+    §22: the frame resolves WHICH concept, the analytics informs HOW LONG. This
+    commits to a target range (a recommendation, not a data dump) while keeping
+    the evidence behind it visible and the association/causation line intact.
+    """
+    import source_binding as SB
+    ledger = SB.ClaimLedger()
+    pairs: list = []
+    if not prof.get("ok"):
+        return (f"I can't reach the analyzed sheet right now, so I'd rather not "
+                f"put a number on it. ({prof.get('error')})", ledger, pairs)
+
+    import analytics_query as AQ
+    referent = aq.get("referent") or ""
+    subject = f"*{referent}*" if referent else "this one"
+    scope_bits = []
+    for key in ("product", "icp"):
+        for v in (aq.get("filters") or {}).get(key, []) or []:
+            scope_bits.append(AQ.display(v))
+    where = " / ".join(scope_bits)
+
+    if prof.get("source") != "exact" or not prof.get("stats"):
+        note = ("only coarse length buckets, so I can't give you a target in "
+                "seconds" if prof.get("source") == "bucket"
+                else "no measured durations at all")
+        return (f"I'd keep {subject} short, but I want to be straight with you: I "
+                f"have {note}, so that's a general short-form instinct rather than "
+                f"something our own numbers back. Backfilling DURATION_SECONDS "
+                f"would let me give you an actual target range.", ledger, pairs)
+
+    s = prof["stats"]
+    n = s["n"]
+    lo, hi = int(round(s["median"] * 0.8)), int(round(s["median"] * 1.25))
+    pairs.append(("S1", f"{n} {where or 'internal'} reels classified Great, with an "
+                        f"exact duration"))
+    ledger.add(f"Great {where or 'internal'} reels sit at a median of {s['median']}s "
+               f"across {n}", ["S1"], SB.AGGREGATE_EVIDENCE)
+
+    thin = ""
+    if n < _MIN_PER_COHORT:
+        thin = (f" Caveat: that's only {n} reel{'s' if n != 1 else ''}, so treat the "
+                f"range as a starting point rather than a proven window.")
+        ledger.add("the cohort behind this is thin", ["S1"], SB.SCHEMA_EVIDENCE)
+    comp = prof.get("comparison") or {}
+    contrast = ""
+    if comp:
+        contrast = (f" For contrast, the rest of the labelled library sits at a "
+                    f"median of {_fmt_secs(comp['median'])} (n={comp['n']}).")
+        ledger.add(f"rest of library median is {comp['median']}s", ["S1"],
+                   SB.AGGREGATE_EVIDENCE)
+
+    scope_phrase = f"our Great {where} reels" if where else "our Great reels"
+    return (f"Target roughly {lo}–{hi} seconds for {subject}. That's built on "
+            f"{scope_phrase}: median {_fmt_secs(s['median'])} across {n} with an "
+            f"exact duration, ranging {_fmt_secs(s['min'])}–{_fmt_secs(s['max'])}."
+            f"{contrast} I'd treat the range as the useful part — the shorter cuts "
+            f"are associated with the stronger results here, but I wouldn't claim a "
+            f"specific second count is what makes them work.{thin}", ledger, pairs)
+
+
+def answer_duration_recommendation(aq: dict, text: str = "",
+                                   context: Optional[list] = None) -> Optional[str]:
+    """Slack entrypoint for an analytics-informed length recommendation."""
+    import source_binding as SB
+    if not aq:
+        return None
+    try:
+        body, ledger, pairs = _render_duration_recommendation(aq, duration_profile(aq))
+        if not body:
+            return None
+        verdict = SB.relevant_source_ids(body, [sid for sid, _l in pairs], ledger)
+        LAST_SOURCE_AUDIT.update(before=len(pairs), after=len(verdict["keep"]),
+                                 dropped=sorted(verdict["dropped"]),
+                                 reason=verdict["reason"])
+        kept = [(sid, line) for sid, line in pairs if sid in verdict["keep"]]
+        block = SB.render_sources(kept, ledger)
+        out = body if not block else f"{body}\n\n{block}"
+        return st.compact_slack_response(out, st.detect_response_mode(text or ""))
+    except Exception as e:  # noqa: BLE001
+        log.warning("answer_duration_recommendation failed: %s", e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# CLI: audit-analytics-coverage (read-only)
+# ---------------------------------------------------------------------------
+def analytics_coverage(rows: Optional[list[dict]] = None,
+                       columns: Optional[list[str]] = None) -> dict:
+    """What the live dataset can and cannot answer, per analytic dimension.
+
+    Read-only and fail-soft. This is the honest inventory behind every answer in
+    this module: exact-duration coverage overall and for the Great cohort,
+    publication-date vs publication-TIME coverage, whether any posting-time
+    window carries enough labelled posts to compare, and whether Trial/Standard
+    is present at all. Nothing is estimated — a dimension we cannot support is
+    reported as unsupported.
+    """
+    if rows is None or columns is None:
+        rows, columns, err = _internal_sheet()
+        if err:
+            return {"ok": False, "error": err}
+    internal = _internal_rows_only(rows)
+    buckets = performance.buckets_for_rows(internal)
+    great = [r for r in internal if performance.is_positive(buckets.get(r["_row"], ""))]
+
+    dur_col = _column_for_field(columns, "duration")
+    dur_all = [r for r in internal if dur_col and _parse_seconds(r.get(dur_col)) is not None]
+    dur_great = [r for r in great if dur_col and _parse_seconds(r.get(dur_col)) is not None]
+
+    audit_links = {}
+    if len(dur_all) < len(internal):
+        try:
+            audit_links = content_audit_duration_buckets(
+                {str(r.get("LINK", "")).strip() for r in internal}) or {}
+        except Exception:  # noqa: BLE001
+            audit_links = {}
+
+    tf = temporal_fields(internal, columns)
+    hour_aq = {"metric": "POST_HOUR", "filters": {}, "cohort": {"basis": "all"},
+               "question_type": "availability", "raw": "", "top_n": 5}
+    day_aq = dict(hour_aq, metric="POST_DAY_OF_WEEK")
+    hour_prof = posting_time_profile(hour_aq, internal, columns)
+    day_prof = posting_time_profile(day_aq, internal, columns)
+
+    reel_type_col = _column_for_field(columns, "reel_type")
+    typed = {"trial": 0, "standard": 0, "unknown": 0}
+    for r in internal:
+        typed[classify_reel_type(r)] += 1
+
+    def _pct(n, d):
+        return round(100 * n / d) if d else 0
+
+    return {
+        "ok": True, "error": "",
+        "internal_rows": len(internal),
+        "performance_labelled": len(buckets),
+        "great_rows": len(great),
+        "duration": {
+            "column": dur_col,
+            "exact_coverage": len(dur_all),
+            "exact_coverage_pct": _pct(len(dur_all), len(internal)),
+            "great_exact_coverage": len(dur_great),
+            "great_exact_coverage_pct": _pct(len(dur_great), len(great)),
+            "content_audit_bucket_coverage": len(audit_links),
+            "supports_exact_analysis": len(dur_great) >= _MIN_FOR_PATTERN,
+        },
+        "temporal": {
+            "date_column": tf.get("date_column"),
+            "timestamp_column": tf.get("timestamp_column"),
+            "with_date": tf.get("with_date"), "with_date_pct": _pct(tf.get("with_date", 0), len(internal)),
+            "with_time": tf.get("with_time"), "with_time_pct": _pct(tf.get("with_time", 0), len(internal)),
+            "day_derivable": tf.get("day_of_week_derivable"),
+            "hour_derivable": tf.get("hour_derivable"),
+            "timezone": tf.get("timezone"),
+            "timezone_is_utc_default": tf.get("timezone_is_utc_default"),
+            "day_windows_with_enough": day_prof.get("windows_with_enough", []),
+            "hour_windows_with_enough": hour_prof.get("windows_with_enough", []),
+            "min_per_window": _MIN_PER_TIME_WINDOW,
+            "supports_day_analysis": bool(day_prof.get("sufficient")),
+            "supports_hour_analysis": bool(hour_prof.get("sufficient")),
+        },
+        "reel_type": {
+            "column": reel_type_col, "trial": typed["trial"],
+            "standard": typed["standard"], "unknown": typed["unknown"],
+            "supports_trial_split": typed["trial"] >= _MIN_PER_COHORT
+            and typed["standard"] >= _MIN_PER_COHORT,
+        },
+        "metrics": {m: availability(m, internal, columns)
+                    for m in ("VIEWS", "LIKES", "COMMENTS", "SHARES",
+                              "ENGAGEMENT_RATE", "DURATION_SECONDS")},
+    }
+
+
+def render_analytics_coverage(c: dict) -> str:
+    """Plain-text coverage report for the CLI. Nothing written."""
+    if not c.get("ok"):
+        return f"audit-analytics-coverage: {c.get('error')}. Nothing written."
+    d, t, rt = c["duration"], c["temporal"], c["reel_type"]
+    L = ["Analytics coverage audit (read-only — live POC tab)",
+         f"  internal rows: {c['internal_rows']}  ·  performance-labelled: "
+         f"{c['performance_labelled']}  ·  Great: {c['great_rows']}",
+         "",
+         "  DURATION",
+         f"    exact column:            {d['column'] or 'ABSENT'}",
+         f"    exact coverage:          {d['exact_coverage']}/{c['internal_rows']} "
+         f"({d['exact_coverage_pct']}%)",
+         f"    Great-cohort coverage:   {d['great_exact_coverage']}/{c['great_rows']} "
+         f"({d['great_exact_coverage_pct']}%)",
+         f"    Content-audit buckets:   {d['content_audit_bucket_coverage']} "
+         f"(coarse proxy only, never exact seconds)",
+         f"    supports exact analysis: {'YES' if d['supports_exact_analysis'] else 'NO'}",
+         "",
+         "  TIME",
+         f"    date column:             {t['date_column'] or 'ABSENT'}",
+         f"    timestamp column:        {t['timestamp_column'] or 'ABSENT'}",
+         f"    rows with a date:        {t['with_date']} ({t['with_date_pct']}%)",
+         f"    rows with a TIME of day: {t['with_time']} ({t['with_time_pct']}%)",
+         f"    timezone:                {t['timezone']}"
+         f"{' (default — posting timezone not configured)' if t['timezone_is_utc_default'] else ''}",
+         f"    day windows >= {t['min_per_window']}:       "
+         f"{', '.join(t['day_windows_with_enough']) or 'none'}",
+         f"    hour windows >= {t['min_per_window']}:      "
+         f"{', '.join(t['hour_windows_with_enough']) or 'none'}",
+         f"    supports day analysis:   {'YES' if t['supports_day_analysis'] else 'NO'}",
+         f"    supports hour analysis:  {'YES' if t['supports_hour_analysis'] else 'NO'}",
+         "",
+         "  TRIAL / STANDARD",
+         f"    column:                  {rt['column'] or 'ABSENT'}",
+         f"    trial / standard / unknown: {rt['trial']} / {rt['standard']} / {rt['unknown']}",
+         f"    supports the split:      {'YES' if rt['supports_trial_split'] else 'NO'}",
+         "",
+         "  METRIC AVAILABILITY LADDER"]
+    for name, a in c["metrics"].items():
+        L.append(f"    {name:20} {a['state']:14} {a['n_with_value']}/{a['n_rows']} rows"
+                 f"{'  col=' + a['column'] if a.get('column') else ''}")
+    return "\n".join(L)

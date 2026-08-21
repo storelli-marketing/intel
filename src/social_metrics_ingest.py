@@ -30,7 +30,8 @@ log = get_logger()
 # FOLLOWERS_AT_POST (no per-post follower count), and the demographic *_SPLIT
 # columns (account-level only — see the separate tab). Excluding them keeps the
 # import honest rather than faking a value.
-_API_FILLABLE_COLUMNS = ("DURATION_SECONDS", "POST_DATE", "VIEWS", "LIKES", "COMMENTS",
+_API_FILLABLE_COLUMNS = ("DURATION_SECONDS", "POST_DATE", "POST_TIMESTAMP",
+                         "VIEWS", "LIKES", "COMMENTS",
                          "SAVES", "SHARES", "ENGAGEMENT_RATE", "REACH", "IMPRESSIONS",
                          "PROFILE_VISITS", "WEBSITE_CLICKS", "FOLLOWERS_AT_MEASUREMENT",
                          # When the numbers above were read. Without this the
@@ -51,7 +52,7 @@ SYNC_STATE_COLUMNS = ("SHORTCODE", "MEDIA_ID", "POC_ROW", "FIRST_SYNCED_AT", "LA
 # ---- mutable-metric policy (documented + enforced) ------------------------
 # IMMUTABLE metadata — a real one-time property of the post; fill once, never
 # change (updating would only ever be a data error).
-_IMMUTABLE_COLUMNS = ("POST_DATE", "DURATION_SECONDS")
+_IMMUTABLE_COLUMNS = ("POST_DATE", "POST_TIMESTAMP", "DURATION_SECONDS")
 # CUMULATIVE metrics — legitimately change over a post's life (views/comments/
 # etc.). Refreshed to the latest official API value, BUT only when the current
 # cell is one WE wrote (its value equals the last value we synced). If the cell
@@ -165,6 +166,13 @@ def build_metric_values(media: dict, insights: dict) -> dict:
     ts = str(media.get("timestamp", "")).strip()
     if ts:
         out["POST_DATE"] = ts[:10]                       # YYYY-MM-DD
+        # Keep the FULL source timestamp too. POST_DATE is date-only by design, so
+        # truncating here was throwing away the only publication-time resolution
+        # we ever receive — which is what made "what time should we post?"
+        # unanswerable from data we actually had. Written only when the column
+        # exists (plan_fills/append filter to real columns), never invented.
+        if re.search(r"\d{1,2}:\d{2}", ts):
+            out["POST_TIMESTAMP"] = ts
     dur = media.get("duration")
     if dur not in (None, ""):
         s = _num_str(dur)

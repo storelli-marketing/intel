@@ -117,12 +117,33 @@
       ],
       "classes": []
     },
+    "src/analytics_query.py": {
+      "functions": [
+        "display",
+        "_norm",
+        "_find_all",
+        "detect_metrics",
+        "_cohort",
+        "_question_type",
+        "_aggregations",
+        "_top_n",
+        "_explicit_filters",
+        "_frame_scope",
+        "is_counting_question",
+        "parse",
+        "parse_recommendation",
+        "is_explicit_analytics_question",
+        "describe"
+      ],
+      "classes": []
+    },
     "src/analyzer.py": {
       "functions": [
         "render_taxonomy",
         "parse_model_json",
         "_match_label",
         "_as_list",
+        "_as_text",
         "to_signal_columns",
         "_parse_with_retry",
         "analyze_and_compile"
@@ -181,6 +202,7 @@
         "_external_proof_spans",
         "_soften_proof_words",
         "_strip_unavailable_metric_claims",
+        "_designify",
         "validate",
         "wants_evidence_detail",
         "render_evidence_detail",
@@ -198,6 +220,7 @@
         "instagram_configured",
         "instagram_missing_vars",
         "owned_tiktok_configured",
+        "posting_timezone",
         "owned_public_discovery_configured",
         "private_insights_configured",
         "require_sheets",
@@ -218,12 +241,15 @@
       "functions": [
         "route_info",
         "_prior_was_refresh",
+        "_asks_proof_status",
         "_maybe_refresh",
         "_remember_refresh",
         "_load_ideas",
         "_recover_memory",
         "_connection_for",
         "_family",
+        "_frame_ideas",
+        "_maybe_frame",
         "answer",
         "_dispatch",
         "_compare",
@@ -268,6 +294,7 @@
     "src/conversation_resolver.py": {
       "functions": [
         "_t",
+        "challenge_kind",
         "classify_dialogue_act",
         "is_reset",
         "resolve_referents",
@@ -305,6 +332,29 @@
         "weak",
         "fmt_pct",
         "fmt_lift"
+      ],
+      "classes": []
+    },
+    "src/decision_frame.py": {
+      "functions": [
+        "detect_objective",
+        "new_frame",
+        "is_active",
+        "_find_vocab",
+        "_contains_term",
+        "_taxonomy_hits",
+        "_findings",
+        "_is_vocab_term",
+        "_recommended_title",
+        "pattern_strength",
+        "_establishes_nothing",
+        "derive",
+        "wants_reset",
+        "inherits",
+        "names_new_scope",
+        "resolve_objective",
+        "remember",
+        "describe_scope"
       ],
       "classes": []
     },
@@ -379,7 +429,22 @@
         "answer_evidence_gap",
         "_render_verdict",
         "_render_test_plan",
-        "run_audit"
+        "run_audit",
+        "_slice_state",
+        "_field_value",
+        "canonical_slices",
+        "coverage_by",
+        "is_coverage_query",
+        "answer_coverage",
+        "coverage_by_signal",
+        "is_never_made_query",
+        "answer_never_made",
+        "_named_taxonomy_options",
+        "is_comparison_query",
+        "compare_slices",
+        "_rate",
+        "_render_head_to_head",
+        "_compare_duration"
       ],
       "classes": []
     },
@@ -395,6 +460,8 @@
         "_suff",
         "resolve_scope",
         "find_contradictions",
+        "forced_choice_requested",
+        "committed_judgement",
         "abstention",
         "build_answer",
         "allowed_language",
@@ -404,6 +471,27 @@
       "classes": [
         "ExternalAsProofError"
       ]
+    },
+    "src/frame_reasoning.py": {
+      "functions": [
+        "_norm",
+        "_idea_text",
+        "_matches_any",
+        "classify_tier",
+        "_key_for",
+        "constrained_ideas",
+        "_title",
+        "_territory_phrase",
+        "compare_reason",
+        "confidence_split",
+        "falsification_conditions",
+        "challenge_pack",
+        "_pick_variant",
+        "_first_beat",
+        "render_constrained_recommendation",
+        "render_challenge"
+      ],
+      "classes": []
     },
     "src/gemini_client.py": {
       "functions": [
@@ -650,6 +738,7 @@
         "_refresh_public_metrics",
         "_internal_metrics",
         "_internal_analyze",
+        "_internal_maturity",
         "_internal_recompute",
         "_external_discovery",
         "_external_analyze",
@@ -702,6 +791,7 @@
     },
     "src/main.py": {
       "functions": [
+        "_now_stamp",
         "_valid_icp",
         "_drop_layers",
         "_to_int",
@@ -733,6 +823,7 @@
         "_fmt_notion_summary",
         "cmd_evaluate_notion_idea",
         "cmd_audit_social_metrics",
+        "cmd_audit_analytics_coverage",
         "cmd_backfill_duration_metadata",
         "cmd_preflight_social_schema",
         "cmd_setup_metrics_staging",
@@ -761,7 +852,11 @@
         "is_available",
         "unavailable_metrics",
         "describe",
-        "metric_gap_note"
+        "metric_gap_note",
+        "detect_asked_metrics",
+        "unanswerable_in_question",
+        "is_meta_question",
+        "limit_answer"
       ],
       "classes": [
         "Metric"
@@ -857,6 +952,7 @@
         "available_public_metrics",
         "route_by_ownership",
         "scan_owned_media",
+        "fetch_profile_followers",
         "current_follower_count"
       ],
       "classes": []
@@ -881,7 +977,15 @@
         "is_reference_row",
         "is_internal_row",
         "bucket_from_performance",
+        "_norm_key",
+        "_ci",
+        "post_age_days",
+        "performance_source",
+        "is_auto_labelled",
+        "is_mature",
+        "is_immature_auto",
         "buckets_for_rows",
+        "pending_maturity_rows",
         "is_positive",
         "ratio_to_performance"
       ],
@@ -973,6 +1077,8 @@
         "_title",
         "build_memory",
         "resolve_idea_reference",
+        "_norm_option",
+        "_names_taxonomy_options",
         "detect_intent",
         "_shootability",
         "_product_priority",
@@ -1111,7 +1217,38 @@
         "import_social_metrics_dry_run",
         "render_import_dry_run",
         "audit_duration_buckets",
-        "render_duration_bucket_audit"
+        "render_duration_bucket_audit",
+        "_internal_rows_only",
+        "availability",
+        "_apply_filters",
+        "cohort_rows",
+        "_stats",
+        "_bucket_counts",
+        "_pct_under",
+        "_threshold_in_question",
+        "duration_profile",
+        "_parse_timestamp",
+        "temporal_fields",
+        "posting_time_profile",
+        "post_age_profile",
+        "metric_profile",
+        "row_count_profile",
+        "performance_slice_profile",
+        "_fmt_secs",
+        "_source_line_for_row",
+        "_cohort_sentence",
+        "_scope_suffix",
+        "_render_duration_answer",
+        "_render_posting_time_answer",
+        "_render_metric_answer",
+        "_render_count_answer",
+        "_render_post_age_answer",
+        "_render_perf_slice_answer",
+        "answer_analytics_query",
+        "_render_duration_recommendation",
+        "answer_duration_recommendation",
+        "analytics_coverage",
+        "render_analytics_coverage"
       ],
       "classes": [
         "_Sources"
@@ -1159,6 +1296,7 @@
         "_maybe_llm_polish",
         "_finish_conversational",
         "_deterministic_conversation_answer",
+        "_conversation_key",
         "answer_conversation"
       ],
       "classes": []
@@ -1284,6 +1422,19 @@
       ],
       "classes": [
         "_Src"
+      ]
+    },
+    "src/source_binding.py": {
+      "functions": [
+        "is_missing_data_answer",
+        "makes_data_claim",
+        "cited_ids",
+        "relevant_source_ids",
+        "drop_orphans",
+        "render_sources"
+      ],
+      "classes": [
+        "ClaimLedger"
       ]
     },
     "src/synthesizer.py": {
@@ -1552,6 +1703,7 @@
     "evaluate-notion-idea",
     "audit-evidence-gaps",
     "audit-social-metrics",
+    "audit-analytics-coverage",
     "backfill-duration-metadata",
     "preflight-social-schema",
     "setup-metrics-staging",
@@ -1598,6 +1750,7 @@
     "OWNED_SCAN_BUFFER_DAYS",
     "OWNED_SCAN_LOOKBACK_DAYS",
     "OWNED_SCAN_MAX_RESULTS",
+    "PERFORMANCE_MATURITY_DAYS",
     "QA_COMPILER_ENABLED",
     "RUN_SECRET",
     "SLACK_BOT_TOKEN",
@@ -1609,6 +1762,7 @@
     "SLACK_WEBHOOK_URL",
     "STORELLI_IG_FOLLOWER_COUNT",
     "STORELLI_INSTAGRAM_HANDLE",
+    "STORELLI_POSTING_TIMEZONE",
     "STORELLI_TIKTOK_HANDLE",
     "YTDLP_COOKIES_B64",
     "YTDLP_COOKIES_PATH"

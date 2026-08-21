@@ -140,6 +140,39 @@ def case(question, must=(), must_not=(), critical=(), context=None, allow_help=F
 _SAFETY = [NO_EXTERNAL_AS_PROOF, NO_CAUSAL, NO_FABRICATED_PRIVATE, NO_TEMPLATE_DUMP,
            NO_FABRICATED_DEMOGRAPHICS, NO_FABRICATED_RETENTION, NO_FABRICATED_REVENUE]
 
+# ---- explicit-analytics assertions ---------------------------------------
+# The failure mode these guard is a ROUTING one: a question about a number
+# answered with a creative recommendation. "I'd shoot X" / "block the shoot day"
+# in reply to "how many seconds..." is the exact production bug.
+NO_CREATIVE_PIVOT = (
+    "no_creative_pivot",
+    r"\bi'?d shoot\b|\bblock the shoot day\b|\bshoot day for\b"
+    r"|\blet'?s shoot\b|\bshoot this (?:week|next)\b"
+    r"|\bidea\(s\) to shoot\b|\bstrongest idea")
+
+# A duration figure may only appear when it was measured. Presenting a coarse
+# Content-audit bucket as an exact median is the dishonest form.
+NO_FABRICATED_DURATION = (
+    "no_bucket_stated_as_exact",
+    r"(?:approximate|bucket|coarse)" + _NO_NEG + r"{0,60}\bmedian (?:is )?\d")
+
+# Posting time is an association across time windows, never a cause.
+NO_POSTING_TIME_CAUSALITY = (
+    "no_posting_time_causality",
+    r"\bposting at\b" + _NO_NEG + r"{0,30}\b(?:causes|makes|guarantees|drives)\b"
+    r"|\bbest time to post is\b" + _NO_NEG + r"{0,20}\bbecause it causes\b")
+
+# Either the metric is answered, or the answer says plainly why it can't be.
+ANSWERS_DURATION_OR_SAYS_WHY = (
+    "answers_duration_or_says_why",
+    r"\b\d+(?:\.\d+)?\s*(?:s\b|sec|second)|median|average|\bbucket|\b< ?\d+ sec"
+    r"|no duration|don'?t (?:have|track)|can'?t tell|duration_seconds")
+ANSWERS_TIME_OR_SAYS_WHY = (
+    "answers_time_or_says_why",
+    r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
+    r"|\b\d{1,2}:00\b|\bnot enough\b|\bno (?:post date|time)\b|\bcan'?t\b"
+    r"|\bdon'?t (?:have|track)\b|post_timestamp|\butc\b")
+
 CASES = [
     # =====================================================================
     # 1. DECISIONS — what to shoot, what to prioritise, what to cut,
@@ -782,6 +815,80 @@ CASES = [
          critical=_SAFETY,
          notes="UNKNOWN twice over: PROFILE_VISITS is private-only, and ICP is a "
                "row-level grouping that could never be joined to it anyway."),
+
+    # =====================================================================
+    # 10. EXPLICIT ANALYTICS — a named metric asked as a factual question.
+    #
+    # The critical failure class here is a ROUTING failure, not a wording one:
+    # answering a question about seconds with a creative recommendation. Every
+    # case therefore carries NO_CREATIVE_PIVOT, and the duration/time cases also
+    # forbid stating a bucketed figure as an exact one.
+    # =====================================================================
+    case("How many seconds long are our highest-performing reels?",
+         must=[ANSWERS_DURATION_OR_SAYS_WHY],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY + [NO_FABRICATED_DURATION],
+         notes="The exact production failure: this was answered with a shoot "
+               "recommendation because 'highest performing' reads as an "
+               "optimisation objective to the decision frame."),
+    case("What is our median reel length?",
+         must=[ANSWERS_DURATION_OR_SAYS_WHY],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY + [NO_FABRICATED_DURATION]),
+    case("Are Great reels shorter than weak reels?",
+         must=[ANSWERS_DURATION_OR_SAYS_WHY],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY + [NO_FABRICATED_DURATION]),
+    case("What percentage of Great reels are under 10 seconds?",
+         must=[ANSWERS_DURATION_OR_SAYS_WHY],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY + [NO_FABRICATED_DURATION]),
+    case("Which duration range performs best?",
+         must=[ANSWERS_DURATION_OR_SAYS_WHY],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY + [NO_FABRICATED_DURATION]),
+    case("What day are our strongest reels posted?",
+         must=[ANSWERS_TIME_OR_SAYS_WHY],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY + [NO_POSTING_TIME_CAUSALITY]),
+    case("What time are our strongest reels posted?",
+         must=[ANSWERS_TIME_OR_SAYS_WHY],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY + [NO_POSTING_TIME_CAUSALITY]),
+    case("Do we have enough data to know the best posting time?",
+         must=[ANSWERS_TIME_OR_SAYS_WHY],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY + [NO_POSTING_TIME_CAUSALITY],
+         notes="An availability question. 'No, and here is why' is a full pass."),
+    case("Trial vs Standard?",
+         must=[("addresses_trial_standard", r"(trial|standard)")],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY,
+         notes="Public Apify data carries no trial-reel flag; saying so is right."),
+    case("Which gets more comments?",
+         must=[("addresses_comments", r"(comment|don'?t (?:have|track)|can'?t|no hard)")],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY),
+    case("Which gets more views?",
+         must=[("addresses_views", r"(view|don'?t (?:have|track)|can'?t)")],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY),
+    case("What are our top 10 reels by normalized performance?",
+         must=[("ranks_or_says_why", r"(\d|top|median|average|can'?t|don'?t "
+                                     r"(?:have|track)|no )")],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY),
+    case("How old is the latest reel?",
+         must=[("answers_age_or_says_why",
+                r"(\bdays?\b|\bweeks?\b|\bmonths?\b|no post date|can'?t|don'?t "
+                r"(?:have|track))")],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY),
+    case("When was performance last refreshed?",
+         must=[("answers_refresh_or_says_why",
+                r"(refresh|last|never|hasn'?t|no run|can'?t|don'?t (?:have|track))")],
+         must_not=[NO_CREATIVE_PIVOT],
+         critical=_SAFETY),
 ]
 
 # ---- multi-turn conversations (Phase 21) ---------------------------------

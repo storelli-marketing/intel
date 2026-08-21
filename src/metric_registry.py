@@ -69,7 +69,35 @@ REGISTRY: dict = {m.name: m for m in [
            limitations="only present when the actor returns it"),
     Metric("FOLLOWERS_AT_MEASUREMENT", APIFY_PUBLIC, True, _MUTABLE,
            limitations="account-level snapshot at refresh time, not at post time"),
-    Metric("POST_DATE", APIFY_PUBLIC, True, _IMMUTABLE),
+    Metric("POST_DATE", APIFY_PUBLIC, True, _IMMUTABLE,
+           limitations="date only — carries no time of day, so it cannot answer "
+                       "an hour-of-day question"),
+    # Full-resolution publication timestamp. The Apify/Meta payload carries one;
+    # POST_DATE deliberately keeps only the date, so hour-of-day analysis needs
+    # this column to exist and be populated.
+    Metric("POST_TIMESTAMP", APIFY_PUBLIC, True, _IMMUTABLE,
+           limitations="UTC as delivered by the source; local posting time is "
+                       "unknown unless STORELLI_POSTING_TIMEZONE is configured",
+           path_to_answer=("keep the source timestamp at full resolution in a "
+                           "POST_TIMESTAMP column instead of truncating it to a date"),
+           asked_as=("posting timestamp", "exact time it was posted")),
+    Metric("POST_DAY_OF_WEEK", DERIVED, True, _IMMUTABLE,
+           derivation="weekday of POST_TIMESTAMP (or POST_DATE)",
+           limitations="only as complete as the underlying date coverage",
+           asked_as=("what day", "which day", "day of the week", "best day to post")),
+    Metric("POST_HOUR", DERIVED, True, _IMMUTABLE,
+           derivation="hour of POST_TIMESTAMP in the configured posting timezone",
+           limitations="needs a timestamp WITH a time component; POST_DATE alone "
+                       "cannot produce it, and hours are UTC until a posting "
+                       "timezone is configured",
+           path_to_answer=("populate POST_TIMESTAMP with the source's full "
+                           "timestamp, then set STORELLI_POSTING_TIMEZONE"),
+           asked_as=("what time", "best time to post", "which hour", "time of day")),
+    Metric("POST_AGE_DAYS", DERIVED, True, _MUTABLE,
+           derivation="now - POST_DATE",
+           limitations="unknown for rows with no post date; a post younger than "
+                       "the maturity window is deliberately unlabelled",
+           asked_as=("how old is", "how recent", "latest reel")),
     Metric("DURATION_SECONDS", APIFY_PUBLIC, True, _IMMUTABLE,
            limitations="absent unless the actor returns a duration"),
     Metric("ENGAGEMENT_RATE", DERIVED, True, _MUTABLE,

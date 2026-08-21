@@ -794,6 +794,18 @@ def cmd_audit_social_metrics() -> int:
     return 0
 
 
+def cmd_audit_analytics_coverage() -> int:
+    """Read-only: what the live dataset can and cannot answer per analytic
+    dimension — exact-duration coverage (overall and for the Great cohort),
+    publication date vs publication TIME coverage, whether any day/hour window
+    carries enough labelled posts to compare, Trial/Standard availability, and
+    the metric availability ladder. Writes nothing."""
+    import social_analytics
+    print(social_analytics.render_analytics_coverage(
+        social_analytics.analytics_coverage()))
+    return 0
+
+
 def cmd_backfill_duration_metadata(dry_run: bool, probe: bool = False) -> int:
     """DRY-RUN ONLY: list POC rows that could receive DURATION_SECONDS (metadata
     only, no Gemini, no re-tagging, no writes). A non-dry-run write mode is
@@ -1081,6 +1093,7 @@ def main() -> int:
                                  "refine-ideas", "rate-calendar-ideas",
                                  "build-semantic-connections", "evaluate-notion-idea",
                                  "audit-evidence-gaps", "audit-social-metrics",
+                                 "audit-analytics-coverage",
                                  "backfill-duration-metadata", "preflight-social-schema",
                                  "setup-metrics-staging", "import-social-metrics",
                                  "audit-duration-buckets", "insert-social-schema",
@@ -1174,6 +1187,9 @@ def main() -> int:
 
         elif args.command == "audit-social-metrics":
             return cmd_audit_social_metrics()
+
+        elif args.command == "audit-analytics-coverage":
+            return cmd_audit_analytics_coverage()
 
         elif args.command == "backfill-duration-metadata":
             return cmd_backfill_duration_metadata(args.dry_run, args.probe)

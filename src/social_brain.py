@@ -1281,6 +1281,32 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
     except Exception as e:  # noqa: BLE001 - never block an answer on this check
         log.info("metric-limit check skipped: %s", e)
 
+    # EXPLICIT ANALYTICS PRECEDENCE. A clearly specified factual question about
+    # our own numbers answers the metric it actually asks about — even mid-thread,
+    # even with a live decision frame. This is the fix for the production failure
+    # where "how many seconds long are our highest performing reels?" was turned
+    # into a creative recommendation because "highest performing" reads as an
+    # optimisation objective to `decision_frame.detect_objective`.
+    #
+    # It is deliberately narrow (`analytics_query.parse` returns None for anything
+    # prescriptive, predictive or ambiguous), so the frame keeps every turn it
+    # should: "how long should the concept we just discussed be?" is a
+    # recommendation informed by duration analytics, not an analytics lookup, and
+    # falls straight through. The frame stays available here as an OPTIONAL scope
+    # filter, used only when the turn explicitly refers back to it.
+    try:
+        import analytics_query
+        import decision_frame as _DF
+        _frame = _DF.derive(context, text)
+        _aq = analytics_query.parse(text, frame=_frame, context=context)
+        if _aq is not None:
+            import social_analytics as _sa
+            explicit = _sa.answer_analytics_query(_aq, text, context)
+            if explicit:
+                return _finish_conversational(explicit, text, skip_polish=True)
+    except Exception as e:  # noqa: BLE001 - analytics precedence must never break the bot
+        log.info("explicit-analytics check skipped: %s", e)
+
     # Rated-idea retrieval (Milestone 4B) is deterministic, cited, and read-only —
     # answer it directly instead of routing idea asks through the LLM strategist.
     # Follow-up transforms (e.g. "turn this into a brief") are NOT idea queries
@@ -1297,6 +1323,21 @@ def answer_conversation(user_text: str, conversation_context: Optional[list[dict
                                                key=_conversation_key(channel_context))
         if contextual:
             return contextual
+
+        # ANALYTICS-INFORMED RECOMMENDATION (§22). "How long should the concept
+        # we just discussed be?" is neither a metric lookup nor an idea list: the
+        # frame resolves WHICH concept, and duration analytics informs HOW LONG.
+        # Runs after frame continuation (which never claims this shape) and before
+        # the generic idea/strategy routes that would otherwise re-list ideas.
+        import analytics_query as _AQ
+        import decision_frame as _DF2
+        _reco = _AQ.parse_recommendation(text, frame=_DF2.derive(context, text),
+                                         context=context)
+        if _reco is not None:
+            import social_analytics as _sa2
+            _out = _sa2.answer_duration_recommendation(_reco, text, context)
+            if _out:
+                return _finish_conversational(_out, text, skip_polish=True)
 
         # Social Analytics + Creative Test Planning (read-only). Placed before
         # the generic idea/strategy routes so these specific questions — trial

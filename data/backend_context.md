@@ -82,6 +82,62 @@ TikTok: `STORELLI_TIKTOK_HANDLE` + `is_owned_tiktok()` — only the exact config
 handle can enter the internal pipeline (never inferred from content); owned-TikTok
 metrics are limited (no official API here).
 
+**Explicit-analytics precedence** (`src/analytics_query.py`, the "how many seconds"
+fix): a clearly specified factual question about our own numbers answers the metric
+it actually asks about, even inside a live decision frame. `parse()` returns a
+structured contract (question_type / metric / dimensions / filters / cohort /
+aggregation / scope_source / requires_private_data) so the model interprets results
+rather than inventing the query; `social_brain.answer_conversation` calls it right
+after the metric-registry limit check and before `conversation_agent`, and
+`conversation_agent._maybe_frame` enforces the same rule locally. Routing
+precedence: explicit analytics -> explicit scope change -> frame continuation ->
+ambiguous follow-up -> generic strategy. The parser returns None (leaving existing
+routes untouched) for prescriptive ("what should we shoot"), predictive ("most
+likely to get comments"), ordinal ("the second one") and bare-transform ("shorter")
+turns. `decision_frame._establishes_nothing` stops a missing-data answer from
+anchoring a frame — that is what made an "I can't split trial vs standard" reply
+become a live creative frame whose prior_recommendation was the words "Data check".
+"Highest performing" always means reels currently classified Great via
+`performance.buckets_for_rows`, stated in the answer, unless the user names a
+yardstick ("highest views", "normalized performance"). The mirror image stays a
+recommendation: `parse_recommendation` + `social_analytics.answer_duration_
+recommendation` answer "how long should the concept we just discussed be?" as a
+target range built on THAT concept's duration evidence (frame resolves the
+referent), never a global median and never an idea list.
+
+**Analytics computations** (`src/social_analytics.py`, contract-driven half):
+`availability()` walks COLUMN_MISSING -> COLUMN_EXISTS -> DATA_EXISTS ->
+ENOUGH_DATA (+ COMPARABLE_DATA per side) and nothing is computed until the ladder
+allows it. `duration_profile` reports count/median/mean/range/buckets/coverage and
+a comparison against non-Great reels, with a source hierarchy that is never
+blended: exact DURATION_SECONDS -> Content-audit coarse bucket (stated as
+approximate, NEVER as a median) -> absent (say so, name the backfill).
+`temporal_fields` audits the temporal dimensions; `posting_time_profile` does
+day-of-week/hour-of-day Great-rate and refuses to name a best window until at
+least 3 performance-labelled posts sit in each window compared. Hours are UTC and
+said to be UTC — `STORELLI_POSTING_TIMEZONE` is empty by default because the
+intended local posting zone was never recorded. `social_metrics_ingest.
+build_metric_values` now also writes POST_TIMESTAMP (full resolution) alongside
+the date-only POST_DATE, which is the only thing that makes hour-of-day
+answerable. REEL_TYPE (Trial/Standard) is still never inferred from public data.
+`python src/main.py audit-analytics-coverage` prints the honest per-dimension
+inventory (read-only).
+
+**Source integrity** (`src/source_binding.py`): sources reach the reader only when
+bound to a claim the answer actually makes. Roles: AGGREGATE_EVIDENCE,
+EXAMPLE_CONTENT (illustrates, never proves an aggregate), SCHEMA_EVIDENCE,
+REFRESH_HISTORY, EXTERNAL_REFERENCE, STRATEGIC_INFERENCE (needs no source).
+Orphan sources (in the block, bound to nothing) are dropped; a missing-data answer
+renders NO Sources block, because no reel supports an absence of data; so does a
+pure clarification or inference. This replaced the `cited_norm or all_norm`
+fallback in `social_strategist.compose_strategic_answer`, which attached the
+strongest pack sources whenever the model cited none — that is how "we don't have
+enough posting-time evidence" ended up citing three unrelated Great reels. Sources
+are OPTIONAL: no block beats a misleading one. route_debug reports
+explicit_analytics_query, analytics_metric/dimensions/filters/scope,
+context_frame_ignored_reason, source_count_before/after_validation,
+orphan_sources_removed.
+
 **Stateful contextual follow-up layer** (the "why those?" fix): a follow-up to a
 prior IDEA recommendation is answered in context instead of re-running a fresh
 top-N list. `conversation_agent.answer()` is routed FIRST inside
@@ -260,7 +316,8 @@ Gemini: `GEMINI_API_KEY`, `GEMINI_MODEL`. Sheets: `GOOGLE_SHEET_ID`,
 build-request handoff: `SLACK_DEV_ALLOWED_USER_IDS`, `BUILD_REQUEST_TARGET`,
 `GITHUB_TOKEN`, `GITHUB_REPO`, `GITHUB_DISPATCH_EVENT`. Cookies (optional,
 Instagram auth): `YTDLP_COOKIES_B64`, `YTDLP_COOKIES_PATH`. Misc:
-`STORELLI_IG_FOLLOWER_COUNT`, `DASHBOARD_URL`.
+`STORELLI_IG_FOLLOWER_COUNT`, `DASHBOARD_URL`,
+`STORELLI_POSTING_TIMEZONE` (empty = posting-time analytics stay UTC and say so).
 
 ## Current safety rules (Dev Brain must state these accurately, never soften them)
 

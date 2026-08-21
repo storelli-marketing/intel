@@ -328,6 +328,31 @@ except ValueError:
     OWNED_SCAN_BUFFER_DAYS = 3
 
 
+# Canonical posting timezone for posting-time analytics (e.g. "America/New_York").
+# EMPTY BY DEFAULT AND DELIBERATELY SO: Apify/Meta timestamps are UTC, and the
+# project has never recorded which local timezone Storelli publishes on. Guessing
+# one would silently shift every hour-of-day bucket, so posting-time answers stay
+# in UTC and SAY they are in UTC until this is configured. Setting it to an
+# unknown/unsupported zone name falls back to UTC rather than crashing.
+STORELLI_POSTING_TIMEZONE = os.getenv("STORELLI_POSTING_TIMEZONE", "").strip()
+
+
+def posting_timezone():
+    """(tzinfo, label, is_utc_fallback) for posting-time analytics."""
+    from datetime import timezone as _tz
+    name = STORELLI_POSTING_TIMEZONE
+    if not name:
+        return _tz.utc, "UTC", True
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name), name, False
+    except Exception:  # noqa: BLE001 - an unknown zone must never crash an answer
+        import sys
+        print(f"WARNING: unknown STORELLI_POSTING_TIMEZONE {name!r}; using UTC.",
+              file=sys.stderr)
+        return _tz.utc, "UTC", True
+
+
 # Performance maturity gate. A post younger than this is still accumulating
 # distribution, so auto-classifying it from public metrics is misleading — the
 # live one-reel proof labelled a 2-day-old reel "Underdog" off 36k views. Such a

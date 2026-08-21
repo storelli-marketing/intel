@@ -29,6 +29,9 @@ log = get_logger()
 
 _CAUSAL_WORDS = ("causes", "caused by", "causing", "leads to", "results in", "because of the")
 
+# Last source-relevance decision, for route_debug only (never shown to users).
+LAST_SOURCE_AUDIT: dict = {}
+
 
 # --- normalized proof-link sources ------------------------------------------
 @dataclass
@@ -654,16 +657,34 @@ def compose_strategic_answer(user_text: str, conversation_context: list | None,
     # Deterministically rebuild the trailing citation block as verified,
     # clickable proof links — whatever the model wrote for citations stays
     # only as inline "Proof: [Sx]" markers; the actual link/label text is
-    # never left to the model, so it can never be a fake link. If the model
-    # dropped all inline citations for what's otherwise a substantive,
-    # evidence-backed answer, still show the strongest known sources rather
-    # than leaving the claim uncited.
-    cited_ids = {f"S{n}" for n in re.findall(r"\[S(\d+)\]", answer)}
+    # never left to the model, so it can never be a fake link.
+    #
+    # Which sources may appear at all is decided by `source_binding`, not by
+    # "what was in the pack": a source reaches the reader only when it supports
+    # a claim this answer actually makes. If the model cited nothing, the
+    # uncited pack is admissible ONLY for an answer that asserts something
+    # concrete about our numbers — an abstention ("we can't call a best posting
+    # time yet") cites nothing, because no reel supports an absence of data.
+    #
+    # The verdict is computed BEFORE the model's own trailing citation line is
+    # stripped: if that line carried its only [S#] marker, stripping first would
+    # lose the evidence of what it meant to cite and widen the block back to the
+    # whole pack.
+    import source_binding as SB
+    verdict = (SB.relevant_source_ids(answer, list(sources.keys()))
+               if sources else None)
     answer = _strip_existing_sources_line(answer)
     if sources:
-        all_norm = normalize_sources(sources)
-        cited_norm = [s for s in all_norm if s.source_id in cited_ids]
-        chosen = select_strongest_sources(cited_norm or all_norm, _wants_more_sources(user_text))
+        LAST_SOURCE_AUDIT.update(
+            before=len(sources), after=len(verdict["keep"]),
+            dropped=sorted(verdict["dropped"]), reason=verdict["reason"])
+        if verdict["dropped"]:
+            log.info("source relevance: dropped %d of %d (%s)",
+                     len(verdict["dropped"]), len(sources), verdict["reason"])
+        if not verdict["keep"]:
+            return _restrict_inline_citations(answer, set()).rstrip()
+        all_norm = [s for s in normalize_sources(sources) if s.source_id in verdict["keep"]]
+        chosen = select_strongest_sources(all_norm, _wants_more_sources(user_text))
         chosen_ids = {s.source_id for s in chosen}
         # Keep inline "Proof: [Sx]" markers in sync with what's actually
         # resolved below — no dangling citation to a source that got cut.

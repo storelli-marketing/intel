@@ -375,7 +375,9 @@ class TestGoldenPrompts(GoldenBase):
         text = "How many seconds long are our highest-performing reels?"
         out = self.run_prompt(text)
         low = out.lower()
-        self.assertIn("no duration field", low)
+        # Wording is owned by the analytics renderer; the PROPERTY under test is
+        # that the absence is stated plainly rather than estimated.
+        self.assertIn("no duration", low)
         self.assertIn("yt-dlp", low)                     # names the exact backfill source
         self.assertNotRegex(low, r"median\s*\d")         # never fabricates seconds
         self.assertEqual(FakeSheets.writes, 0)
