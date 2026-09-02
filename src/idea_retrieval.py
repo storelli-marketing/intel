@@ -93,6 +93,79 @@ _ICPS = {
 }
 
 
+# How many ideas the user actually asked for. The old pattern was `\b([1-9])\b`,
+# which matches a SINGLE digit only — so "the top 10 ideas" parsed as no count at
+# all and silently fell back to the default 3, answering a question nobody asked.
+#
+# A number is only read as a count when it sits in count position: after an
+# asking phrase ("top 10", "give me 5"), or in front of the noun ("10 ideas",
+# "5 BodyShield ideas"). That keeps "critique idea 2" an ordinal reference and
+# stops a product name like "GK 3/4 Leggings" from being read as a quantity.
+_COUNT_PATTERNS = (
+    re.compile(r"\b(?:top|best|first|strongest|give me|show me|list|want|need|"
+               r"send me|make it)\s+(\d{1,2})\b"),
+    # (?<![\d/]) keeps a size out of it: "GK 3/4 Leggings ideas" is not a
+    # request for four ideas.
+    re.compile(r"(?<![\d/])\b(\d{1,2})\s+(?:\w+\s+){0,3}"
+               r"(?:ideas?|concepts?|videos?|reels?|posts?|shoots?)\b"),
+)
+# Never honour a request for more than this in one Slack message — past it the
+# answer stops being readable and starts being a data dump.
+MAX_IDEAS = 15
+
+
+def _asked_count(t: str) -> Optional[int]:
+    for pat in _COUNT_PATTERNS:
+        m = pat.search(t)
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= 99:
+                return n
+    return None
+
+
+def supply(rows: list[dict], q: dict) -> dict:
+    """Why the pool is the size it is — so a shortfall can be explained with real
+    numbers instead of being silently rounded down to whatever fits.
+
+    Returns the total saved, how many were dropped by the eligibility bar, how
+    many were dropped by the product/ICP filter, and what that leaves.
+    """
+    total = len(rows)
+    passed_bar = [i for i in rows if eligible(i)]
+    in_scope = [i for i in passed_bar if _matches_filters(i, q)]
+    return {"total": total,
+            "ineligible": total - len(passed_bar),
+            "out_of_scope": len(passed_bar) - len(in_scope),
+            "available": len(in_scope),
+            "asked": q["count"] if q.get("count_explicit") else None}
+
+
+def shortfall_note(sup: dict, shown: int, scope: str = "") -> str:
+    """One plain sentence explaining why fewer ideas came back than were asked
+    for, naming the real reason. '' when the ask was met."""
+    asked = sup.get("asked")
+    if not asked or shown >= asked:
+        return ""
+    where = f" for {scope}" if scope else ""
+    reasons = []
+    if sup["out_of_scope"]:
+        reasons.append(f"{sup['out_of_scope']} are for other products/audiences")
+    if sup["ineligible"]:
+        reasons.append(f"{sup['ineligible']} don't clear the bar yet "
+                       f"(no internal proof, no usable reference, or a copyright risk)")
+    if shown >= MAX_IDEAS and sup["available"] > shown:
+        # Not a supply problem — we capped the list to keep it readable.
+        return (f"You asked for {asked}. I'll give you {shown} — past that a Slack "
+                f"list stops being useful; there are {sup['available']} in the pool "
+                f"if you want more.")
+    tail = f" \u2014 {', and '.join(reasons)}." if reasons else (
+        " \u2014 that's everything we've generated so far." if sup["total"] == shown
+        else ".")
+    return (f"You asked for {asked}; I've got {shown} worth putting in front of "
+            f"you{where}{tail}")
+
+
 def parse_query(text: str) -> dict:
     t = (text or "").lower()
     q = {"product": "", "icp": "", "count": 5, "count_explicit": False,
@@ -107,9 +180,9 @@ def parse_query(text: str) -> dict:
             q["icp"] = v
             break
 
-    m = re.search(r"\b([1-9])\b", t)
-    if m:
-        q["count"] = int(m.group(1))
+    n = _asked_count(t)
+    if n:
+        q["count"] = n
         q["count_explicit"] = True
 
     if "generic" in t or "too vague" in t or "cliché" in t or "cliche" in t:
@@ -330,12 +403,33 @@ def _cite_idea(idea: dict, reg: SourceRegistry, max_each: int = 2) -> tuple[str,
 _NOT_PROOF = "_External inspiration is reference only — not proof it works for Storelli._"
 
 
-def _cap(q: dict, mode: str, default: int = 3, hard: int = 5) -> int:
-    n = q["count"] if q.get("count_explicit") else default
+def _cap(q: dict, mode: str, default: int = 3, hard: int = MAX_IDEAS) -> int:
+    """How many to show. An EXPLICIT ask is honoured up to MAX_IDEAS; only the
+    unasked default stays deliberately small.
+
+    The old ceiling was 5 for both, so "the top 10 ideas" could never return more
+    than 5 however many existed — and because the count itself never parsed, it
+    returned 3.
+    """
+    explicit = bool(q.get("count_explicit"))
+    n = q["count"] if explicit else default
     n = min(n, hard)
-    if mode == st.MODE_CONCISE:
+    # "Be concise" still wins, but only against the default — if someone asked
+    # for 10 by number, they meant 10.
+    if mode == st.MODE_CONCISE and not explicit:
         n = min(n, 3)
     return max(1, n)
+
+
+def _list_mode(shown: int, mode: str) -> str:
+    """A long list needs the DEEP word budget or `enforce_length` trims it on a
+    line boundary mid-way through — which is its own version of ignoring the
+    question."""
+    # An explicit long list beats "be concise": the user asked for N items, and
+    # silently trimming them on a word cap is the same bug as never showing them.
+    if shown > 4:
+        return st.MODE_DEEP
+    return mode
 
 
 def _display_risk(idea: dict) -> str:
@@ -348,39 +442,125 @@ def _display_risk(idea: dict) -> str:
     return _first_sentence(pts[0], 9) if pts else "shootable, no big weakness"
 
 
-def _idea_line(n: int, idea: dict, reg: SourceRegistry, blunt: bool) -> str:
-    s_txt, e_txt = _cite_idea(idea, reg)
-    title = _field(idea, "REFINED_IDEA_TITLE", "IDEA_TITLE") or "Untitled"
-    hook = _field(idea, "REFINED_HOOK", "HOOK")
-    shoot = str(idea.get("RECOMMENDED_SHOOT_PRIORITY", "")).strip() or "Medium"
+def _real_risk(idea: dict) -> str:
+    """The watch-out, or '' when there genuinely isn't one.
+
+    `_display_risk` returns the filler "shootable, no big weakness" so a line
+    always has something in that slot. Printing that on every idea is what made
+    a list of ten read as one sentence copy-pasted ten times — so here an absent
+    risk is simply absent.
+    """
     risk = _display_risk(idea)
-    tag = " _(refined)_" if _uses_refined(idea) else ""
-    why = _first_sentence(hook, 16)
-    return (f"*{n}. {title}*{tag} _({idea.get('PRODUCT', '?')}, score {idea.get('IDEA_SCORE', '?')})_\n"
-            f"{why} _· shoot {shoot} · {risk}_ · proof {s_txt} · ref {e_txt}")
+    return "" if risk.startswith("shootable, no big weakness") else risk
 
 
-def _render_list(ranked: list[dict], q: dict, mode: str, blunt: bool) -> str:
+def _sentence(text: str) -> str:
+    """End a fragment with exactly one terminator. `x.rstrip(".") + "."` turned a
+    hook that already ended in "?" into "...grip?."."""
+    s = str(text or "").strip()
+    return s if not s or s[-1] in ".!?\u2026" else s + "."
+
+
+def _idea_line(n: int, idea: dict, reg: SourceRegistry, blunt: bool,
+               detail: bool = True, seen_why: Optional[set] = None,
+               lead_priority: str = "") -> str:
+    """One idea, written like a person listing options.
+
+    Nothing is emitted just to fill a slot. The risk appears only when there is
+    one; the priority only when it differs from the top pick's (saying "worth
+    doing early" under each of the first three says nothing); an identical
+    why-line is never printed twice; and citations live in the Sources block
+    instead of being restated on every line as `proof [S1] \u00b7 ref [E1]`. That
+    repetition is what made a list read as one line copy-pasted N times.
+    """
+    _cite_idea(idea, reg)          # registers the sources for the block below
+    title = _field(idea, "REFINED_IDEA_TITLE", "IDEA_TITLE") or "Untitled"
+    product = str(idea.get("PRODUCT", "")).strip()
+    head = f"*{n}. {title}*" + (f" _({product})_" if product else "")
+
+    limit = 16 if detail else 9
+    why = _first_sentence(_field(idea, "REFINED_HOOK", "HOOK"), limit)
+    if seen_why is not None:
+        # A hook shared with an earlier idea is dropped rather than repeated, but
+        # falling through to a bare title would trade one problem for another —
+        # so try the concept before giving up on saying anything.
+        for candidate in (why, _first_sentence(_field(idea, "REFINED_CONCEPT",
+                                                      "CONCEPT"), limit)):
+            key = candidate.strip().lower()
+            if key and key not in seen_why:
+                seen_why.add(key)
+                why = candidate
+                break
+        else:
+            why = ""
+
+    if not detail:
+        tail = why or (_real_risk(idea) if blunt else "")
+        return head + (f" \u2014 {_sentence(tail)}" if tail else "")
+
+    bits = []
+    if why:
+        bits.append(_sentence(why))
+    priority = str(idea.get("RECOMMENDED_SHOOT_PRIORITY", "")).strip().lower()
+    if priority and priority != lead_priority:
+        if priority == "high":
+            bits.append("Worth doing early.")
+        elif priority == "low":
+            bits.append("Fine to park until the stronger ones are shot.")
+    risk = _real_risk(idea)
+    if risk:
+        bits.append(f"Watch out: {_sentence(risk)}")
+    return head + ("\n" + " ".join(bits) if bits else "")
+
+
+def _render_list(ranked: list[dict], q: dict, mode: str, blunt: bool,
+                 sup: Optional[dict] = None) -> str:
     reg = SourceRegistry()
     count = min(_cap(q, mode), len(ranked))
     shown = ranked[:count]
     scope = " ".join(x for x in (q["product"], q["icp"]) if x)
-    lead = (f"The {count} strongest{(' ' + scope) if scope else ''} idea(s) to shoot"
-            + (" (blunt takes below)" if blunt else "") + ":")
+    out_mode = _list_mode(count, mode)
+
+    # Answer the question that was asked, and say plainly when it can't be met.
+    note = shortfall_note(sup or {}, count, scope)
+    if note:
+        lead = note
+    elif q.get("count_explicit"):
+        lead = (f"Here are {count}{(' ' + scope) if scope else ''}, strongest first"
+                + (" — blunt takes below" if blunt else "") + ":")
+    else:
+        lead = (f"The {count} strongest{(' ' + scope) if scope else ''} "
+                f"{'idea' if count == 1 else 'ideas'} to shoot"
+                + (" (blunt takes below)" if blunt else "") + ":")
     if q["product"] and any(_is_adjacent(i, q["product"]) for i in shown):
         fam = _FAMILY_LABEL.get(_family_for(q["product"]), "related")
         lead += f" _(incl. related {fam} — same {q['product']} family)_"
-    blocks = "\n".join(_idea_line(n, i, reg, blunt) for n, i in enumerate(shown, 1))
+
+    # Past a handful, the top few keep their reasoning and the tail becomes
+    # scannable one-liners — a readable long list rather than a truncated one.
+    detail_upto = 3 if count > 5 else count
+    seen_why: set = set()
+    lead_priority = str(shown[0].get("RECOMMENDED_SHOOT_PRIORITY", "")).strip().lower()
+    blocks = "\n".join(
+        _idea_line(n, i, reg, blunt, detail=(n <= detail_upto),
+                   seen_why=seen_why, lead_priority=lead_priority)
+        for n, i in enumerate(shown, 1))
+
     top = _field(shown[0], "REFINED_IDEA_TITLE", "IDEA_TITLE")
-    move = f"Shoot *{top}* first ({shown[0].get('RECOMMENDED_SHOOT_PRIORITY', 'Medium')} priority)."
+    move = f"Start with *{top}*."
+    if count > 5:
+        move += " If you only get through three, take the first three."
     src = reg.render()
     sources = (f"{src}\n{_NOT_PROOF}") if src else ""
-    return st.render_ceo_summary(lead + "\n\n" + blocks, move=move, sources=sources, mode=mode)
+    return st.render_ceo_summary(lead + "\n\n" + blocks, move=move, sources=sources,
+                                 mode=out_mode)
 
 
 def _render_shoot_first(ranked: list[dict], q: dict, mode: str, blunt: bool) -> str:
     reg = SourceRegistry()
-    shown = ranked[:3]
+    # "What should we shoot first?" is inherently a short list, but an explicit
+    # number still wins over the default.
+    shown = ranked[:min(_cap(q, mode), len(ranked))]
     blocks = []
     for n, idea in enumerate(shown, 1):
         s_txt, e_txt = _cite_idea(idea, reg)
@@ -390,11 +570,13 @@ def _render_shoot_first(ranked: list[dict], q: dict, mode: str, blunt: bool) -> 
                       f"feasibility {idea.get('FEASIBILITY_SCORE', '?')})_\n"
                       f"Fastest path: {_first_sentence(shot.split('|')[0], 12) if shot else 'n/a'} "
                       f"· {s_txt} {e_txt}")
-    lead = "Shoot these first — ranked by production practicality (priority → feasibility → clarity), not raw score:"
+    lead = ("Shoot these first — ranked by production practicality "
+            "(priority \u2192 feasibility \u2192 clarity), not raw score:")
     src = reg.render()
     sources = (f"{src}\n{_NOT_PROOF}") if src else ""
     move = f"Block a shoot day for *{_field(shown[0], 'REFINED_IDEA_TITLE', 'IDEA_TITLE')}* this week." if shown else ""
-    return st.render_ceo_summary(lead + "\n\n" + "\n".join(blocks), move=move, sources=sources, mode=mode)
+    return st.render_ceo_summary(lead + "\n\n" + "\n".join(blocks), move=move,
+                                 sources=sources, mode=_list_mode(len(shown), mode))
 
 
 def _render_critique(ranked: list[dict], q: dict, mode: str, blunt: bool) -> str:
@@ -496,6 +678,9 @@ def answer_ideas(text: str, sheets=None, ideas: Optional[list] = None,
         scope = " ".join(x for x in (q["product"], q["icp"]) if x) or "that"
         return f"No eligible rated ideas for *{scope}* yet — try another product/ICP."
 
+    sup = supply(rows, q)
+    if q["mode"] == "list":
+        return _render_list(ranked, q, mode, blunt, sup)
     renderer = {"critique": _render_critique, "generic": _render_generic,
                 "shoot_first": _render_shoot_first, "evidence": _render_evidence}.get(
         q["mode"], _render_list)

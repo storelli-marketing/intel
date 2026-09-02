@@ -232,7 +232,11 @@ def build_idea_candidates(question: str, rows: list[dict], findings: list[dict],
     rows = rows or []
     findings = findings or []
     context = context or {}
-    limit = max(3, min(int(limit or 5), 5))
+    # The generator pairs the top 3 winning hooks with the top 3 winning formats,
+    # so 9 distinct grounded ideas is the true ceiling of the current signal set.
+    # The old clamp was 5, which meant an explicit ask for more was silently
+    # rounded down even when the signals supported it. The default stays 5.
+    limit = max(3, min(int(limit or 5), 9))
 
     winning = corr.winning(findings)
     weak = corr.weak(findings)

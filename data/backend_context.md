@@ -82,6 +82,26 @@ TikTok: `STORELLI_TIKTOK_HANDLE` + `is_owned_tiktok()` — only the exact config
 handle can enter the internal pipeline (never inferred from content); owned-TikTok
 metrics are limited (no official API here).
 
+**Requested-count fidelity in idea retrieval** (`src/idea_retrieval.py`): "the top
+10 ideas" returned 3 with no explanation and an identical scaffold per line. Three
+causes: `parse_query` matched counts with `\b([1-9])\b` (single digit, so "10"
+never parsed), `_cap` applied a ceiling of 5 even to an explicit ask, and a
+shortfall was never explained. Now `_asked_count` reads a number in count position
+only ("top 10", "give me 5", "5 BodyShield ideas" — never "critique idea 2" or a
+`GK 3/4` size); an explicit count is honoured up to MAX_IDEAS=15 while the unasked
+default stays 3; `_list_mode` renders long lists at MODE_DEEP so enforce_length
+cannot trim them mid-list; and `supply()` + `shortfall_note()` explain any
+shortfall with real numbers (all we have / N below the eligibility bar / N out of
+scope / the readability cap plus the true pool size). The no-rated-ideas fallback
+(`social_brain._mode_ideas` -> `interpretation.build_idea_candidates`) takes the
+same count and states its own ceiling: the generator pairs the top 3 winning hooks
+with the top 3 winning formats, so 9 is the signal set's true maximum (the old
+internal clamp was 5). Presentation is deliberately less templated: the filler
+risk "shootable, no big weakness" is omitted rather than repeated, priority shows
+only when it differs from the top pick's, a duplicate hook falls back to the
+concept instead of leaving a bare title, and per-line `proof [S#] / ref [E#]` was
+removed in favour of the Sources block.
+
 **Analysis age gate** (`config.ANALYSIS_MIN_AGE_DAYS`, default = PERFORMANCE_MATURITY_DAYS
 = one week): a reel is NOT analyzed until it is at least that old. Enforced at the
 single choke point, `SheetsClient.should_process` / `should_tag` via

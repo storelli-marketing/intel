@@ -9,11 +9,13 @@ Run: python -m unittest discover -s tests
 """
 import os
 import sys
+import re
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import idea_retrieval as ir
+import slack_response_style as st
 
 
 def _idea(**over):
@@ -163,15 +165,226 @@ class TestSourceRendering(unittest.TestCase):
         self.assertIn("Storelli internal evidence", out)
         self.assertIn("[E1] <https://www.tiktok.com/@_jason_jamal", out)
         self.assertIn("External inspiration", out)
-        # Internal proof and external inspiration are cited separately (compact).
-        self.assertIn("proof [S1]", out)
-        self.assertIn("ref [E1]", out)
+        # Internal proof and external inspiration stay SEPARATE id spaces. They
+        # are no longer restated as "proof [S1] · ref [E1]" on every idea line —
+        # repeating that scaffold per item is what made a list read as one line
+        # copy-pasted N times — so the property is asserted on the block that
+        # actually carries the links.
+        s_line = next(l for l in out.splitlines() if "[S1]" in l)
+        e_line = next(l for l in out.splitlines() if "[E1]" in l)
+        self.assertIn("Storelli internal evidence", s_line)
+        self.assertIn("External inspiration", e_line)
+        self.assertNotIn("[E", s_line)
+        self.assertNotIn("[S", e_line)
 
     def test_evidence_mode(self):
         out = ir.answer_ideas("show me the evidence behind the top idea", ideas=[_idea()])
         self.assertIn("Evidence behind", out)
         self.assertIn("internal winning profile", out.lower())
         self.assertIn("not proof", out.lower())
+
+
+class TestRequestedCount(unittest.TestCase):
+    """The Slack failure this locks: "what are the top 10 ideas we should focus on
+    to make videos?" answered with 3, gave no reason, and repeated the same
+    scaffold on every line.
+
+    Causes were (a) `\\b([1-9])\\b` matching a single digit only, so "10" parsed as
+    no count at all, and (b) a hard ceiling of 5 that applied even to an explicit
+    ask. Both are asserted here, plus the shortfall explanation.
+    """
+
+    HOOKS = ("Every dive, a wince", "That raw, stinging knee", "The split-second pull-back",
+             "Same slide, two knees", "Why keepers stop sliding", "The check nobody does",
+             "Wet weather grip myth", "The moment a parent hesitates",
+             "The kit check that gets skipped", "The dive you pull out of",
+             "A season of turf", "What lives in your gloves")
+
+    def pool(self, n, **over):
+        out = []
+        for i in range(n):
+            out.append(_idea(IDEA_ID=f"IDEA-{i:03d}", IDEA_TITLE=f"Idea Number {i + 1}",
+                             HOOK=self.HOOKS[i % len(self.HOOKS)],
+                             IDEA_SCORE=str(95 - i), **over))
+        return out
+
+    # --- the count is read at all ------------------------------------------
+    def test_multi_digit_count_is_parsed(self):
+        q = ir.parse_query("what are the top 10 ideas we should focus on to make videos?")
+        self.assertEqual(q["count"], 10)
+        self.assertTrue(q["count_explicit"])
+
+    def test_single_digit_count_still_parsed(self):
+        q = ir.parse_query("give me 5 BodyShield ideas")
+        self.assertEqual(q["count"], 5)
+        self.assertTrue(q["count_explicit"])
+
+    def test_no_count_asked_keeps_the_small_default(self):
+        q = ir.parse_query("give me ideas")
+        self.assertFalse(q["count_explicit"])
+        self.assertEqual(ir._cap(q, st.MODE_DEFAULT), 3)
+
+    def test_an_ordinal_reference_is_not_a_count(self):
+        q = ir.parse_query("critique idea 2")
+        self.assertFalse(q["count_explicit"])
+        self.assertEqual(q["target"], 2)
+
+    def test_a_product_size_is_not_a_count(self):
+        self.assertFalse(ir.parse_query("GK 3/4 leggings ideas")["count_explicit"])
+
+    # --- the count is honoured ---------------------------------------------
+    def test_ten_asked_and_ten_available_returns_ten(self):
+        out = ir.answer_ideas("what are the top 10 ideas we should focus on to make videos?",
+                              ideas=self.pool(12))
+        for n in range(1, 11):
+            self.assertIn(f"*{n}. ", out, f"idea {n} missing")
+        self.assertNotIn("*11. ", out)
+        self.assertNotIn("idea(s)", out)          # no robotic pluralisation
+
+    def test_explicit_count_beats_the_old_ceiling_of_five(self):
+        out = ir.answer_ideas("give me 8 ideas", ideas=self.pool(10))
+        self.assertIn("*8. ", out)
+
+    def test_long_list_is_not_silently_trimmed_by_the_word_cap(self):
+        """A 10-item list must survive `enforce_length`, which trims on line
+        boundaries — showing 10 and then cutting to 4 is the same bug."""
+        out = ir.answer_ideas("top 10 ideas", ideas=self.pool(12))
+        numbered = [l for l in out.splitlines() if re.match(r"^\*\d+\. ", l)]
+        self.assertEqual(len(numbered), 10)
+
+    def test_concise_does_not_override_an_explicit_count(self):
+        out = ir.answer_ideas("briefly, give me 10 ideas", ideas=self.pool(12))
+        numbered = [l for l in out.splitlines() if re.match(r"^\*\d+\. ", l)]
+        self.assertEqual(len(numbered), 10)
+
+    # --- a shortfall is explained ------------------------------------------
+    def test_shortfall_says_how_many_and_why_nothing_more(self):
+        out = ir.answer_ideas("top 10 ideas", ideas=self.pool(6))
+        self.assertIn("You asked for 10", out)
+        self.assertIn("6", out)
+        self.assertIn("everything we've generated", out)
+
+    def test_shortfall_names_the_eligibility_bar(self):
+        pool = self.pool(4) + [_idea(IDEA_ID=f"BAD-{i}", IDEA_TITLE=f"Bad {i}",
+                                     INTERNAL_EVIDENCE_URLS="")
+                               for i in range(5)]
+        out = ir.answer_ideas("top 10 ideas", ideas=pool)
+        self.assertIn("You asked for 10", out)
+        self.assertIn("don't clear the bar", out)
+        self.assertIn("5", out)
+
+    def test_shortfall_names_an_out_of_scope_filter(self):
+        pool = (self.pool(2, PRODUCT="Gloves", ICP="Aspiring Pro")
+                + self.pool(6, PRODUCT="ExoShield Head Guard", ICP="Parents"))
+        out = ir.answer_ideas("give me 10 gloves ideas", ideas=pool)
+        self.assertIn("You asked for 10", out)
+        self.assertIn("other products/audiences", out)
+
+    def test_readability_cap_is_explained_as_a_cap_not_a_shortage(self):
+        out = ir.answer_ideas("give me 30 ideas", ideas=self.pool(40))
+        self.assertIn(f"I'll give you {ir.MAX_IDEAS}", out)
+        self.assertIn("in the pool", out)
+        self.assertNotIn("everything we've generated", out)
+
+    def test_met_ask_does_not_apologise(self):
+        out = ir.answer_ideas("top 5 ideas", ideas=self.pool(9))
+        self.assertNotIn("You asked for", out)
+        self.assertIn("Here are 5", out)
+
+    def test_shortfall_note_is_empty_when_the_ask_is_met(self):
+        sup = {"asked": 5, "available": 9, "total": 9, "ineligible": 0, "out_of_scope": 0}
+        self.assertEqual(ir.shortfall_note(sup, 5), "")
+
+    def test_supply_counts_are_real(self):
+        pool = (self.pool(3, PRODUCT="Gloves")
+                + self.pool(2, PRODUCT="Sliders")
+                + [_idea(IDEA_ID="X", INTERNAL_EVIDENCE_URLS="", PRODUCT="Gloves")])
+        sup = ir.supply(pool, ir.parse_query("give me 10 gloves ideas"))
+        self.assertEqual(sup["total"], 6)
+        self.assertEqual(sup["ineligible"], 1)
+        self.assertEqual(sup["out_of_scope"], 2)
+        self.assertEqual(sup["available"], 3)
+
+
+class TestConversationalShape(unittest.TestCase):
+    """Not a template dump. The screenshot repeated
+    "_· shoot High · shootable, no big weakness_ · proof [S1] · ref [E1]"
+    verbatim under every idea."""
+
+    def pool(self, n, **over):
+        return [_idea(IDEA_ID=f"I-{i}", IDEA_TITLE=f"Title {i + 1}",
+                      HOOK=f"Distinct hook number {i + 1}", IDEA_SCORE=str(95 - i), **over)
+                for i in range(n)]
+
+    def test_no_repeated_scaffold_per_line(self):
+        out = ir.answer_ideas("top 6 ideas", ideas=self.pool(6))
+        self.assertNotIn("proof [S", out.split("*Sources:*")[0])
+        self.assertNotIn("ref [E", out.split("*Sources:*")[0])
+        self.assertNotIn("shootable, no big weakness", out)
+
+    def test_filler_risk_is_omitted_not_printed(self):
+        self.assertEqual(ir._real_risk(_idea()), "")
+
+    def test_priority_is_not_restated_on_every_item(self):
+        out = ir.answer_ideas("top 5 ideas",
+                              ideas=self.pool(5, RECOMMENDED_SHOOT_PRIORITY="High"))
+        self.assertLessEqual(out.count("Worth doing early"), 1)
+
+    def test_a_low_priority_item_still_says_so(self):
+        pool = self.pool(2, RECOMMENDED_SHOOT_PRIORITY="High")
+        pool += [_idea(IDEA_ID="L", IDEA_TITLE="Parked One", HOOK="A quieter angle",
+                       IDEA_SCORE="70", RECOMMENDED_SHOOT_PRIORITY="Low")]
+        out = ir.answer_ideas("top 3 ideas", ideas=pool)
+        self.assertIn("park", out.lower())
+
+    def test_identical_hooks_are_not_printed_twice(self):
+        pool = [_idea(IDEA_ID=f"S-{i}", IDEA_TITLE=f"Title {i}",
+                      HOOK="The exact same hook", IDEA_SCORE=str(90 - i))
+                for i in range(4)]
+        out = ir.answer_ideas("top 4 ideas", ideas=pool)
+        self.assertEqual(out.lower().count("the exact same hook"), 1)
+
+    def test_deduped_hook_falls_back_to_the_concept(self):
+        """Dropping a repeated hook must not leave a bare title behind."""
+        pool = [_idea(IDEA_ID=f"I{i}", IDEA_TITLE=f"Idea {i + 1}",
+                      HOOK="One shared hook",
+                      CONCEPT=f"Concept variant {i + 1} showing the protection moment",
+                      IDEA_SCORE=str(95 - i)) for i in range(6)]
+        out = ir.answer_ideas("top 6 ideas", ideas=pool)
+        self.assertEqual(out.lower().count("one shared hook"), 1)
+        for n in range(2, 7):
+            self.assertIn(f"Concept variant {n}", out)
+
+    def test_no_double_punctuation_from_a_question_hook(self):
+        out = ir.answer_ideas("give me ideas",
+                              ideas=[_idea(HOOK="Think wet weather kills your grip?")])
+        self.assertNotIn("?.", out)
+        self.assertIn("grip?", out)
+
+    def test_sentence_helper_adds_one_terminator(self):
+        self.assertEqual(ir._sentence("a statement"), "a statement.")
+        self.assertEqual(ir._sentence("a question?"), "a question?")
+        self.assertEqual(ir._sentence("done."), "done.")
+        self.assertEqual(ir._sentence(""), "")
+
+    def test_every_item_in_a_long_list_says_something(self):
+        """No bare titles. The top few carry their reason on the following line;
+        the tail carries it inline after an em dash."""
+        body = ir.answer_ideas("top 10 ideas", ideas=self.pool(10))
+        lines = body.splitlines()
+        for i, line in enumerate(lines):
+            if not re.match(r"^\*\d+\. ", line):
+                continue
+            inline = "\u2014" in line
+            nxt = lines[i + 1] if i + 1 < len(lines) else ""
+            follows = bool(nxt.strip()) and not re.match(r"^\*\d+\. ", nxt) \
+                and not nxt.startswith("*My move")
+            self.assertTrue(inline or follows, f"bare title with no reason: {line}")
+
+    def test_closing_move_is_actionable(self):
+        out = ir.answer_ideas("top 10 ideas", ideas=self.pool(10))
+        self.assertIn("*My move:*", out)
+        self.assertIn("Start with", out)
 
 
 def _refined_idea(**over):
@@ -194,7 +407,11 @@ class TestRefinedPreference(unittest.TestCase):
         self.assertIn("one setup mistake", out)                       # refined hook
         self.assertNotIn("The Game-Changer", out)                     # original title hidden
         self.assertNotIn("Unleash your inner keeper", out)            # original hook hidden
-        self.assertIn("refined", out.lower())                         # marked as refined
+        # The substantive guarantee is that the REFINED fields are the ones shown.
+        # The old " _(refined)_" tag is deliberately gone: naming an internal
+        # pipeline stage next to a title is the kind of process label that makes
+        # a Slack answer read like a system dump rather than a colleague talking.
+        self.assertNotIn("(refined)", out.lower())
 
     def test_fallback_to_original_when_unrefined(self):
         out = ir.answer_ideas("give me gloves ideas", ideas=[_idea()])   # no refinement

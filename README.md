@@ -1268,13 +1268,48 @@ shooting?"*, *"critique the top ideas"*, *"what should we shoot first?"* (ranked
 by production practicality, not just IDEA_SCORE), *"which ideas are too
 generic?"*, *"show me the evidence behind the top idea"*.
 
-Answers stay to the top 3–5, cite internal proof `[S#]` and external inspiration
-`[E#]` as **separate** clickable Slack links, and never present external views as
-proof. A light generic-language check flags hype phrases (game-changer, unleash,
-dominate, inner keeper, zero hesitation, unbreakable…) and suggests sharper
-rewrites — without touching the sheet. If no rated ideas exist, it falls back to
-the older live signal-grounded idea path. All other Slack retrieval paths are
-unchanged.
+Answers cite internal proof `[S#]` and external inspiration `[E#]` as
+**separate** clickable Slack links, and never present external views as proof. A
+light generic-language check flags hype phrases (game-changer, unleash, dominate,
+inner keeper, zero hesitation, unbreakable…) and suggests sharper rewrites —
+without touching the sheet. If no rated ideas exist, it falls back to the older
+live signal-grounded idea path. All other Slack retrieval paths are unchanged.
+
+#### The count you ask for is the count you get
+
+Ask for *"the top 10 ideas"* and you get 10. Production returned **3**, with no
+explanation and the same scaffold under every line:
+
+> `_· shoot High · shootable, no big weakness_ · proof [S1] · ref [E1]`
+
+Three separate causes, all fixed:
+
+- **The number was never read.** `parse_query` matched counts with
+  `\b([1-9])\b` — a *single digit* — so "10" parsed as no count at all and fell
+  back to the default 3. A number is now read as a count when it sits in count
+  position ("top 10", "give me 5", "5 BodyShield ideas"), which keeps
+  "critique idea 2" an ordinal and stops `GK 3/4 Leggings` becoming a quantity.
+- **A ceiling of 5 applied even to an explicit ask.** An explicit count is now
+  honoured up to `MAX_IDEAS` (15); only the *unasked* default stays at 3. A long
+  list also renders at the DEEP word budget, because `enforce_length` would
+  otherwise trim it on a line boundary halfway down — showing 10 and then cutting
+  to 4 is the same bug wearing a different hat.
+- **A shortfall was silent.** When fewer come back than asked, the answer opens
+  by saying so and names the real reason from `idea_retrieval.supply()`:
+  everything we've generated, *N* dropped by the eligibility bar (no internal
+  proof / no usable reference / copyright risk), *N* for other products or
+  audiences, or the readability cap with the true pool size. On the fallback
+  path the ceiling is the winning-signal set itself ("the current winning-signal
+  set only supports 6 distinct grounded ideas — more tagged videos would widen
+  it").
+
+And it reads like a colleague, not a report. Nothing is printed to fill a slot:
+the filler risk (`shootable, no big weakness`) is omitted rather than repeated,
+the priority appears only when it differs from the top pick's, an identical hook
+is never printed twice (it falls back to the concept rather than leaving a bare
+title), per-line `proof [S#] · ref [E#]` is gone in favour of the Sources block,
+and past five items the top three keep their reasoning while the tail becomes
+scannable one-liners.
 
 ### Rated creative idea generation (Milestone 4A)
 
