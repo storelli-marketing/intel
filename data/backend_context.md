@@ -65,8 +65,23 @@ brain last update / what changed / should we regenerate ideas / new inspiration"
 read the run history (external stays reference-only). Config:
 INTELLIGENCE_REFRESH_ENABLED, INTELLIGENCE_REFRESH_CADENCE_DAYS (default 7,
 clamp 5–14), INTELLIGENCE_REFRESH_STALE_LOCK_MIN. No scheduler is created in the
-repo — recurrence is wired externally via a Railway Cron invoking
-`refresh-intelligence`; it is NOT self-updating until that recurrence is enabled.
+repo's deploy config, but recurrence IS now running: `src/scheduler.py` starts a
+daemon thread from the FastAPI startup hook (never at import time, so importing
+`web` spends no quota), wakes every INTELLIGENCE_SCHEDULER_CHECK_MINUTES, and
+asks the INTELLIGENCE_REFRESH_RUNS log whether a successful/partial run finished
+inside the cadence — so a restart neither loses nor double-fires the schedule and
+two replicas cannot overlap (the orchestrator's lock row handles that; the loser
+exits as locked_out). It runs mode=full with trigger=scheduler. Gated on
+INTELLIGENCE_SCHEDULER_ENABLED + INTELLIGENCE_REFRESH_ENABLED + Sheets being
+configured; it refuses to start with a stated reason rather than failing hourly,
+and no failure inside it can take down the web process. GET /status exposes the
+scheduler snapshot plus a `build` block (commit SHA from RAILWAY_GIT_COMMIT_SHA,
+analysis_min_age_days, refresh_cadence_days) so "is the weekly job running?" and
+"which build is live?" are answerable without host access. `python -m src.main
+refresh-intelligence` still works for a manual run. NOTE: external discovery is a
+guaranteed no-op with no ACTIVE row in APIFY_DISCOVERY_QUERIES, so that stage now
+reports `skipped` with an actionable reason instead of "success, 0 discovered" —
+ACTIVE is still never toggled automatically (that is the cost control).
 NEW owned reels are auto-appended: the internal loop's `internal_append` stage
 detects Storelli-owned IG media not in the POC and safely appends a row
 (`SheetsClient.append_metadata_rows` + `social_metrics_ingest.append_owned_media_to_poc`)

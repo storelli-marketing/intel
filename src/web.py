@@ -82,6 +82,27 @@ def _short(r: dict) -> dict:
             "confidence": r["confidence"]}
 
 
+def _build_info() -> dict:
+    """Which build is serving, so a deploy can be verified from outside the box.
+
+    Railway exposes the deployed commit as RAILWAY_GIT_COMMIT_SHA; fall back to
+    the local git HEAD for a dev run. Never raises, never shells out on the
+    request path if the env var is present.
+    """
+    sha = (os.getenv("RAILWAY_GIT_COMMIT_SHA") or os.getenv("SOURCE_COMMIT")
+           or os.getenv("GIT_COMMIT") or "").strip()
+    if not sha:
+        try:
+            import subprocess
+            sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                                 text=True, timeout=2,
+                                 cwd=os.path.dirname(__file__)).stdout.strip()
+        except Exception:  # noqa: BLE001
+            sha = ""
+    return {"commit": sha[:12], "analysis_min_age_days": config.ANALYSIS_MIN_AGE_DAYS,
+            "refresh_cadence_days": config.INTELLIGENCE_REFRESH_CADENCE_DAYS}
+
+
 def _check_secret(provided: Optional[str]) -> None:
     expected = config.RUN_SECRET
     if not expected:
@@ -549,10 +570,46 @@ def index() -> str:
     return _HTML
 
 
+@app.on_event("startup")
+def _start_scheduler() -> None:
+    """Start the weekly intelligence refresh.
+
+    Deliberately here and not at import time: importing `web` (tests, tooling,
+    a CLI that happens to pull the module in) must never schedule a job that
+    spends Apify and Gemini quota. Fail-soft — a scheduler that cannot start
+    must not stop the service from serving.
+    """
+    try:
+        import scheduler
+        state = scheduler.start()
+        log.info("scheduler startup: enabled=%s reason=%r",
+                 state.get("enabled"), state.get("disabled_reason"))
+    except Exception as e:  # noqa: BLE001
+        log.exception("scheduler failed to start (service continues): %s", e)
+
+
+@app.on_event("shutdown")
+def _stop_scheduler() -> None:
+    try:
+        import scheduler
+        scheduler.stop()
+    except Exception:  # noqa: BLE001
+        log.exception("scheduler shutdown failed")
+
+
 @app.get("/status")
 def status() -> JSONResponse:
     with _LOCK:
-        return JSONResponse(dict(STATE))
+        out = dict(STATE)
+    # What the weekly job is doing, so "is this actually running?" is answerable
+    # without shell access to the host. Also identifies the running build.
+    try:
+        import scheduler
+        out["scheduler"] = scheduler.snapshot()
+    except Exception as e:  # noqa: BLE001
+        out["scheduler"] = {"enabled": False, "disabled_reason": f"unavailable: {e}"}
+    out["build"] = _build_info()
+    return JSONResponse(out)
 
 
 @app.get("/learnings")

@@ -1012,6 +1012,20 @@
       ],
       "classes": []
     },
+    "src/scheduler.py": {
+      "functions": [
+        "_now",
+        "_set",
+        "snapshot",
+        "_disabled_reason",
+        "due",
+        "run_once",
+        "_loop",
+        "start",
+        "stop"
+      ],
+      "classes": []
+    },
     "src/semantic_connections.py": {
       "functions": [
         "_num",
@@ -1479,6 +1493,7 @@
         "_slug",
         "_now",
         "_short",
+        "_build_info",
         "_check_secret",
         "_parse_limit",
         "_begin",
@@ -1509,6 +1524,8 @@
         "_do_synthesize",
         "_guarded",
         "index",
+        "_start_scheduler",
+        "_stop_scheduler",
         "status",
         "learnings",
         "run_social",
@@ -1736,6 +1753,7 @@
     "GITHUB_DISPATCH_EVENT",
     "GITHUB_REPO",
     "GITHUB_TOKEN",
+    "GIT_COMMIT",
     "GOOGLE_SERVICE_ACCOUNT_JSON_B64",
     "GOOGLE_SERVICE_ACCOUNT_JSON_PATH",
     "GOOGLE_SHEET_ID",
@@ -1748,6 +1766,8 @@
     "INTELLIGENCE_REFRESH_CADENCE_DAYS",
     "INTELLIGENCE_REFRESH_ENABLED",
     "INTELLIGENCE_REFRESH_STALE_LOCK_MIN",
+    "INTELLIGENCE_SCHEDULER_CHECK_MINUTES",
+    "INTELLIGENCE_SCHEDULER_STARTUP_DELAY_SECONDS",
     "INTELLIGENCE_STALE_TOLERANCE_DAYS",
     "META_ACCESS_TOKEN",
     "META_API_VERSION",
@@ -1761,6 +1781,7 @@
     "OWNED_SCAN_MAX_RESULTS",
     "PERFORMANCE_MATURITY_DAYS",
     "QA_COMPILER_ENABLED",
+    "RAILWAY_GIT_COMMIT_SHA",
     "RUN_SECRET",
     "SLACK_BOT_TOKEN",
     "SLACK_DEV_ALLOWED_USER_IDS",
@@ -1769,6 +1790,7 @@
     "SLACK_SIGNING_SECRET",
     "SLACK_STRATEGIST_MODE_ENABLED",
     "SLACK_WEBHOOK_URL",
+    "SOURCE_COMMIT",
     "STORELLI_IG_FOLLOWER_COUNT",
     "STORELLI_INSTAGRAM_HANDLE",
     "STORELLI_POSTING_TIMEZONE",

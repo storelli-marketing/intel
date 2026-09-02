@@ -256,8 +256,8 @@ def instagram_missing_vars() -> list:
 
 # Self-updating intelligence refresh (scheduler orchestration). Two isolated
 # loops — internal Storelli evidence + external inspiration — run on a bounded
-# WEEKLY cadence. Defaults are conservative; recurrence is only "on" once an
-# external scheduler (Railway Cron) actually invokes the refresh.
+# WEEKLY cadence. Recurrence is driven in-process by src/scheduler.py, which the
+# web app starts on boot — no external cron required.
 INTELLIGENCE_REFRESH_ENABLED = os.getenv("INTELLIGENCE_REFRESH_ENABLED", "true").strip().lower() \
     not in ("false", "0", "no", "off")
 try:
@@ -277,6 +277,36 @@ try:
     INTELLIGENCE_MAX_ACTIVE_QUERIES = int(os.getenv("INTELLIGENCE_MAX_ACTIVE_QUERIES", "12") or 12)
 except ValueError:
     INTELLIGENCE_MAX_ACTIVE_QUERIES = 12
+# In-process weekly scheduler (src/scheduler.py). Every stage of the refresh was
+# already built and orchestrated, but nothing invoked it: the repo created no
+# schedule and the docs pointed at "a Railway Cron" that was never set up, so the
+# self-updating brain updated only when somebody clicked a button. This runs it
+# from the already-deployed web process — no new infrastructure, no second copy
+# of the credentials. Overlap is safe: the orchestrator takes a lock row in
+# INTELLIGENCE_REFRESH_RUNS, so a second replica (or a dashboard click) exits
+# cleanly instead of double-running.
+INTELLIGENCE_SCHEDULER_ENABLED = os.getenv(
+    "INTELLIGENCE_SCHEDULER_ENABLED", "true").strip().lower() \
+    not in ("false", "0", "no", "off")
+# How often the thread wakes to ask "is a refresh due?". It does NOT sleep for a
+# week — the due/not-due answer comes from the run history in the sheet, so a
+# restart neither loses nor double-fires the schedule.
+try:
+    INTELLIGENCE_SCHEDULER_CHECK_MINUTES = int(
+        os.getenv("INTELLIGENCE_SCHEDULER_CHECK_MINUTES", "60") or 60)
+except ValueError:
+    INTELLIGENCE_SCHEDULER_CHECK_MINUTES = 60
+INTELLIGENCE_SCHEDULER_CHECK_MINUTES = max(5, min(1440, INTELLIGENCE_SCHEDULER_CHECK_MINUTES))
+# Settle time before the first check, so a cold start or a redeploy loop never
+# fires a heavy job before the process is serving traffic.
+try:
+    INTELLIGENCE_SCHEDULER_STARTUP_DELAY_SECONDS = int(
+        os.getenv("INTELLIGENCE_SCHEDULER_STARTUP_DELAY_SECONDS", "120") or 120)
+except ValueError:
+    INTELLIGENCE_SCHEDULER_STARTUP_DELAY_SECONDS = 120
+INTELLIGENCE_SCHEDULER_STARTUP_DELAY_SECONDS = max(
+    0, min(3600, INTELLIGENCE_SCHEDULER_STARTUP_DELAY_SECONDS))
+
 # Grace beyond the cadence before the brain is considered STALE.
 try:
     INTELLIGENCE_STALE_TOLERANCE_DAYS = int(

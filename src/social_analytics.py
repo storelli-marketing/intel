@@ -1548,7 +1548,7 @@ def _render_brain_status(text: str) -> str:
             note = "not scheduled yet"
         return dt.render(f"Next refresh: {note}.",
                          [dt.step("Cadence", note, [], "topic", "Medium")],
-                         move="enable the weekly Railway Cron to make it automatic.", mode=mode)
+                         move="the weekly refresh runs automatically; `refresh-readiness` shows what it can reach.", mode=mode)
     if any(k in t for k in ("healthy", "brain health", "needs attention", "up to date",
                             "did anything fail")):
         try:
@@ -1573,7 +1573,7 @@ def _render_brain_status(text: str) -> str:
             "The brain hasn't run an automatic refresh yet — no refresh history.",
             [dt.step("Status", "no scheduled refresh recorded", [], "topic", "Thin")],
             move="run `refresh-intelligence --dry-run` to preview, then schedule it weekly "
-                 "(Railway Cron). I'll report each run here.", mode=mode)
+                 "automatically each week. I'll report each run here.", mode=mode)
     r = runs[0]
     when = r.get("FINISHED_AT") or r.get("STARTED_AT") or "recently"
     new_media, analyzed = _n(r, "INTERNAL_NEW_MEDIA"), _n(r, "INTERNAL_ANALYZED")

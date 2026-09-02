@@ -311,6 +311,78 @@ Post age itself is read at full resolution: `post_age_days` prefers
 column first truncated a real timestamp to midnight, which was enough to slip a
 6.9-day-old reel through a 7-day gate.
 
+## Weekly schedule — it actually runs now
+
+Every stage of the self-updating pipeline was built and orchestrated, and
+**nothing ever invoked it.** The repo created no schedule, this README pointed at
+"a Railway Cron invoking `refresh-intelligence`", and no such cron existed — so
+the self-updating brain updated only when somebody clicked a dashboard button.
+
+`src/scheduler.py` closes that inside the service that is already deployed: no
+new infrastructure, no second copy of the credentials, nothing to wire up.
+
+```
+FastAPI startup -> daemon thread -> wakes hourly -> "is a refresh due?"
+                                                     (asks the run log, not memory)
+                                       due -> run_intelligence_refresh(mode="full")
+```
+
+Each weekly run does all three things end to end:
+
+| | Stage | What it does |
+| --- | --- | --- |
+| **Our own feed** | `owned_scan` → `internal_append` → `internal_analyze` | bounded Apify scan of the one trusted owned account, appends new reels, refreshes public metrics, analyzes whatever is old enough |
+| **New videos to learn from** | `external_discovery` → `analyze` → `match` → `quality` → `connections` | Apify discovery ranked by `PRIORITY_SCORE` (40% mechanism + **30% view/follower ratio** + 15% absolute views + 15% safety), then tagged, matched and quality-gated |
+| **Brain updated** | `internal_maturity` → `internal_recompute` → Notion sync | labels matured posts, rebuilds correlations + `latest_learnings.md` + winning profiles, syncs Notion — *only* when internal evidence actually changed |
+
+Properties that make it safe to run in-process:
+
+- **Inert until serving.** Started from the startup hook, never at import, so
+  importing `web` (tests, tooling, a CLI) can never spend Apify or Gemini quota.
+- **Restart-proof and replica-safe.** It wakes hourly and asks the
+  `INTELLIGENCE_REFRESH_RUNS` log whether a successful run finished inside the
+  cadence — it does *not* sleep for a week. Two replicas can't overlap: the
+  orchestrator takes a lock row, and the loser exits cleanly as `locked_out`.
+- **Refuses rather than flails.** With the scheduler off, the refresh off, or
+  Sheets unconfigured it declines to start *with a stated reason* instead of
+  failing every hour.
+- **Cannot take the service down.** Every failure is caught, counted and retried
+  at the next window; the run itself is already fail-soft per stage.
+
+Controls: `INTELLIGENCE_SCHEDULER_ENABLED` (default `true`),
+`INTELLIGENCE_SCHEDULER_CHECK_MINUTES` (5–1440, default 60),
+`INTELLIGENCE_SCHEDULER_STARTUP_DELAY_SECONDS` (0–3600, default 120),
+`INTELLIGENCE_REFRESH_CADENCE_DAYS` (5–14, default 7).
+`python -m src.main refresh-intelligence` still works for a manual run.
+
+### Verifying it from outside
+
+`GET /status` now carries the scheduler snapshot and a `build` block, so "is the
+weekly job running?" and "which build is live?" are answerable without host
+access:
+
+```json
+{
+  "scheduler": {
+    "enabled": true, "thread_alive": true, "cadence_days": 7,
+    "last_check_at": "...", "last_decision": "last successful refresh 2.1d ago — next due in 4.9d",
+    "last_run_id": "IR-20260902-150937", "last_run_status": "success",
+    "runs_started": 1, "consecutive_errors": 0, "last_error": ""
+  },
+  "build": {"commit": "00ab42c...", "analysis_min_age_days": 7, "refresh_cadence_days": 7}
+}
+```
+
+### One precondition you have to set
+
+External discovery reads `ACTIVE=TRUE` rows from **`APIFY_DISCOVERY_QUERIES`**.
+With none active the scrape is a guaranteed no-op — and it used to report
+"success, 0 discovered", which is indistinguishable from a healthy week that
+found nothing new. That stage now reports **`skipped`** with an actionable
+reason. `ACTIVE` is still never toggled automatically: that is the cost control,
+and picking which query families to run is a judgement call (see the batch
+runbook above).
+
 ## Correlation engine
 
 Per signal: count of videos with it, **`Great` rate** with vs without the

@@ -451,6 +451,17 @@ def _external_discovery(dry_run: bool, sheets) -> dict:
     import query_economics as qe
     active = sheets.read_active_queries()
     sel = qe.select_active(active, config.INTELLIGENCE_MAX_ACTIVE_QUERIES)
+    # No ACTIVE query means the scrape is a guaranteed no-op. Reporting that as
+    # "success, 0 discovered" reads identically to a run that genuinely found
+    # nothing new, so a weekly schedule could look healthy for months while
+    # scraping nothing. Say which it is, and what to do about it. (ACTIVE is
+    # never toggled automatically — that is the cost control.)
+    if not sel["selected"]:
+        return _stage("external_discovery", "skipped", processed=0,
+                      reason=(f"no ACTIVE on-domain query in APIFY_DISCOVERY_QUERIES "
+                              f"({len(active)} row(s) read, {len(sel['paused'])} paused, "
+                              f"{len(sel['review'])} to review) — set ACTIVE=TRUE on the "
+                              f"queries you want scraped, or nothing is discovered"))
     if dry_run:
         n = len(sel["selected"])
         est = n * config.APIFY_DEFAULT_MAX_RESULTS
@@ -846,8 +857,14 @@ def missing_because_no_meta() -> list:
 
 
 def next_scheduled_note() -> str:
-    return (f"every {config.INTELLIGENCE_REFRESH_CADENCE_DAYS} days once a Railway Cron "
-            "invokes `refresh-intelligence` (not enabled until that cron exists)")
+    import scheduler
+    snap = scheduler.snapshot()
+    every = f"every {config.INTELLIGENCE_REFRESH_CADENCE_DAYS} days"
+    if snap.get("enabled") and snap.get("thread_alive"):
+        nxt = snap.get("last_decision") or ""
+        return f"{every}, running automatically in the service" + (f" ({nxt})" if nxt else "")
+    reason = snap.get("disabled_reason") or "the scheduler is not running"
+    return f"{every} when scheduled, but not running right now — {reason}"
 
 
 def render_readiness(caps: dict) -> str:
