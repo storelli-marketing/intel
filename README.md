@@ -373,6 +373,39 @@ access:
 }
 ```
 
+### Weekly digest
+
+Each scheduled run pushes a short summary of **what actually changed** to Slack
+(via the existing `SLACK_WEBHOOK_URL`), and by email when SMTP is configured:
+
+```
+*Storelli brain — weekly refresh done*
+• *Our feed:* 4 new reels picked up, 3 analyzed, 2 waiting out the 7-day window,
+  2 graded now they've settled, metrics refreshed on 26 cells
+• *Inspiration:* 18 new candidates saved from 62 scanned, 5 clean enough to build
+  on, 4 linked to something we've proven _(reference only — never proof it works for us)_
+• *Brain:* patterns recomputed, 2 winning profiles updated, Notion synced
+
+*Needs you:*
+• Worth regenerating ideas (new internal evidence) — that step is never automatic.
+```
+
+`render_report()` already existed but is CLI-shaped: one line per stage, every
+stage, including the ones that did nothing. `src/refresh_digest.py` renders the
+same run as something worth skimming on a Monday — stages that did nothing
+collapse to one line, while a **failed stage is always named**, because a quiet
+weekly failure is how a pipeline dies unnoticed. A quiet week says
+*"nothing new this week"* and *"conclusions unchanged"* rather than padding.
+
+Same discipline as everywhere else: every figure comes from the run's own
+history row, and external counts are never described as proof.
+
+Delivery is best-effort by construction — a Slack outage or a bad SMTP password
+cannot turn a successful refresh into a failed one, and an unconfigured
+destination is a silent no-op. Email is fully opt-in via `DIGEST_EMAIL_TO` +
+`SMTP_HOST` + `SMTP_FROM` (stdlib `smtplib`, no new dependency); with those unset
+nothing is ever sent. `DIGEST_ENABLED=false` turns the whole thing off.
+
 ### One precondition you have to set
 
 External discovery reads `ACTIVE=TRUE` rows from **`APIFY_DISCOVERY_QUERIES`**.

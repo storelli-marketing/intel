@@ -307,6 +307,29 @@ except ValueError:
 INTELLIGENCE_SCHEDULER_STARTUP_DELAY_SECONDS = max(
     0, min(3600, INTELLIGENCE_SCHEDULER_STARTUP_DELAY_SECONDS))
 
+# Weekly digest delivery (src/refresh_digest.py). After each scheduled refresh a
+# short readable summary of what actually changed is pushed to Slack via the
+# existing SLACK_WEBHOOK_URL, and by email when — and only when — SMTP is
+# configured below. Both are best-effort: a delivery failure never affects the
+# refresh, and an unconfigured destination is a silent no-op rather than an error.
+DIGEST_ENABLED = os.getenv("DIGEST_ENABLED", "true").strip().lower() \
+    not in ("false", "0", "no", "off")
+
+# Comma-separated recipients. EMPTY = no email is ever sent.
+DIGEST_EMAIL_TO = os.getenv("DIGEST_EMAIL_TO", "").strip()
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+try:
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "587") or 587)
+except ValueError:
+    SMTP_PORT = 587
+SMTP_FROM = os.getenv("SMTP_FROM", "").strip()
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").strip().lower() \
+    not in ("false", "0", "no", "off")
+SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "false").strip().lower() \
+    in ("true", "1", "yes", "on")
+
 # Grace beyond the cadence before the brain is considered STALE.
 try:
     INTELLIGENCE_STALE_TOLERANCE_DAYS = int(

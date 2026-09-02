@@ -1012,6 +1012,17 @@
       ],
       "classes": []
     },
+    "src/refresh_digest.py": {
+      "functions": [
+        "_by_stage",
+        "_n",
+        "build_digest",
+        "email_configured",
+        "send_email",
+        "deliver"
+      ],
+      "classes": []
+    },
     "src/scheduler.py": {
       "functions": [
         "_now",
@@ -1748,6 +1759,8 @@
     "APIFY_TOKEN",
     "BUILD_REQUEST_TARGET",
     "DASHBOARD_URL",
+    "DIGEST_EMAIL_TO",
+    "DIGEST_ENABLED",
     "GEMINI_API_KEY",
     "GEMINI_MODEL",
     "GITHUB_DISPATCH_EVENT",
@@ -1790,6 +1803,13 @@
     "SLACK_SIGNING_SECRET",
     "SLACK_STRATEGIST_MODE_ENABLED",
     "SLACK_WEBHOOK_URL",
+    "SMTP_FROM",
+    "SMTP_HOST",
+    "SMTP_PASSWORD",
+    "SMTP_PORT",
+    "SMTP_USERNAME",
+    "SMTP_USE_SSL",
+    "SMTP_USE_TLS",
     "SOURCE_COMMIT",
     "STORELLI_IG_FOLLOWER_COUNT",
     "STORELLI_INSTAGRAM_HANDLE",

@@ -61,6 +61,8 @@ STATE: dict = {
     "consecutive_errors": 0,
     "last_error": "",
     "disabled_reason": "",
+    "last_digest_slack": None,
+    "last_digest_email": None,
 }
 
 # RLock, not Lock: `start()` checks state under the lock and then returns
@@ -162,8 +164,27 @@ def run_once(trigger: str = TRIGGER) -> Optional[dict]:
          last_decision=(report.get("reason") or why))
     if report.get("locked_out"):
         log.info("scheduler: another refresh held the lock — exited cleanly")
-    else:
-        log.info("scheduler: refresh %s (%s)", report.get("status"), report.get("run_id"))
+        return report
+
+    log.info("scheduler: refresh %s (%s)", report.get("status"), report.get("run_id"))
+    # Push the weekly digest to where people actually read it. Best effort by
+    # design: a Slack outage or a bad SMTP password must never turn a successful
+    # refresh into a failed one, so the outcome is recorded and nothing raises.
+    if config.DIGEST_ENABLED:
+        try:
+            import refresh_digest
+            health = None
+            try:
+                import intelligence_refresh as _ir
+                health = _ir.health_state()
+            except Exception:  # noqa: BLE001 - health is a nice-to-have here
+                health = None
+            delivery = refresh_digest.deliver(report, health)
+            _set(last_digest_slack=delivery.get("slack"),
+                 last_digest_email=delivery.get("email"))
+        except Exception as e:  # noqa: BLE001
+            log.warning("scheduler: digest delivery failed: %s", e)
+            _set(last_digest_slack="failed", last_digest_email="failed")
     return report
 
 

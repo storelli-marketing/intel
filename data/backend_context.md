@@ -117,6 +117,21 @@ only when it differs from the top pick's, a duplicate hook falls back to the
 concept instead of leaving a bare title, and per-line `proof [S#] / ref [E#]` was
 removed in favour of the Sources block.
 
+**Weekly digest** (`src/refresh_digest.py`): after each scheduled refresh, a short
+readable summary of what changed is pushed to Slack via the existing
+SLACK_WEBHOOK_URL and, when SMTP is configured, by email (stdlib smtplib, no new
+dependency). `render_report()` is CLI-shaped (one line per stage, including
+no-ops); the digest collapses no-ops, always names a FAILED stage, surfaces
+"needs you" items (idea regeneration is never automatic; health warnings), and
+says "nothing new this week" rather than padding. Every figure comes from the
+run's own history row and external counts are never called proof. Delivery is
+best-effort: an unconfigured destination is a silent no-op and a Slack/SMTP
+failure never turns a successful refresh into a failed one. Config:
+DIGEST_ENABLED (default true), DIGEST_EMAIL_TO + SMTP_HOST + SMTP_FROM (all
+empty = no email is ever sent), SMTP_PORT/USERNAME/PASSWORD/USE_TLS/USE_SSL.
+There is NO other email integration in this app — no inbox is read, and email is
+outbound digest only.
+
 **Analysis age gate** (`config.ANALYSIS_MIN_AGE_DAYS`, default = PERFORMANCE_MATURITY_DAYS
 = one week): a reel is NOT analyzed until it is at least that old. Enforced at the
 single choke point, `SheetsClient.should_process` / `should_tag` via
