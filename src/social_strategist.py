@@ -32,6 +32,22 @@ _CAUSAL_WORDS = ("causes", "caused by", "causing", "leads to", "results in", "be
 # Last source-relevance decision, for route_debug only (never shown to users).
 LAST_SOURCE_AUDIT: dict = {}
 
+# Why the strategist voice last fell back to the deterministic engine, and how
+# often. The fallback is correct — a validated answer or nothing — but it was
+# INVISIBLE: over quota, every Slack reply quietly became a terse retrieval
+# answer with no way to tell why it stopped sounding like a strategist.
+# Surfaced on GET /status.
+FALLBACKS: dict = {"count": 0, "last_reason": "", "last_at": "", "quota_exhausted": 0}
+
+
+def _note_fallback(reason: str, quota: bool = False) -> None:
+    from datetime import datetime, timezone
+    FALLBACKS["count"] += 1
+    FALLBACKS["last_reason"] = reason
+    FALLBACKS["last_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if quota:
+        FALLBACKS["quota_exhausted"] += 1
+
 
 # --- normalized proof-link sources ------------------------------------------
 @dataclass
@@ -625,7 +641,15 @@ def compose_strategic_answer(user_text: str, conversation_context: list | None,
         from gemini_client import GeminiClient
         answer = GeminiClient().summarize_findings(prompt).strip()
     except Exception as e:  # noqa: BLE001 - strategist synthesis is optional, never fatal
-        log.warning("strategist synthesis failed (%s); using deterministic fallback.", e)
+        quota = type(e).__name__ == "QuotaExhaustedError" or "RESOURCE_EXHAUSTED" in str(e)
+        if quota:
+            # Worth its own line: it means every reply today reads as a retrieval
+            # tool rather than a strategist, and nothing else reveals that.
+            log.warning("strategist OVER QUOTA — Slack answers will use the "
+                        "deterministic voice until quota resets (%s)", e)
+        else:
+            log.warning("strategist synthesis failed (%s); using deterministic fallback.", e)
+        _note_fallback(f"{type(e).__name__}: {e}"[:200], quota=quota)
         return None
 
     if not answer:

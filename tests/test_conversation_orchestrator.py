@@ -242,3 +242,51 @@ class TestUnfurlsDisabled(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOpeningQuestionIsNotAPhantomFollowUp(unittest.TestCase):
+    """A first message must never be answered as a follow-up to nothing.
+
+    "What's working for BodyShield, and what should we do about it?" contains
+    "about it", which trips the deep-dive trigger. With an empty thread the "it"
+    resolved to nothing, so the bot replied "I'm missing the previous item you
+    mean" — inventing a conversation that never happened. One reply like that
+    breaks the illusion of talking to someone who was listening.
+    """
+
+    def test_opening_question_with_about_it_is_answered_not_queried(self):
+        for q in ("what's working for BodyShield right now, and what should we do about it?",
+                  "what's the story with gloves and what do we do about it?",
+                  "how are we doing on BodyShield and what should we do about it?"):
+            out = orch.answer(q, context=[], ideas=IDEAS, gemini=None)
+            if out:
+                self.assertNotIn("missing the previous item", out.lower(), q)
+
+    def test_a_named_product_is_enough_to_not_ask_which_one(self):
+        out = orch.answer("how's BodyShield doing? tell me more about it",
+                          context=[], ideas=IDEAS, gemini=None)
+        if out:
+            self.assertNotIn("missing the previous item", out.lower())
+
+    def test_a_bare_reference_still_asks(self):
+        """With nothing else to go on, asking beats guessing."""
+        out = orch.answer("tell me more about it", context=[], ideas=IDEAS, gemini=None)
+        self.assertIsNotNone(out)
+        self.assertIn("missing the previous item", out.lower())
+
+    def test_a_real_prior_recommendation_still_resolves(self):
+        ctx = [{"role": "user", "text": "what should we shoot?"},
+               {"role": "assistant",
+                "text": "*1. Dive Without The Sting* _(BodyShield GK Leggings)_"}]
+        out = orch.answer("tell me more about it", context=ctx, ideas=IDEAS, gemini=None)
+        self.assertIsNotNone(out)
+        self.assertNotIn("missing the previous item", out.lower())
+        self.assertIn("Dive Without The Sting", out)
+
+    def test_should_clarify_predicate(self):
+        self.assertTrue(orch._should_clarify("tell me more about it", {}))
+        self.assertTrue(orch._should_clarify(
+            "tell me more about it", {"last_recommended_idea_titles": ["X"]}))
+        self.assertFalse(orch._should_clarify(
+            "what's working for BodyShield and what should we do about it?", {}))
+        self.assertFalse(orch._should_clarify("how's gloves doing, more about it", {}))

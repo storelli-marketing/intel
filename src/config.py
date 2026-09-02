@@ -307,6 +307,20 @@ except ValueError:
 INTELLIGENCE_SCHEDULER_STARTUP_DELAY_SECONDS = max(
     0, min(3600, INTELLIGENCE_SCHEDULER_STARTUP_DELAY_SECONDS))
 
+# How many reels ONE scheduled refresh may analyze. Video tagging and Slack
+# conversation draw on the SAME Gemini quota, and tagging costs 2 calls per reel
+# with QA on — so an unbounded weekly run can consume a whole day's free-tier
+# allowance and leave the strategist with nothing, at which point every Slack
+# reply silently drops to the terse deterministic floor. Unanalyzed reels stay
+# eligible and are picked up next run (the pipeline is idempotent), so bounding
+# this costs a little latency; leaving it unbounded costs the bot's voice.
+# Set to 0 for no limit (sensible on a paid tier).
+try:
+    INTELLIGENCE_ANALYZE_LIMIT = int(os.getenv("INTELLIGENCE_ANALYZE_LIMIT", "6") or 6)
+except ValueError:
+    INTELLIGENCE_ANALYZE_LIMIT = 6
+INTELLIGENCE_ANALYZE_LIMIT = max(0, min(500, INTELLIGENCE_ANALYZE_LIMIT))
+
 # Weekly digest delivery (src/refresh_digest.py). After each scheduled refresh a
 # short readable summary of what actually changed is pushed to Slack via the
 # existing SLACK_WEBHOOK_URL, and by email when — and only when — SMTP is

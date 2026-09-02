@@ -373,6 +373,35 @@ access:
 }
 ```
 
+### Why the bot sometimes stops sounding like a strategist
+
+Slack answers have two voices. The **strategist** (Gemini, validated) reads like a
+colleague; the **deterministic floor** is a correct, cited, but terse retrieval
+answer. The floor is the safety net whenever Gemini is unavailable, over quota, or
+its output fails validation — and that fallback is right, but it used to be
+**invisible**.
+
+The trap: video tagging and Slack conversation draw on the **same** Gemini quota,
+and tagging costs **2 calls per reel** with QA on. An unbounded weekly run can
+consume a whole day's free-tier allowance, after which every Slack reply that day
+silently reads like a retrieval tool. So a scheduled run now analyzes at most
+`INTELLIGENCE_ANALYZE_LIMIT` reels (default **6**; `0` = unlimited, sensible on a
+paid tier). Unanalyzed reels stay eligible and are picked up next run —
+`QA_COMPILER_ENABLED=false` halves the per-reel cost if you'd rather do more.
+
+`GET /status` now reports which voice is in play:
+
+```json
+"strategist": {
+  "mode_enabled": true, "gemini_configured": true,
+  "fallbacks": {"count": 3, "quota_exhausted": 2,
+                "last_reason": "QuotaExhaustedError: 429 RESOURCE_EXHAUSTED",
+                "last_at": "..."}
+}
+```
+
+A non-zero `quota_exhausted` is the answer to "why does it sound robotic today".
+
 ### Weekly digest
 
 Each scheduled run pushes a short summary of **what actually changed** to Slack

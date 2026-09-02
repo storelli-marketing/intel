@@ -608,6 +608,18 @@ def status() -> JSONResponse:
         out["scheduler"] = scheduler.snapshot()
     except Exception as e:  # noqa: BLE001
         out["scheduler"] = {"enabled": False, "disabled_reason": f"unavailable: {e}"}
+    # Whether Slack is currently answering in the strategist voice or has
+    # silently dropped to the deterministic floor (quota, or a validation
+    # rejection). Without this the voice can degrade for a whole day invisibly.
+    try:
+        import social_strategist as _ss
+        out["strategist"] = {
+            "mode_enabled": bool(config.SLACK_STRATEGIST_MODE_ENABLED),
+            "gemini_configured": bool(config.GEMINI_API_KEY),
+            "fallbacks": dict(_ss.FALLBACKS),
+        }
+    except Exception as e:  # noqa: BLE001
+        out["strategist"] = {"mode_enabled": False, "error": str(e)}
     out["build"] = _build_info()
     return JSONResponse(out)
 

@@ -117,6 +117,28 @@ only when it differs from the top pick's, a duplicate hook falls back to the
 concept instead of leaving a bare title, and per-line `proof [S#] / ref [E#]` was
 removed in favour of the Sources block.
 
+**Gemini quota economics** (this is why the bot sometimes stops sounding like a
+strategist): video tagging and Slack conversation draw on the SAME Gemini quota,
+and tagging costs 2 calls per reel with QA_COMPILER_ENABLED. The scheduled
+refresh therefore analyzes at most INTELLIGENCE_ANALYZE_LIMIT reels per run
+(default 6; 0 = unlimited, sensible on a paid tier) — unanalyzed reels stay
+eligible and are picked up next run, whereas an exhausted quota silently turns
+every Slack reply into the terse deterministic floor. That fallback is CORRECT (a
+validated answer or none) but used to be invisible: `social_strategist.FALLBACKS`
+now counts fallbacks, records the last reason, and counts quota exhaustions
+separately, logging OVER QUOTA distinctly; GET /status exposes it under
+`strategist` alongside mode_enabled / gemini_configured.
+
+**Phantom follow-up fix** (`slack_conversation_orchestrator._should_clarify`): an
+opening question containing "about it" ("what's working for BodyShield, and what
+should we do about it?") was classified idea_deep_dive, the "it" resolved against
+an empty thread, and the bot replied "I'm missing the previous item you mean" —
+answering a conversation that never happened. Clarification now requires either a
+prior recommendation to point at, or a message that carries nothing else to go on
+(a bare "tell me more about it" still asks, which is right). A message naming its
+own product/ICP, or asking a self-sufficient question, falls through and gets
+answered.
+
 **Weekly digest** (`src/refresh_digest.py`): after each scheduled refresh, a short
 readable summary of what changed is pushed to Slack via the existing
 SLACK_WEBHOOK_URL and, when SMTP is configured, by email (stdlib smtplib, no new

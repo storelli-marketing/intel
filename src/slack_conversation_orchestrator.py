@@ -341,6 +341,39 @@ def _pack_compare(a: dict, b: dict, mode: str):
     return det, "\n".join(facts), srcmap, det_bullets, move
 
 
+def _should_clarify(text: str, memory: dict) -> bool:
+    """Whether asking "which one did you mean?" is the right move.
+
+    Yes when there is a prior recommendation for the pronoun to point at, and
+    also for a bare follow-up ("tell me more about it") that carries nothing else
+    to go on — there, asking is genuinely better than guessing.
+
+    NO when the message carries its own subject. "What's working for BodyShield,
+    and what should we do about it?" is an opening question whose "it" means *the
+    situation*: the phrase "about it" trips the deep-dive trigger, and answering
+    it by asking which item they meant invents a conversation that never
+    happened. One reply like that is enough to break the illusion of talking to
+    someone who was listening — so the turn falls through and the question gets
+    answered instead.
+    """
+    if memory.get("last_recommended_idea_titles") or memory.get("last_recommended_idea_ids"):
+        return True
+    try:
+        from idea_retrieval import parse_query
+        q = parse_query(text or "")
+        if q.get("product") or q.get("icp"):
+            return False        # it named its own subject — answer that
+    except Exception:  # noqa: BLE001
+        pass
+    # A substantive question of its own ("what's working", "what should we do")
+    # is self-sufficient too; only a bare reference gets a clarifying question.
+    t = " " + re.sub(r"\s+", " ", str(text or "").lower()).strip() + " "
+    self_sufficient = ("what's working", "whats working", "what is working",
+                       "what should we", "what do we", "how are we", "how's our",
+                       "where are we", "what's the story", "whats the story")
+    return not any(c in t for c in self_sufficient)
+
+
 def _clarify(memory: dict) -> str:
     titles = memory.get("last_recommended_idea_titles") or []
     if len(titles) >= 2:
@@ -512,7 +545,7 @@ def answer(text: str, context: Optional[list] = None, sheets=None,
             idea, how = resolve_idea_reference(text, rows, memory)
             if idea:
                 return _finalize(_pack_deep_dive(idea, mode), mode, gem, deep, use_llm)
-            if how == "ambiguous":
+            if how == "ambiguous" and _should_clarify(text, memory):
                 return _clarify(memory)      # never hallucinate a missing reference
             return None
         # Explicit named idea + a question -> deep dive (fixes lost context).

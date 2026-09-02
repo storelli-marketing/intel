@@ -150,7 +150,9 @@ def run_once(trigger: str = TRIGGER) -> Optional[dict]:
     with _LOCK:
         STATE["runs_started"] += 1
     try:
-        report = ir.run_intelligence_refresh(mode="full", dry_run=False, trigger=trigger)
+        report = ir.run_intelligence_refresh(
+            mode="full", dry_run=False, trigger=trigger,
+            limit=(config.INTELLIGENCE_ANALYZE_LIMIT or None))
     except Exception as e:  # noqa: BLE001 - the web process must survive any failure
         log.exception("scheduler: refresh raised")
         with _LOCK:

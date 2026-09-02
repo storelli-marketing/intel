@@ -1123,6 +1123,7 @@
         "_pack_urgent",
         "_pack_deep_dive",
         "_pack_compare",
+        "_should_clarify",
         "_clarify",
         "_validate",
         "_synthesize",
@@ -1381,6 +1382,7 @@
     },
     "src/social_strategist.py": {
       "functions": [
+        "_note_fallback",
         "_classify_source_type",
         "_extract_slack_link",
         "_extract_url",
@@ -1775,6 +1777,7 @@
     "INSPIRATION_PROVIDER",
     "INSTAGRAM_ACCESS_TOKEN",
     "INSTAGRAM_BUSINESS_ACCOUNT_ID",
+    "INTELLIGENCE_ANALYZE_LIMIT",
     "INTELLIGENCE_MAX_ACTIVE_QUERIES",
     "INTELLIGENCE_REFRESH_CADENCE_DAYS",
     "INTELLIGENCE_REFRESH_ENABLED",
