@@ -61,7 +61,8 @@ STATE: dict = {
     "consecutive_errors": 0,
     "last_error": "",
     "disabled_reason": "",
-    "last_digest_slack": None,
+    "last_digest_dm": None,
+    "last_digest_channel": None,
     "last_digest_email": None,
 }
 
@@ -182,11 +183,12 @@ def run_once(trigger: str = TRIGGER) -> Optional[dict]:
             except Exception:  # noqa: BLE001 - health is a nice-to-have here
                 health = None
             delivery = refresh_digest.deliver(report, health)
-            _set(last_digest_slack=delivery.get("slack"),
+            _set(last_digest_dm=delivery.get("dm"),
+                 last_digest_channel=delivery.get("channel"),
                  last_digest_email=delivery.get("email"))
         except Exception as e:  # noqa: BLE001
             log.warning("scheduler: digest delivery failed: %s", e)
-            _set(last_digest_slack="failed", last_digest_email="failed")
+            _set(last_digest_dm="failed", last_digest_email="failed")
     return report
 
 

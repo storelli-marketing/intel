@@ -1019,6 +1019,7 @@
         "build_digest",
         "email_configured",
         "send_email",
+        "resolve_dm_user",
         "deliver"
       ],
       "classes": []
@@ -1087,6 +1088,9 @@
     "src/slack_bot.py": {
       "functions": [
         "get_bot_user_id",
+        "lookup_user_by_email",
+        "open_dm",
+        "send_dm",
         "_mem_key",
         "is_active_thread",
         "remember",
@@ -1763,6 +1767,7 @@
     "DASHBOARD_URL",
     "DIGEST_EMAIL_TO",
     "DIGEST_ENABLED",
+    "DIGEST_SLACK_USER_ID",
     "GEMINI_API_KEY",
     "GEMINI_MODEL",
     "GITHUB_DISPATCH_EVENT",

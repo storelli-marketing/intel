@@ -140,9 +140,15 @@ own product/ICP, or asking a self-sufficient question, falls through and gets
 answered.
 
 **Weekly digest** (`src/refresh_digest.py`): after each scheduled refresh, a short
-readable summary of what changed is pushed to Slack via the existing
-SLACK_WEBHOOK_URL and, when SMTP is configured, by email (stdlib smtplib, no new
-dependency). `render_report()` is CLI-shaped (one line per stage, including
+summary of what changed is sent as a DIRECT MESSAGE to ONE person — never
+broadcast to the shared channel, which is what the first version did and was
+simply noise for everyone who had not asked for it. Recipient:
+DIGEST_SLACK_USER_ID (preferred, no extra scope) else DIGEST_SLACK_EMAIL via
+users.lookupByEmail (needs users:read.email); DM needs im:write. Channel
+broadcast survives behind DIGEST_SLACK_CHANNEL_ENABLED, default FALSE. A DM sent
+ONLY when a refresh actually ran — a not-due hourly check and a lock-out send
+nothing — and a failed recipient lookup never falls back to the channel. Email
+stays opt-in via SMTP (stdlib smtplib, no new dependency). `render_report()` is CLI-shaped (one line per stage, including
 no-ops); the digest collapses no-ops, always names a FAILED stage, surfaces
 "needs you" items (idea regeneration is never automatic; health warnings), and
 says "nothing new this week" rather than padding. Every figure comes from the

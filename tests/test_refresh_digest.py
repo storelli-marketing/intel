@@ -102,15 +102,23 @@ class TestDigestContent(unittest.TestCase):
             self.assertNotIn(ghost, out)
 
 
+_CFG_KEYS = ("SLACK_WEBHOOK_URL", "SLACK_BOT_TOKEN", "DIGEST_EMAIL_TO", "SMTP_HOST",
+             "SMTP_FROM", "DIGEST_SLACK_USER_ID", "DIGEST_SLACK_EMAIL",
+             "DIGEST_SLACK_CHANNEL_ENABLED")
+
+
 class TestDelivery(unittest.TestCase):
     def setUp(self):
         import scheduler
-        self._cfg = {k: getattr(config, k) for k in
-                     ("SLACK_WEBHOOK_URL", "DIGEST_EMAIL_TO", "SMTP_HOST", "SMTP_FROM")}
+        self._cfg = {k: getattr(config, k) for k in _CFG_KEYS}
         config.SLACK_WEBHOOK_URL = ""
+        config.SLACK_BOT_TOKEN = ""
         config.DIGEST_EMAIL_TO = ""
         config.SMTP_HOST = ""
         config.SMTP_FROM = ""
+        config.DIGEST_SLACK_USER_ID = ""
+        config.DIGEST_SLACK_EMAIL = ""
+        config.DIGEST_SLACK_CHANNEL_ENABLED = False
         # Two of these drive scheduler.run_once(), which mutates the scheduler's
         # module-level STATE (runs_started, last_digest_*). Whoever mutates shared
         # state restores it — otherwise this leaks into test_scheduler's counters
@@ -126,41 +134,129 @@ class TestDelivery(unittest.TestCase):
 
     def test_nothing_configured_is_a_no_op_not_an_error(self):
         out = rd.deliver(report(owned_scan={"status": "success", "_new_media": 1}))
-        self.assertEqual(out["slack"], "not_configured")
+        self.assertEqual(out["dm"], "no_bot_token")
+        self.assertEqual(out["channel"], "disabled")
         self.assertEqual(out["email"], "not_configured")
         self.assertTrue(out["text"])
+
+    def test_digest_is_only_delivered_when_a_refresh_actually_ran(self):
+        """Not due -> no run -> no DM. Nobody gets pinged for a no-op check."""
+        import intelligence_refresh as ir
+        import scheduler
+        from datetime import datetime, timedelta, timezone
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime(
+            "%Y-%m-%d %H:%M UTC")
+        real_runs, real_deliver = ir.last_runs, rd.deliver
+        calls = []
+        ir.last_runs = lambda **k: [{"RUN_ID": "IR-y", "STATUS": "success",
+                                     "FINISHED_AT": yesterday}]
+        rd.deliver = lambda rep, health=None: calls.append(rep) or {}
+        try:
+            self.assertIsNone(scheduler.run_once())
+        finally:
+            ir.last_runs, rd.deliver = real_runs, real_deliver
+        self.assertEqual(calls, [], "a not-due check must never send a DM")
 
     def test_email_never_sends_without_full_smtp_config(self):
         config.DIGEST_EMAIL_TO = "team@example.com"       # host/from still unset
         self.assertFalse(rd.email_configured())
         self.assertFalse(rd.send_email("s", "b"))
 
-    def test_slack_posts_when_configured(self):
-        import slack_report
-        config.SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/fake"
+    # --- the DM is the destination -----------------------------------------
+    def test_dm_is_sent_to_the_configured_user(self):
+        import slack_bot
+        config.SLACK_BOT_TOKEN = "xoxb-fake"
+        config.DIGEST_SLACK_USER_ID = "U0JACOPO"
         sent = []
-        real = slack_report.post
-        slack_report.post = lambda text: sent.append(text) or 200
+        real = slack_bot.send_dm
+        slack_bot.send_dm = lambda uid, text: sent.append((uid, text)) or True
         try:
             out = rd.deliver(report(owned_scan={"status": "success", "_new_media": 1}))
         finally:
-            slack_report.post = real
-        self.assertEqual(out["slack"], "posted")
-        self.assertIn("1 new reel picked up", sent[0])
+            slack_bot.send_dm = real
+        self.assertEqual(out["dm"], "sent")
+        self.assertEqual(sent[0][0], "U0JACOPO")
+        self.assertIn("1 new reel picked up", sent[0][1])
 
-    def test_a_slack_failure_is_recorded_and_never_raises(self):
-        import slack_report
+    def test_the_channel_is_NOT_posted_to_by_default(self):
+        """The whole point: no unsolicited weekly report for everyone."""
+        import slack_bot, slack_report
+        config.SLACK_BOT_TOKEN = "xoxb-fake"
+        config.DIGEST_SLACK_USER_ID = "U0JACOPO"
         config.SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/fake"
-        real = slack_report.post
-
-        def boom(text):
-            raise RuntimeError("slack down")
-        slack_report.post = boom
+        posted = []
+        real_dm, real_post = slack_bot.send_dm, slack_report.post
+        slack_bot.send_dm = lambda uid, text: True
+        slack_report.post = lambda text: posted.append(text) or 200
         try:
             out = rd.deliver(report(owned_scan={"status": "success", "_new_media": 1}))
         finally:
-            slack_report.post = real
-        self.assertEqual(out["slack"], "failed")
+            slack_bot.send_dm, slack_report.post = real_dm, real_post
+        self.assertEqual(posted, [], "digest must not broadcast to the channel")
+        self.assertEqual(out["channel"], "disabled")
+        self.assertEqual(out["dm"], "sent")
+
+    def test_channel_broadcast_only_when_explicitly_enabled(self):
+        import slack_bot, slack_report
+        config.SLACK_BOT_TOKEN = "xoxb-fake"
+        config.DIGEST_SLACK_USER_ID = "U0JACOPO"
+        config.SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/fake"
+        config.DIGEST_SLACK_CHANNEL_ENABLED = True
+        posted = []
+        real_dm, real_post = slack_bot.send_dm, slack_report.post
+        slack_bot.send_dm = lambda uid, text: True
+        slack_report.post = lambda text: posted.append(text) or 200
+        try:
+            out = rd.deliver(report(owned_scan={"status": "success", "_new_media": 1}))
+        finally:
+            slack_bot.send_dm, slack_report.post = real_dm, real_post
+        self.assertEqual(out["channel"], "posted")
+        self.assertEqual(len(posted), 1)
+
+    def test_email_is_resolved_from_an_email_when_no_user_id(self):
+        import slack_bot
+        config.SLACK_BOT_TOKEN = "xoxb-fake"
+        config.DIGEST_SLACK_EMAIL = "jacopo@example.com"
+        looked = []
+        real_l, real_dm = slack_bot.lookup_user_by_email, slack_bot.send_dm
+        slack_bot.lookup_user_by_email = lambda e: looked.append(e) or "U0RESOLVED"
+        slack_bot.send_dm = lambda uid, text: uid == "U0RESOLVED"
+        try:
+            out = rd.deliver(report(owned_scan={"status": "success", "_new_media": 1}))
+        finally:
+            slack_bot.lookup_user_by_email, slack_bot.send_dm = real_l, real_dm
+        self.assertEqual(looked, ["jacopo@example.com"])
+        self.assertEqual(out["dm"], "sent")
+
+    def test_no_recipient_is_reported_not_broadcast(self):
+        """Failing to resolve a DM target must NOT fall back to the channel."""
+        import slack_report
+        config.SLACK_BOT_TOKEN = "xoxb-fake"
+        config.SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/fake"
+        posted = []
+        real_post = slack_report.post
+        slack_report.post = lambda text: posted.append(text) or 200
+        try:
+            out = rd.deliver(report(owned_scan={"status": "success", "_new_media": 1}))
+        finally:
+            slack_report.post = real_post
+        self.assertEqual(out["dm"], "no_recipient")
+        self.assertEqual(posted, [])
+
+    def test_a_dm_failure_is_recorded_and_never_raises(self):
+        import slack_bot
+        config.SLACK_BOT_TOKEN = "xoxb-fake"
+        config.DIGEST_SLACK_USER_ID = "U0JACOPO"
+        real = slack_bot.send_dm
+
+        def boom(uid, text):
+            raise RuntimeError("slack down")
+        slack_bot.send_dm = boom
+        try:
+            out = rd.deliver(report(owned_scan={"status": "success", "_new_media": 1}))
+        finally:
+            slack_bot.send_dm = real
+        self.assertEqual(out["dm"], "failed")
 
     def test_scheduler_delivers_the_digest_after_a_run(self):
         import intelligence_refresh as ir
@@ -173,7 +269,8 @@ class TestDelivery(unittest.TestCase):
             "run_id": "IR-d", "status": "success", "finished_at": "2026-09-02 15:00 UTC"}
         ir.health_state = lambda *a, **k: {"state": "HEALTHY", "reasons": []}
         rd.deliver = lambda rep, health=None: (delivered.append(rep)
-                                               or {"slack": "posted", "email": "sent"})
+                                               or {"dm": "sent", "channel": "disabled",
+                                                   "email": "sent"})
         try:
             scheduler.run_once()
         finally:
@@ -181,7 +278,8 @@ class TestDelivery(unittest.TestCase):
             rd.deliver, ir.health_state = real_deliver, real_health
         self.assertEqual(delivered[0]["run_id"], "IR-d")
         snap = scheduler.snapshot()
-        self.assertEqual(snap["last_digest_slack"], "posted")
+        self.assertEqual(snap["last_digest_dm"], "sent")
+        self.assertEqual(snap["last_digest_channel"], "disabled")
         self.assertEqual(snap["last_digest_email"], "sent")
 
     def test_a_digest_failure_does_not_fail_the_refresh(self):

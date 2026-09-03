@@ -322,12 +322,26 @@ except ValueError:
 INTELLIGENCE_ANALYZE_LIMIT = max(0, min(500, INTELLIGENCE_ANALYZE_LIMIT))
 
 # Weekly digest delivery (src/refresh_digest.py). After each scheduled refresh a
-# short readable summary of what actually changed is pushed to Slack via the
-# existing SLACK_WEBHOOK_URL, and by email when — and only when — SMTP is
-# configured below. Both are best-effort: a delivery failure never affects the
-# refresh, and an unconfigured destination is a silent no-op rather than an error.
+# short summary of what actually changed is sent as a DIRECT MESSAGE to one
+# person — not broadcast to a channel. The first version posted to the shared
+# channel via SLACK_WEBHOOK_URL and that was simply noise for everyone who
+# didn't ask for it. Best-effort throughout: a delivery failure never affects
+# the refresh, and an unconfigured destination is a silent no-op, not an error.
 DIGEST_ENABLED = os.getenv("DIGEST_ENABLED", "true").strip().lower() \
     not in ("false", "0", "no", "off")
+
+# Who gets the DM. A user id (U…) is preferred: it needs no extra Slack scope.
+# The email fallback resolves via users.lookupByEmail, which needs the
+# `users:read.email` scope; the default is the person who asked for these DMs
+# and is overridable per environment.
+DIGEST_SLACK_USER_ID = os.getenv("DIGEST_SLACK_USER_ID", "").strip()
+DIGEST_SLACK_EMAIL = os.getenv(
+    "DIGEST_SLACK_EMAIL", "jacopo.viola@storellisports.com").strip()
+
+# Broadcasting the digest to the shared channel is OFF, deliberately. Turning it
+# on sends the weekly summary to everyone in the SLACK_WEBHOOK_URL channel.
+DIGEST_SLACK_CHANNEL_ENABLED = os.getenv(
+    "DIGEST_SLACK_CHANNEL_ENABLED", "false").strip().lower() in ("true", "1", "yes", "on")
 
 # Comma-separated recipients. EMPTY = no email is ever sent.
 DIGEST_EMAIL_TO = os.getenv("DIGEST_EMAIL_TO", "").strip()

@@ -58,6 +58,63 @@ def get_bot_user_id() -> str | None:
     return _bot_id_cache["id"]
 
 
+# --- direct messages -------------------------------------------------------
+def lookup_user_by_email(email: str) -> str | None:
+    """Slack user id for an email, or None. Needs the `users:read.email` scope;
+    without it Slack returns ok:false and we degrade to None rather than raise."""
+    if not (config.SLACK_BOT_TOKEN and email):
+        return None
+    try:
+        resp = httpx.get(f"{_SLACK_API}/users.lookupByEmail",
+                         params={"email": email},
+                         headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
+                         timeout=10)
+        data = resp.json()
+        if data.get("ok"):
+            return (data.get("user") or {}).get("id")
+        log.warning("slack users.lookupByEmail not ok: %s (needs users:read.email?)",
+                    data.get("error"))
+    except Exception as e:  # noqa: BLE001 - lookup is best-effort
+        log.warning("slack_bot: email lookup failed: %s", e)
+    return None
+
+
+def open_dm(user_id: str) -> str | None:
+    """The DM channel id for a user, opening the conversation if needed.
+
+    `chat.postMessage` will often accept a bare user id, but conversations.open
+    is the documented path and returns a real channel id, which also makes a
+    permission problem visible here instead of at post time.
+    """
+    if not (config.SLACK_BOT_TOKEN and user_id):
+        return None
+    try:
+        resp = httpx.post(f"{_SLACK_API}/conversations.open",
+                          json={"users": user_id},
+                          headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}",
+                                   "Content-Type": "application/json; charset=utf-8"},
+                          timeout=10)
+        data = resp.json()
+        if data.get("ok"):
+            return (data.get("channel") or {}).get("id")
+        log.warning("slack conversations.open not ok: %s (needs im:write?)",
+                    data.get("error"))
+    except Exception as e:  # noqa: BLE001
+        log.warning("slack_bot: could not open DM: %s", e)
+    return None
+
+
+def send_dm(user_id: str, text: str) -> bool:
+    """DM one person. True only when Slack confirms the post."""
+    channel = open_dm(user_id) or user_id
+    try:
+        data = post_message(channel, text)
+        return bool(data.get("ok"))
+    except Exception as e:  # noqa: BLE001 - a DM must never break a caller
+        log.warning("slack_bot: DM failed: %s", e)
+        return False
+
+
 # --- lightweight in-memory conversation cache -------------------------------
 # Keyed by (channel, thread_key) where thread_key is the thread_ts, or the
 # channel id itself for un-threaded DMs. Never persisted; resets on restart.

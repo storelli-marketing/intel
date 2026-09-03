@@ -14,9 +14,14 @@ Same discipline as the rest of the brain: no invented numbers (every figure come
 from the run's own history row), internal Storelli evidence and external
 inspiration kept separate, and external counts never described as proof.
 
-Delivery is best-effort and never affects the run: Slack via the existing
-SLACK_WEBHOOK_URL, and email via plain SMTP when — and only when — SMTP settings
-are configured. A missing destination is a no-op, not an error.
+Delivery is a DIRECT MESSAGE to one person, not a channel broadcast. The first
+version posted to the shared channel via SLACK_WEBHOOK_URL, which meant everyone
+in it got a weekly report they had not asked for — noise, and the fastest way to
+get a useful signal muted. A DM reaches the person who actually acts on it.
+
+Channel broadcast still exists but is OFF unless DIGEST_SLACK_CHANNEL_ENABLED is
+set. Email is opt-in via SMTP settings. Everything here is best-effort and never
+affects the run: a missing destination is a no-op, not an error.
 """
 from __future__ import annotations
 
@@ -184,9 +189,28 @@ def send_email(subject: str, body: str) -> bool:
         return False
 
 
+def resolve_dm_user() -> str | None:
+    """The Slack user id to DM. An explicit id needs no extra scope; the email
+    fallback needs `users:read.email`. None when neither resolves."""
+    if config.DIGEST_SLACK_USER_ID:
+        return config.DIGEST_SLACK_USER_ID
+    if config.DIGEST_SLACK_EMAIL:
+        try:
+            import slack_bot
+            return slack_bot.lookup_user_by_email(config.DIGEST_SLACK_EMAIL)
+        except Exception as e:  # noqa: BLE001
+            log.warning("weekly digest: could not resolve DM recipient: %s", e)
+    return None
+
+
 def deliver(report: dict, health: dict | None = None) -> dict:
-    """Render and push the digest. Returns {text, slack, email} — never raises."""
-    out = {"text": "", "slack": "not_configured", "email": "not_configured"}
+    """Render and send the digest. Returns {text, dm, channel, email}.
+
+    Never raises. The DM is the intended destination; the channel broadcast is
+    opt-in and off by default so the weekly summary doesn't land on everyone.
+    """
+    out = {"text": "", "dm": "not_configured", "channel": "disabled",
+           "email": "not_configured"}
     try:
         text = build_digest(report, health)
     except Exception as e:  # noqa: BLE001
@@ -196,16 +220,33 @@ def deliver(report: dict, health: dict | None = None) -> dict:
         return out
     out["text"] = text
 
-    if config.SLACK_WEBHOOK_URL:
+    # --- the DM: one person, only when a refresh actually ran ---------------
+    if not config.SLACK_BOT_TOKEN:
+        out["dm"] = "no_bot_token"
+    else:
+        user = resolve_dm_user()
+        if not user:
+            out["dm"] = "no_recipient"
+            log.warning("weekly digest: no DM recipient resolved "
+                        "(set DIGEST_SLACK_USER_ID, or grant users:read.email)")
+        else:
+            try:
+                import slack_bot
+                out["dm"] = "sent" if slack_bot.send_dm(user, text) else "failed"
+            except Exception as e:  # noqa: BLE001
+                log.warning("weekly digest DM failed: %s: %s", type(e).__name__, e)
+                out["dm"] = "failed"
+
+    # --- channel broadcast: OFF unless explicitly turned on -----------------
+    if config.DIGEST_SLACK_CHANNEL_ENABLED and config.SLACK_WEBHOOK_URL:
         try:
             import slack_report
             slack_report.post(text)
-            out["slack"] = "posted"
+            out["channel"] = "posted"
         except Exception as e:  # noqa: BLE001
-            log.warning("weekly digest Slack post failed: %s: %s", type(e).__name__, e)
-            out["slack"] = "failed"
+            log.warning("weekly digest channel post failed: %s: %s", type(e).__name__, e)
+            out["channel"] = "failed"
 
     if email_configured():
-        subject = "Storelli brain — weekly update"
-        out["email"] = "sent" if send_email(subject, text) else "failed"
+        out["email"] = "sent" if send_email("Storelli brain — weekly update", text) else "failed"
     return out

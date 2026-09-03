@@ -402,10 +402,28 @@ paid tier). Unanalyzed reels stay eligible and are picked up next run —
 
 A non-zero `quota_exhausted` is the answer to "why does it sound robotic today".
 
-### Weekly digest
+### Weekly digest — a DM, not a channel post
 
-Each scheduled run pushes a short summary of **what actually changed** to Slack
-(via the existing `SLACK_WEBHOOK_URL`), and by email when SMTP is configured:
+Each scheduled run sends a short summary of **what actually changed** as a
+**direct message to one person**. The first version broadcast it to the shared
+channel, which meant everyone in there got a weekly report they hadn't asked for
+— noise, and the fastest way to get a genuinely useful signal muted.
+
+Rules:
+
+- **DM only.** `DIGEST_SLACK_USER_ID` (a `U…` id) is preferred — it needs no
+  extra Slack scope. `DIGEST_SLACK_EMAIL` is the fallback and resolves via
+  `users.lookupByEmail`, which needs the `users:read.email` scope.
+- **Channel broadcast is off.** `DIGEST_SLACK_CHANNEL_ENABLED=true` turns it back
+  on for the whole `SLACK_WEBHOOK_URL` channel; it is `false` by default.
+- **Only when a refresh actually runs.** An hourly not-due check sends nothing.
+  Same for a lock-out — no DM for a no-op.
+- **A failed lookup never falls back to the channel.** It reports
+  `dm: no_recipient` and stays quiet.
+- Extra Slack scopes needed for the DM: `im:write` (open the conversation) and,
+  if you use the email fallback, `users:read.email`.
+
+The message:
 
 ```
 *Storelli brain — weekly refresh done*
